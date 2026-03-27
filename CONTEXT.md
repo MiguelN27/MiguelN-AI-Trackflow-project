@@ -1,13 +1,15 @@
-# Your company context
+# Trackflow Inc.
 
-**Replace this file** with the CONTEXT for your assigned company:
+## Company Overview
 
-- **Brasaland** — `CONTEXT-brasaland-briefing.md` (grilled food restaurant chain, Colombia + Florida)
-- **TrackFlow** — `CONTEXT-trackflow-briefing.md` (last-mile delivery and warehouse, Mexico + Spain)
-- **Nexova** — `CONTEXT-nexova-briefing.md` (HR consulting and talent acquisition, Chile + Argentina)
+Track Flow is your logistics partner for secure warehousing, smooth operations, and on-time last-mile delivery.
 
-Your instructor or milestone materials will point you to the correct CONTEXT file. Copy its contents here so that all project work and AI assistance use the same domain data, field names, and constraints.
+## Product & Service
 
----
+Track Flow provides warehousing, inventory management, order fulfillment, and last-mile delivery solutions for businesses that need speed, organization, and reliability. We help companies store, process, and move products efficiently from warehouse to final destination. Our operations cover major cities, nearby regional markets, and strategic commercial routes, giving our clients the flexibility to scale their logistics with confidence.
 
-_Until you add your context, keep this placeholder so the repo structure is clear._
+## Branding
+
+- Color: Flow Blue – #2563EB. Very common promotes a sense of reliability.
+- Motto: "Faster routes, smarter deliveries"
+- Logo: ![TrackFlow Logo]("../workflows/TrackFlowLogo.png")
