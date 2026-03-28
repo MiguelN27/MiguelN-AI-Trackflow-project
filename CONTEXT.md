@@ -10,7 +10,7 @@ Track Flow provides warehousing, inventory management, order fulfillment, and la
 
 ## Branding
 
-- Color: 
+- Colors: 
 
    - Main color: Flow Blue – #2563EB. Very common promotes a sense of reliability.
    - Secondary Color: Soft Blue - #82A2E5.
