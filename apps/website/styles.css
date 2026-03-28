@@ -19,6 +19,12 @@ body {
 
 body {
   font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+
+body.dark-mode {
+  background: #05070c;
+  color: #e5e7eb;
 }
 
 .font-space {
@@ -31,6 +37,105 @@ body {
     radial-gradient(640px 340px at 70% 50%, rgba(255, 145, 66, 0.12), transparent 60%),
     radial-gradient(700px 380px at 15% 85%, rgba(56, 189, 248, 0.14), transparent 65%),
     linear-gradient(180deg, var(--paper) 0%, #ffffff 45%, #f7faff 100%);
+}
+
+body.dark-mode .atmosphere {
+  background:
+    radial-gradient(1200px 500px at 90% -10%, rgba(59, 130, 246, 0.2), transparent 70%),
+    radial-gradient(640px 340px at 70% 50%, rgba(255, 145, 66, 0.16), transparent 60%),
+    radial-gradient(700px 380px at 15% 85%, rgba(56, 189, 248, 0.14), transparent 65%),
+    linear-gradient(180deg, #05070c 0%, #090d16 45%, #0a111d 100%);
+}
+
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0.75rem;
+  z-index: 50;
+  border-radius: 0.5rem;
+  background: var(--flow-ink);
+  color: #ffffff;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.skip-link:focus-visible {
+  top: 0.75rem;
+}
+
+.mobile-nav {
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 12px 28px -22px rgba(15, 23, 42, 0.7);
+  overflow: hidden;
+}
+
+body.dark-mode .mobile-nav {
+  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(10, 16, 28, 0.94);
+  box-shadow: 0 18px 34px -24px rgba(0, 0, 0, 0.85);
+}
+
+.mobile-nav summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.8rem 1rem;
+  color: var(--flow-ink);
+  font-weight: 700;
+}
+
+.mobile-nav summary::-webkit-details-marker {
+  display: none;
+}
+
+.mobile-nav-list {
+  margin: 0;
+  padding: 0 1rem 1rem;
+  list-style: none;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.mobile-nav-list a {
+  display: block;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  text-decoration: none;
+  color: #334155;
+  font-weight: 600;
+}
+
+.mobile-nav-list a:hover {
+  background: #eff6ff;
+  color: var(--flow-blue);
+}
+
+body.dark-mode .mobile-nav summary,
+body.dark-mode .mobile-nav-list a {
+  color: #e2e8f0;
+}
+
+body.dark-mode .mobile-nav-list a:hover {
+  background: rgba(37, 99, 235, 0.24);
+  color: #bfdbfe;
+}
+
+.theme-toggle {
+  min-width: 5.2rem;
+}
+
+body.dark-mode .theme-toggle {
+  background: #111827;
+  border-color: rgba(148, 163, 184, 0.45);
+  color: #e2e8f0;
+}
+
+body.dark-mode .theme-toggle:hover {
+  border-color: rgba(191, 219, 254, 0.6);
+  color: #bfdbfe;
 }
 
 .benefits-board {
@@ -52,6 +157,84 @@ body {
   box-shadow: 0 20px 40px -30px rgba(15, 23, 42, 0.45);
 }
 
+body.dark-mode nav {
+  border-color: rgba(148, 163, 184, 0.25);
+  background: rgba(10, 16, 28, 0.86);
+}
+
+body.dark-mode main,
+body.dark-mode section,
+body.dark-mode footer {
+  color: #e5e7eb;
+}
+
+body.dark-mode h1,
+body.dark-mode h2,
+body.dark-mode h3,
+body.dark-mode .font-space,
+body.dark-mode .text-flowInk {
+  color: #f8fafc;
+}
+
+body.dark-mode p,
+body.dark-mode li,
+body.dark-mode dd,
+body.dark-mode dt,
+body.dark-mode .text-slate-600,
+body.dark-mode .text-slate-500,
+body.dark-mode .text-slate-700 {
+  color: #cbd5e1;
+}
+
+body.dark-mode .bg-white,
+body.dark-mode .bg-white\/80,
+body.dark-mode .bg-white\/85,
+body.dark-mode .bg-white\/90 {
+  background-color: rgba(15, 23, 42, 0.84);
+}
+
+body.dark-mode .bg-slate-50,
+body.dark-mode .bg-blue-50,
+body.dark-mode .bg-orange-50 {
+  background-color: rgba(30, 41, 59, 0.9);
+}
+
+body.dark-mode .border-slate-200,
+body.dark-mode .border-slate-200\/80,
+body.dark-mode .border-flowBlue\/15,
+body.dark-mode .border-flowBlue\/10,
+body.dark-mode .border-flowBlue\/20,
+body.dark-mode .border-flowSoftBlue\/40,
+body.dark-mode .border-flowSoftBlue\/60,
+body.dark-mode .border-flowAccent\/40 {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+body.dark-mode .benefit-card {
+  box-shadow: 0 14px 32px -24px rgba(0, 0, 0, 0.9);
+}
+
+body.dark-mode .bg-flowBlue\/10,
+body.dark-mode .bg-flowBlue\/5 {
+  background-color: rgba(37, 99, 235, 0.18);
+}
+
+body.dark-mode .text-flowBlue {
+  color: #93c5fd;
+}
+
+body.dark-mode .text-flowAccent {
+  color: #fdba74;
+}
+
+body.dark-mode a {
+  color: inherit;
+}
+
+body.dark-mode a:hover {
+  color: #bfdbfe;
+}
+
 @media (min-width: 768px) {
   .benefits-board {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -68,6 +251,31 @@ body {
   opacity: 0;
   transform: translateY(8px);
   animation: rise-in 500ms ease forwards;
+}
+
+a:focus-visible,
+summary:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.45);
+  outline-offset: 2px;
+  border-radius: 0.4rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .reveal,
+  .card-reveal {
+    opacity: 1;
+    transform: none;
+    animation: none;
+  }
 }
 
 @keyframes rise-in {
