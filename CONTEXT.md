@@ -10,6 +10,11 @@ Track Flow provides warehousing, inventory management, order fulfillment, and la
 
 ## Branding
 
-- Color: Flow Blue – #2563EB. Very common promotes a sense of reliability.
+- Color: 
+
+   - Main color: Flow Blue – #2563EB. Very common promotes a sense of reliability.
+   - Secondary Color: Soft Blue - #82A2E5.
+   - Accent color: Cream Orange - #FF9142.
+
 - Motto: "Faster routes, smarter deliveries"
 - Logo: ![TrackFlow Logo]("../workflows/TrackFlowLogo.png")
