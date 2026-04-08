@@ -79,7 +79,7 @@
     }
 
     var feedback = document.createElement("p");
-    feedback.className = "field-feedback";
+    feedback.className = "mt-2 hidden text-[0.8rem] font-semibold leading-[1.3]";
     feedback.id = "feedback-" + field.id;
     feedback.setAttribute("aria-live", "polite");
 
@@ -156,19 +156,36 @@
       return;
     }
 
-    field.classList.remove("field-has-error", "field-has-success");
-    feedback.classList.remove("error", "success", "is-visible");
+    field.classList.remove(
+      "border-red-600",
+      "ring-4",
+      "ring-red-600/15",
+      "border-green-600",
+      "ring-green-600/15",
+      "dark:border-red-400",
+      "dark:ring-red-400/20",
+      "dark:border-green-400",
+      "dark:ring-green-400/20"
+    );
+    feedback.classList.remove(
+      "hidden",
+      "flex",
+      "text-red-700",
+      "text-green-700",
+      "dark:text-red-300",
+      "dark:text-green-300"
+    );
 
     if (isValid) {
-      field.classList.add("field-has-success");
-      feedback.classList.add("success", "is-visible");
+      field.classList.add("border-green-600", "ring-4", "ring-green-600/15", "dark:border-green-400", "dark:ring-green-400/20");
+      feedback.classList.add("flex", "text-green-700", "dark:text-green-300");
       feedback.textContent = "✓ " + message;
       field.setAttribute("aria-invalid", "false");
       return;
     }
 
-    field.classList.add("field-has-error");
-    feedback.classList.add("error", "is-visible");
+    field.classList.add("border-red-600", "ring-4", "ring-red-600/15", "dark:border-red-400", "dark:ring-red-400/20");
+    feedback.classList.add("flex", "text-red-700", "dark:text-red-300");
     feedback.textContent = "⚠ " + message;
     field.setAttribute("aria-invalid", "true");
   }
