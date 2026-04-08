@@ -111,7 +111,7 @@
           </div>
 
           <div class="md:col-span-8">
-            <form action="#" method="post" class="space-y-6" aria-label="TrackFlow signup form">
+            <form id="signup-form" action="#" method="post" class="space-y-6" aria-label="TrackFlow signup form" novalidate>
               <fieldset class="rounded-2xl border border-slate-200 bg-white p-5">
                 <legend class="px-2 font-space text-lg font-semibold text-flowBlue">1. Contact and company details</legend>
                 <div class="mt-4 grid gap-4 sm:grid-cols-2">
@@ -120,6 +120,12 @@
                   </label>
                   <label class="text-sm font-medium text-slate-700" for="workEmail">Work email
                     <input id="workEmail" name="workEmail" type="email" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+                  </label>
+                  <label class="text-sm font-medium text-slate-700" for="securityCode">Security code (password)
+                    <input id="securityCode" name="securityCode" type="password" autocomplete="new-password" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" aria-describedby="securityCodeHint" />
+                    <span id="securityCodeHint" class="field-hint mt-2 block text-xs text-slate-500">
+                      Use at least 8 characters, including one uppercase and one lowercase letter.
+                    </span>
                   </label>
                   <label class="text-sm font-medium text-slate-700" for="phone">Phone number
                     <input id="phone" name="phone" type="tel" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
@@ -346,5 +352,6 @@
         });
       })();
     </script>
+    <script src="signup.js"></script>
   </body>
 </html>
