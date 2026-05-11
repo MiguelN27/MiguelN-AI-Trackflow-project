@@ -5,18 +5,28 @@ function isValidNumber(value: number): boolean {
   return Number.isFinite(value);
 }
 
+function getValidNumbers<T>(items: T[], selector: NumericSelector<T>): number[] {
+  const values: number[] = [];
+
+  for (const item of items) {
+    const value: number = selector(item);
+    if (isValidNumber(value)) values.push(value);
+  }
+
+  return values;
+}
+
 /**
  * 1) Count elements by category
- * Returns an object where keys are categories and values are counts.
  */
 export function countByCategory<T, K extends string>(
   items: T[],
   selector: CategorySelector<T, K>
 ): Record<K, number> {
-  const result = {} as Record<K, number>;
+  const result: Record<K, number> = {} as Record<K, number>;
 
   for (const item of items) {
-    const key = selector(item);
+    const key: K = selector(item);
     result[key] = (result[key] ?? 0) + 1;
   }
 
@@ -25,15 +35,13 @@ export function countByCategory<T, K extends string>(
 
 /**
  * 2) Calculate totals (sum)
- * Sums numeric values extracted from the collection.
- * Invalid numbers are ignored.
  */
 export function calculateTotal<T>(items: T[], selector: NumericSelector<T>): number {
-  let total = 0;
+  const values: number[] = getValidNumbers(items, selector);
+  let total: number = 0;
 
-  for (const item of items) {
-    const value = selector(item);
-    if (isValidNumber(value)) total += value;
+  for (const value of values) {
+    total += value;
   }
 
   return total;
@@ -41,64 +49,49 @@ export function calculateTotal<T>(items: T[], selector: NumericSelector<T>): num
 
 /**
  * 3) Calculate averages
- * Returns null when there are no valid numeric values.
  */
 export function calculateAverage<T>(items: T[], selector: NumericSelector<T>): number | null {
-  let total = 0;
-  let count = 0;
+  const values: number[] = getValidNumbers(items, selector);
+  if (values.length === 0) return null;
 
-  for (const item of items) {
-    const value = selector(item);
-    if (isValidNumber(value)) {
-      total += value;
-      count += 1;
-    }
+  let total: number = 0;
+  for (const value of values) {
+    total += value;
   }
 
-  return count === 0 ? null : total / count;
+  return total / values.length;
 }
 
 /**
- * 4) Find maximum value
- * Returns null when there are no valid numeric values.
+ * 4) Find maximum
  */
 export function findMaximum<T>(items: T[], selector: NumericSelector<T>): number | null {
-  let maxValue: number | null = null;
+  const values: number[] = getValidNumbers(items, selector);
+  if (values.length === 0) return null;
 
-  for (const item of items) {
-    const value = selector(item);
-    if (!isValidNumber(value)) continue;
-
-    if (maxValue === null || value > maxValue) {
-      maxValue = value;
-    }
+  let maxValue: number = values[0];
+  for (let index: number = 1; index < values.length; index += 1) {
+    if (values[index] > maxValue) maxValue = values[index];
   }
 
   return maxValue;
 }
 
 /**
- * 5) Find minimum value
- * Returns null when there are no valid numeric values.
+ * 5) Find minimum
  */
 export function findMinimum<T>(items: T[], selector: NumericSelector<T>): number | null {
-  let minValue: number | null = null;
+  const values: number[] = getValidNumbers(items, selector);
+  if (values.length === 0) return null;
 
-  for (const item of items) {
-    const value = selector(item);
-    if (!isValidNumber(value)) continue;
-
-    if (minValue === null || value < minValue) {
-      minValue = value;
-    }
+  let minValue: number = values[0];
+  for (let index: number = 1; index < values.length; index += 1) {
+    if (values[index] < minValue) minValue = values[index];
   }
 
   return minValue;
 }
 
-/**
- * Optional helper: build a full numeric report in one call.
- */
 export interface NumericReport {
   total: number;
   average: number | null;
@@ -106,7 +99,10 @@ export interface NumericReport {
   minimum: number | null;
 }
 
-export function buildNumericReport<T>(items: T[], selector: NumericSelector<T>): NumericReport {
+export function buildNumericReport<T>(
+  items: T[],
+  selector: NumericSelector<T>
+): NumericReport {
   return {
     total: calculateTotal(items, selector),
     average: calculateAverage(items, selector),

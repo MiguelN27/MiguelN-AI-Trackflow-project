@@ -1,17 +1,17 @@
 import type {
+  Carrier,
   Country,
-  ServiceType,
-  WarehouseManagementSystem,
+  Department,
+  Order,
   OrderStatus,
-  ReturnStatus,
   ProductCondition,
   ProductItem,
-  Department,
-  Warehouse,
-  Worker,
-  Carrier,
-  Order,
   Return,
+  ReturnStatus,
+  ServiceType,
+  Warehouse,
+  WarehouseManagementSystem,
+  Worker,
 } from "../types/models";
 
 /* -----------------------------
@@ -34,8 +34,16 @@ export interface ValidationResult {
 
 const VALID_COUNTRIES: Country[] = ["Mexico", "Spain"];
 const VALID_SERVICES: ServiceType[] = ["local", "international"];
-const VALID_WMS: WarehouseManagementSystem[] = ["commercial software", "advanced spreadsheet"];
-const VALID_ORDER_STATUS: OrderStatus[] = ["In Process", "Shipped", "Delivered", "Returned"];
+const VALID_WMS: WarehouseManagementSystem[] = [
+  "commercial software",
+  "advanced spreadsheet",
+];
+const VALID_ORDER_STATUS: OrderStatus[] = [
+  "In Process",
+  "Shipped",
+  "Delivered",
+  "Returned",
+];
 const VALID_RETURN_STATUS: ReturnStatus[] = [
   "Under review",
   "Approved",
@@ -44,7 +52,12 @@ const VALID_RETURN_STATUS: ReturnStatus[] = [
   "Refunded",
   "Disposed",
 ];
-const VALID_PRODUCT_CONDITION: ProductCondition[] = ["Poor", "Fair", "Excellent", "Like New"];
+const VALID_PRODUCT_CONDITION: ProductCondition[] = [
+  "Poor",
+  "Fair",
+  "Excellent",
+  "Like New",
+];
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -65,6 +78,18 @@ function createResult(errors: ValidationError[]): ValidationResult {
   return { isValid: errors.length === 0, errors };
 }
 
+function combineResults(results: ValidationResult[]): ValidationResult {
+  const errors: ValidationError[] = [];
+  for (const result of results) {
+    errors.push(...result.errors);
+  }
+  return createResult(errors);
+}
+
+function enumIncludes<T extends string>(validValues: T[], value: T): boolean {
+  return validValues.includes(value);
+}
+
 /* ----------------------------------------
    Generic business validation primitives
 ----------------------------------------- */
@@ -77,7 +102,7 @@ export function validateRequiredFields(
   const errors: ValidationError[] = [];
 
   for (const field of requiredFields) {
-    const value = source[field];
+    const value: unknown = source[field];
 
     if (value === undefined || value === null) {
       errors.push({ field, message: "Field is required." });
@@ -99,18 +124,16 @@ export function validateNumericRange(
   min?: number,
   max?: number
 ): ValidationResult {
-  const errors: ValidationError[] = [];
+  if (inRange(value, min, max)) return createResult([]);
 
-  if (!inRange(value, min, max)) {
-    const minText = min !== undefined ? `${min}` : "-∞";
-    const maxText = max !== undefined ? `${max}` : "+∞";
-    errors.push({
+  const minText: string = min !== undefined ? String(min) : "-∞";
+  const maxText: string = max !== undefined ? String(max) : "+∞";
+  return createResult([
+    {
       field,
       message: `Field must be a finite number in range [${minText}, ${maxText}].`,
-    });
-  }
-
-  return createResult(errors);
+    },
+  ]);
 }
 
 /** 3) Date coherence validation */
@@ -141,31 +164,72 @@ export function validateDateCoherence(
 }
 
 /* -----------------------------
-   Shared model helpers
+   Small field-level validators
 ------------------------------ */
 
-function validateProductItems(items: ProductItem[]): ValidationError[] {
+function validateStringField(field: string, value: unknown): ValidationResult {
+  if (isNonEmptyString(value)) return createResult([]);
+  return createResult([{ field, message: "Field is required and must be a non-empty string." }]);
+}
+
+function validateEnumField<T extends string>(
+  field: string,
+  value: T,
+  validValues: T[]
+): ValidationResult {
+  if (enumIncludes(validValues, value)) return createResult([]);
+  return createResult([{ field, message: "Invalid value." }]);
+}
+
+function validateCountryArray(field: string, countries: Country[]): ValidationResult {
+  const errors: ValidationError[] = [];
+
+  if (!Array.isArray(countries) || countries.length === 0) {
+    errors.push({ field, message: "At least one country is required." });
+    return createResult(errors);
+  }
+
+  countries.forEach((country: Country, index: number): void => {
+    if (!enumIncludes(VALID_COUNTRIES, country)) {
+      errors.push({ field: `${field}[${index}]`, message: "Invalid country." });
+    }
+  });
+
+  return createResult(errors);
+}
+
+function validatePositiveNumber(field: string, value: number): ValidationResult {
+  return validateNumericRange(field, value, Number.EPSILON);
+}
+
+function validateMinNumber(field: string, value: number, min: number): ValidationResult {
+  return validateNumericRange(field, value, min);
+}
+
+function validateProductItems(items: ProductItem[]): ValidationResult {
   const errors: ValidationError[] = [];
 
   if (!Array.isArray(items) || items.length === 0) {
-    errors.push({ field: "products", message: "At least one product item is required." });
-    return errors;
+    return createResult([{ field: "products", message: "At least one product item is required." }]);
   }
 
-  items.forEach((item, index) => {
+  items.forEach((item: ProductItem, index: number): void => {
     if (!isNonEmptyString(item.product)) {
-      errors.push({ field: `products[${index}].product`, message: "Product name is required." });
+      errors.push({
+        field: `products[${index}].product`,
+        message: "Product name is required.",
+      });
     }
 
-    if (!Number.isFinite(item.quantity) || item.quantity <= 0) {
+    if (!inRange(item.quantity, 1)) {
       errors.push({
         field: `products[${index}].quantity`,
-        message: "Quantity must be greater than 0.",
+        message: "Quantity must be >= 1.",
       });
     }
   });
 
-  return errors;
+  return createResult(errors);
 }
 
 /* -----------------------------
@@ -173,192 +237,101 @@ function validateProductItems(items: ProductItem[]): ValidationError[] {
 ------------------------------ */
 
 export function validateDepartment(department: Department): ValidationResult {
-  const errors: ValidationError[] = [];
-
-  if (!isNonEmptyString(department.name)) {
-    errors.push({ field: "name", message: "Name is required." });
-  }
-
-  if (!isNonEmptyString(department.departmentID)) {
-    errors.push({ field: "departmentID", message: "Department ID is required." });
-  }
-
-  if (!Array.isArray(department.location) || department.location.length === 0) {
-    errors.push({ field: "location", message: "At least one country is required." });
-  } else {
-    department.location.forEach((country, index) => {
-      if (!VALID_COUNTRIES.includes(country)) {
-        errors.push({ field: `location[${index}]`, message: "Invalid country." });
-      }
-    });
-  }
-
-  if (!Array.isArray(department.needs)) {
-    errors.push({ field: "needs", message: "Needs must be an array." });
-  }
-
-  if (!isNonEmptyString(department.managerID)) {
-    errors.push({ field: "managerID", message: "Manager ID is required." });
-  }
-
-  return createResult(errors);
+  return combineResults([
+    validateStringField("name", department.name),
+    validateStringField("departmentID", department.departmentID),
+    validateCountryArray("location", department.location),
+    Array.isArray(department.needs)
+      ? createResult([])
+      : createResult([{ field: "needs", message: "Needs must be an array." }]),
+    validateStringField("managerID", department.managerID),
+  ]);
 }
 
 export function validateWarehouse(warehouse: Warehouse): ValidationResult {
-  const errors: ValidationError[] = [];
-
-  if (!isNonEmptyString(warehouse.warehouseID)) {
-    errors.push({ field: "warehouseID", message: "Warehouse ID is required." });
-  }
-
-  if (!isNonEmptyString(warehouse.location)) {
-    errors.push({ field: "location", message: "Location is required." });
-  }
-
-  if (!VALID_COUNTRIES.includes(warehouse.country)) {
-    errors.push({ field: "country", message: "Invalid country." });
-  }
-
-  if (!VALID_WMS.includes(warehouse.managementSystem)) {
-    errors.push({ field: "managementSystem", message: "Invalid management system." });
-  }
-
-  return createResult(errors);
+  return combineResults([
+    validateStringField("warehouseID", warehouse.warehouseID),
+    validateStringField("location", warehouse.location),
+    validateEnumField<Country>("country", warehouse.country, VALID_COUNTRIES),
+    validateEnumField<WarehouseManagementSystem>(
+      "managementSystem",
+      warehouse.managementSystem,
+      VALID_WMS
+    ),
+  ]);
 }
 
 export function validateWorker(worker: Worker): ValidationResult {
-  const errors: ValidationError[] = [];
-
-  if (!isNonEmptyString(worker.name)) {
-    errors.push({ field: "name", message: "Name is required." });
-  }
-
-  if (!isNonEmptyString(worker.workerID)) {
-    errors.push({ field: "workerID", message: "Worker ID is required." });
-  }
-
-  if (!VALID_COUNTRIES.includes(worker.location)) {
-    errors.push({ field: "location", message: "Invalid country." });
-  }
-
-  if (!isNonEmptyString(worker.departmentID)) {
-    errors.push({ field: "departmentID", message: "Department ID is required." });
-  }
-
-  if (!isNonEmptyString(worker.position)) {
-    errors.push({ field: "position", message: "Position is required." });
-  }
-
-  return createResult(errors);
+  return combineResults([
+    validateStringField("name", worker.name),
+    validateStringField("workerID", worker.workerID),
+    validateEnumField<Country>("location", worker.location, VALID_COUNTRIES),
+    validateStringField("departmentID", worker.departmentID),
+    validateStringField("position", worker.position),
+  ]);
 }
 
 export function validateCarrier(carrier: Carrier): ValidationResult {
-  const errors: ValidationError[] = [];
-
-  if (!isNonEmptyString(carrier.name)) {
-    errors.push({ field: "name", message: "Name is required." });
-  }
-
-  if (!isNonEmptyString(carrier.carrierID)) {
-    errors.push({ field: "carrierID", message: "Carrier ID is required." });
-  }
-
-  if (!Array.isArray(carrier.location) || carrier.location.length === 0) {
-    errors.push({ field: "location", message: "At least one country is required." });
-  } else {
-    carrier.location.forEach((country, index) => {
-      if (!VALID_COUNTRIES.includes(country)) {
-        errors.push({ field: `location[${index}]`, message: "Invalid country." });
-      }
-    });
-  }
-
-  if (!VALID_SERVICES.includes(carrier.service)) {
-    errors.push({ field: "service", message: "Invalid service type." });
-  }
-
-  return createResult(errors);
+  return combineResults([
+    validateStringField("name", carrier.name),
+    validateStringField("carrierID", carrier.carrierID),
+    validateCountryArray("location", carrier.location),
+    validateEnumField<ServiceType>("service", carrier.service, VALID_SERVICES),
+  ]);
 }
 
 export function validateOrder(order: Order): ValidationResult {
-  const errors: ValidationError[] = [];
-
-  // Required fields
-  if (!isNonEmptyString(order.orderID)) errors.push({ field: "orderID", message: "Order ID is required." });
-  if (!isNonEmptyString(order.packageSize)) errors.push({ field: "packageSize", message: "Package size is required." });
-  if (!isNonEmptyString(order.destination)) errors.push({ field: "destination", message: "Destination is required." });
-  if (!isNonEmptyString(order.carrierID)) errors.push({ field: "carrierID", message: "Carrier ID is required." });
-  if (!isNonEmptyString(order.warehouseID)) errors.push({ field: "warehouseID", message: "Warehouse ID is required." });
-  if (!isNonEmptyString(order.client)) errors.push({ field: "client", message: "Client is required." });
-
-  // Numeric ranges
-  if (!inRange(order.packageQuantity, 1)) {
-    errors.push({ field: "packageQuantity", message: "Package quantity must be >= 1." });
-  }
-  if (!inRange(order.weight, 0.000001)) {
-    errors.push({ field: "weight", message: "Weight must be > 0." });
-  }
-
-  // Date coherence
-  const dateCheck = validateDateCoherence(
-    "placedAt",
-    order.placedAt,
-    "expectedDelivery",
-    order.expectedDelivery
-  );
-  errors.push(...dateCheck.errors);
-
-  // Enum checks
-  if (!VALID_ORDER_STATUS.includes(order.status)) {
-    errors.push({ field: "status", message: "Invalid order status." });
-  }
-
-  // Nested products
-  errors.push(...validateProductItems(order.products));
-
-  return createResult(errors);
+  return combineResults([
+    validateRequiredFields(order as unknown as Record<string, unknown>, [
+      "orderID",
+      "packageSize",
+      "destination",
+      "carrierID",
+      "warehouseID",
+      "client",
+      "products",
+      "placedAt",
+      "expectedDelivery",
+      "status",
+    ]),
+    validateDateCoherence("placedAt", order.placedAt, "expectedDelivery", order.expectedDelivery),
+    validateMinNumber("packageQuantity", order.packageQuantity, 1),
+    validatePositiveNumber("weight", order.weight),
+    validateEnumField<OrderStatus>("status", order.status, VALID_ORDER_STATUS),
+    validateProductItems(order.products),
+  ]);
 }
 
 export function validateReturn(returnItem: Return): ValidationResult {
-  const errors: ValidationError[] = [];
-
-  // Required fields
-  if (!isNonEmptyString(returnItem.orderID)) errors.push({ field: "orderID", message: "Order ID is required." });
-  if (!isNonEmptyString(returnItem.returnID)) errors.push({ field: "returnID", message: "Return ID is required." });
-  if (!isNonEmptyString(returnItem.returningReason)) errors.push({ field: "returningReason", message: "Returning reason is required." });
-  if (!isNonEmptyString(returnItem.packageSize)) errors.push({ field: "packageSize", message: "Package size is required." });
-  if (!isNonEmptyString(returnItem.carrierID)) errors.push({ field: "carrierID", message: "Carrier ID is required." });
-  if (!isNonEmptyString(returnItem.warehouseID)) errors.push({ field: "warehouseID", message: "Warehouse ID is required." });
-  if (!isNonEmptyString(returnItem.client)) errors.push({ field: "client", message: "Client is required." });
-
-  // Numeric ranges
-  if (!inRange(returnItem.packageQuantity, 1)) {
-    errors.push({ field: "packageQuantity", message: "Package quantity must be >= 1." });
-  }
-  if (!inRange(returnItem.weight, 0.000001)) {
-    errors.push({ field: "weight", message: "Weight must be > 0." });
-  }
-
-  // Date coherence
-  const dateCheck = validateDateCoherence(
-    "requestedAt",
-    returnItem.requestedAt,
-    "expectedArrival",
-    returnItem.expectedArrival
-  );
-  errors.push(...dateCheck.errors);
-
-  // Enum checks
-  if (!VALID_PRODUCT_CONDITION.includes(returnItem.productCondition)) {
-    errors.push({ field: "productCondition", message: "Invalid product condition." });
-  }
-
-  if (!VALID_RETURN_STATUS.includes(returnItem.status)) {
-    errors.push({ field: "status", message: "Invalid return status." });
-  }
-
-  // Nested products
-  errors.push(...validateProductItems(returnItem.products));
-
-  return createResult(errors);
+  return combineResults([
+    validateRequiredFields(returnItem as unknown as Record<string, unknown>, [
+      "orderID",
+      "returnID",
+      "returningReason",
+      "requestedAt",
+      "expectedArrival",
+      "packageSize",
+      "carrierID",
+      "warehouseID",
+      "client",
+      "status",
+      "productCondition",
+      "products",
+    ]),
+    validateDateCoherence(
+      "requestedAt",
+      returnItem.requestedAt,
+      "expectedArrival",
+      returnItem.expectedArrival
+    ),
+    validateMinNumber("packageQuantity", returnItem.packageQuantity, 1),
+    validatePositiveNumber("weight", returnItem.weight),
+    validateEnumField<ReturnStatus>("status", returnItem.status, VALID_RETURN_STATUS),
+    validateEnumField<ProductCondition>(
+      "productCondition",
+      returnItem.productCondition,
+      VALID_PRODUCT_CONDITION
+    ),
+    validateProductItems(returnItem.products),
+  ]);
 }

@@ -1,16 +1,19 @@
 import type {
+  Carrier,
   Country,
   Order,
   OrderStatus,
   Return,
   ReturnStatus,
-  Carrier,
   ServiceType,
   Warehouse,
   WarehouseManagementSystem,
 } from "../types/models";
 
-// Generic criteria shape (single or multiple criteria at the same time)
+/* ---------------------------------------
+   Search criteria and accessor contracts
+---------------------------------------- */
+
 export interface SearchCriteria<TCategory = string, TStatus = string> {
   category?: TCategory;
   minPrice?: number;
@@ -21,7 +24,6 @@ export interface SearchCriteria<TCategory = string, TStatus = string> {
   location?: string | Country;
 }
 
-// Accessors let us map criteria to each entity without mutating models
 export interface SearchAccessors<T, TCategory = string, TStatus = string> {
   getCategory?: (item: T) => TCategory | undefined;
   getPrice?: (item: T) => number | undefined;
@@ -30,19 +32,63 @@ export interface SearchAccessors<T, TCategory = string, TStatus = string> {
   getLocation?: (item: T) => string | Country | Array<string | Country> | undefined;
 }
 
-const normalize = (value: string) => value.trim().toLowerCase();
-const isValidDate = (d: Date) => !Number.isNaN(d.getTime());
+/* ---------------------------------------
+   Small helpers (single purpose)
+---------------------------------------- */
 
-// 1) Search by Category
+function normalizeText(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isValidDate(value: Date): boolean {
+  return !Number.isNaN(value.getTime());
+}
+
+function normalizeRange(
+  min?: number,
+  max?: number
+): { min?: number; max?: number } {
+  if (min !== undefined && max !== undefined && min > max) {
+    return { min: max, max: min };
+  }
+  return { min, max };
+}
+
+function isNumberInRange(value: number, min?: number, max?: number): boolean {
+  if (!Number.isFinite(value)) return false;
+  if (min !== undefined && value < min) return false;
+  if (max !== undefined && value > max) return false;
+  return true;
+}
+
+function toLocationList(
+  value: string | Country | Array<string | Country> | undefined
+): Array<string | Country> {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function matchesLocationValue(
+  target: string | Country,
+  source: string | Country
+): boolean {
+  return normalizeText(String(target)) === normalizeText(String(source));
+}
+
+/* ---------------------------------------
+   Search functions
+---------------------------------------- */
+
+// 1) Category
 export function filterByCategory<T, TCategory>(
   items: T[],
   category: TCategory,
   getCategory: (item: T) => TCategory | undefined
 ): T[] {
-  return items.filter((item) => getCategory(item) === category);
+  return items.filter((item: T): boolean => getCategory(item) === category);
 }
 
-// 2) Search by Price Range
+// 2) Price range
 export function filterByPriceRange<T>(
   items: T[],
   getPrice: (item: T) => number | undefined,
@@ -51,104 +97,80 @@ export function filterByPriceRange<T>(
 ): T[] {
   if (minPrice === undefined && maxPrice === undefined) return [...items];
 
-  let min = minPrice;
-  let max = maxPrice;
+  const normalized: { min?: number; max?: number } = normalizeRange(minPrice, maxPrice);
 
-  // Normalize inverted range (e.g. min=100, max=10)
-  if (min !== undefined && max !== undefined && min > max) {
-    [min, max] = [max, min];
-  }
-
-  return items.filter((item) => {
-    const price = getPrice(item);
-    if (price === undefined || Number.isNaN(price)) return false;
-    if (min !== undefined && price < min) return false;
-    if (max !== undefined && price > max) return false;
-    return true;
+  return items.filter((item: T): boolean => {
+    const value: number | undefined = getPrice(item);
+    if (value === undefined) return false;
+    return isNumberInRange(value, normalized.min, normalized.max);
   });
 }
 
-// 3) Search by Status
+// 3) Status
 export function filterByStatus<T, TStatus>(
   items: T[],
   status: TStatus,
   getStatus: (item: T) => TStatus | undefined
 ): T[] {
-  return items.filter((item) => getStatus(item) === status);
+  return items.filter((item: T): boolean => getStatus(item) === status);
 }
 
-// 4) Search by Date (range)
+// 4) Date range
 export function filterByDateRange<T>(
   items: T[],
   getDate: (item: T) => Date | undefined,
   fromDate?: Date,
   toDate?: Date
 ): T[] {
-  if (!fromDate && !toDate) return [...items];
+  if (fromDate === undefined && toDate === undefined) return [...items];
 
-  const from = fromDate && isValidDate(fromDate) ? fromDate.getTime() : undefined;
-  const to = toDate && isValidDate(toDate) ? toDate.getTime() : undefined;
+  const range: { min?: number; max?: number } = normalizeRange(
+    fromDate && isValidDate(fromDate) ? fromDate.getTime() : undefined,
+    toDate && isValidDate(toDate) ? toDate.getTime() : undefined
+  );
 
-  return items.filter((item) => {
-    const d = getDate(item);
-    if (!d || !isValidDate(d)) return false;
-
-    const t = d.getTime();
-    if (from !== undefined && t < from) return false;
-    if (to !== undefined && t > to) return false;
-    return true;
+  return items.filter((item: T): boolean => {
+    const date: Date | undefined = getDate(item);
+    if (date === undefined || !isValidDate(date)) return false;
+    return isNumberInRange(date.getTime(), range.min, range.max);
   });
 }
 
-// 5) Search by Location
+// 5) Location
 export function filterByLocation<T>(
   items: T[],
   location: string | Country,
   getLocation: (item: T) => string | Country | Array<string | Country> | undefined
 ): T[] {
-  const target = normalize(String(location));
-
-  return items.filter((item) => {
-    const value = getLocation(item);
-    if (value === undefined) return false;
-
-    if (Array.isArray(value)) {
-      return value.some((v) => normalize(String(v)) === target);
-    }
-
-    return normalize(String(value)) === target;
+  return items.filter((item: T): boolean => {
+    const locations: Array<string | Country> = toLocationList(getLocation(item));
+    return locations.some((value: string | Country): boolean =>
+      matchesLocationValue(location, value)
+    );
   });
 }
 
-// Combined search (multiple criteria at the same time)
+// Combined criteria search
 export function searchByCriteria<T, TCategory = string, TStatus = string>(
   items: T[],
   criteria: SearchCriteria<TCategory, TStatus>,
   accessors: SearchAccessors<T, TCategory, TStatus>
 ): T[] {
-  let result = [...items];
+  let result: T[] = [...items];
 
   if (criteria.category !== undefined && accessors.getCategory) {
     result = filterByCategory(result, criteria.category, accessors.getCategory);
   }
 
-  if (
-    (criteria.minPrice !== undefined || criteria.maxPrice !== undefined) &&
-    accessors.getPrice
-  ) {
-    result = filterByPriceRange(
-      result,
-      accessors.getPrice,
-      criteria.minPrice,
-      criteria.maxPrice
-    );
+  if ((criteria.minPrice !== undefined || criteria.maxPrice !== undefined) && accessors.getPrice) {
+    result = filterByPriceRange(result, accessors.getPrice, criteria.minPrice, criteria.maxPrice);
   }
 
   if (criteria.status !== undefined && accessors.getStatus) {
     result = filterByStatus(result, criteria.status, accessors.getStatus);
   }
 
-  if ((criteria.fromDate || criteria.toDate) && accessors.getDate) {
+  if ((criteria.fromDate !== undefined || criteria.toDate !== undefined) && accessors.getDate) {
     result = filterByDateRange(result, accessors.getDate, criteria.fromDate, criteria.toDate);
   }
 
@@ -159,147 +181,153 @@ export function searchByCriteria<T, TCategory = string, TStatus = string>(
   return result;
 }
 
-/* ---------------------------
-   Model-specific helpers
----------------------------- */
+/* ---------------------------------------
+   Model-specific search wrappers
+---------------------------------------- */
 
-// Orders: status, date, location (destination)
 export function searchOrders(
   orders: Order[],
   criteria: SearchCriteria<never, OrderStatus>,
   dateField: "placedAt" | "expectedDelivery" = "placedAt"
 ): Order[] {
-  return searchByCriteria(orders, criteria, {
-    getStatus: (o) => o.status,
-    getDate: (o) => (dateField === "placedAt" ? o.placedAt : o.expectedDelivery),
-    getLocation: (o) => o.destination,
+  return searchByCriteria<Order, never, OrderStatus>(orders, criteria, {
+    getStatus: (order: Order): OrderStatus => order.status,
+    getDate: (order: Order): Date =>
+      dateField === "placedAt" ? order.placedAt : order.expectedDelivery,
+    getLocation: (order: Order): string => order.destination,
   });
 }
 
-// Returns: status, date, location (client as location proxy if needed)
 export function searchReturns(
   returnsList: Return[],
   criteria: SearchCriteria<never, ReturnStatus>,
   dateField: "requestedAt" | "expectedArrival" = "requestedAt"
 ): Return[] {
-  return searchByCriteria(returnsList, criteria, {
-    getStatus: (r) => r.status,
-    getDate: (r) => (dateField === "requestedAt" ? r.requestedAt : r.expectedArrival),
-    getLocation: (r) => r.client,
+  return searchByCriteria<Return, never, ReturnStatus>(returnsList, criteria, {
+    getStatus: (item: Return): ReturnStatus => item.status,
+    getDate: (item: Return): Date =>
+      dateField === "requestedAt" ? item.requestedAt : item.expectedArrival,
+    getLocation: (item: Return): string => item.client,
   });
 }
 
-// Carriers: category = service, location = supported countries
 export function searchCarriers(
   carriers: Carrier[],
   criteria: SearchCriteria<ServiceType, never>
 ): Carrier[] {
-  return searchByCriteria(carriers, criteria, {
-    getCategory: (c) => c.service,
-    getLocation: (c) => c.location,
+  return searchByCriteria<Carrier, ServiceType, never>(carriers, criteria, {
+    getCategory: (carrier: Carrier): ServiceType => carrier.service,
+    getLocation: (carrier: Carrier): Country[] => carrier.location,
   });
 }
 
-// Warehouses: category = management system, location = country or city string
 export function searchWarehouses(
   warehouses: Warehouse[],
   criteria: SearchCriteria<WarehouseManagementSystem, never>
 ): Warehouse[] {
-  return searchByCriteria(warehouses, criteria, {
-    getCategory: (w) => w.managementSystem,
-    getLocation: (w) => [w.country, w.location],
+  return searchByCriteria<Warehouse, WarehouseManagementSystem, never>(warehouses, criteria, {
+    getCategory: (warehouse: Warehouse): WarehouseManagementSystem =>
+      warehouse.managementSystem,
+    getLocation: (warehouse: Warehouse): Array<string | Country> => [
+      warehouse.country,
+      warehouse.location,
+    ],
   });
 }
 
-/* 
-  |                   |
-  |   SORTING ARRAYS  |
-  |                   |
+/* ---------------------------------------
+   Sorting
+---------------------------------------- */
 
-*/
-
-// Sorting direction
 export type SortDirection = "asc" | "desc";
+export type SortValue = string | number | Date | boolean | null | undefined;
 
-// Supported sortable values
-type SortValue = string | number | Date | boolean | null | undefined;
-
-// Multiple-fields sorting definition
 export interface SortField<T> {
   selector: (item: T) => SortValue;
   direction?: SortDirection;
 }
 
-// Internal value comparator (numbers, dates, booleans, strings/alphabetical)
-function compareValues(left: SortValue, right: SortValue): number {
-  // Keep null/undefined at the end in ascending mode
+function compareNullable(left: SortValue, right: SortValue): number | null {
   if (left == null && right == null) return 0;
   if (left == null) return 1;
   if (right == null) return -1;
+  return null;
+}
 
-  // Date comparison
+function compareDates(left: SortValue, right: SortValue): number | null {
   if (left instanceof Date && right instanceof Date) {
     return left.getTime() - right.getTime();
   }
+  return null;
+}
 
-  // Number comparison
+function compareNumbers(left: SortValue, right: SortValue): number | null {
   if (typeof left === "number" && typeof right === "number") {
     return left - right;
   }
+  return null;
+}
 
-  // Boolean comparison (false < true)
+function compareBooleans(left: SortValue, right: SortValue): number | null {
   if (typeof left === "boolean" && typeof right === "boolean") {
     return Number(left) - Number(right);
   }
+  return null;
+}
 
-  // String comparison (alphabetical, case-insensitive)
+function compareStrings(left: SortValue, right: SortValue): number {
   return String(left).localeCompare(String(right), undefined, {
     sensitivity: "base",
     numeric: true,
   });
 }
 
-/**
- * Sort by a single field in ascending or descending order.
- * Does not mutate the original array.
- */
+function compareSortValues(left: SortValue, right: SortValue): number {
+  const nullableResult: number | null = compareNullable(left, right);
+  if (nullableResult !== null) return nullableResult;
+
+  const dateResult: number | null = compareDates(left, right);
+  if (dateResult !== null) return dateResult;
+
+  const numberResult: number | null = compareNumbers(left, right);
+  if (numberResult !== null) return numberResult;
+
+  const booleanResult: number | null = compareBooleans(left, right);
+  if (booleanResult !== null) return booleanResult;
+
+  return compareStrings(left, right);
+}
+
 export function sortByField<T>(
   items: T[],
   selector: (item: T) => SortValue,
   direction: SortDirection = "asc"
 ): T[] {
-  const sorted = [...items].sort((a, b) => compareValues(selector(a), selector(b)));
-  return direction === "asc" ? sorted : sorted.reverse();
+  const sorted: T[] = [...items].sort((a: T, b: T): number =>
+    compareSortValues(selector(a), selector(b))
+  );
+
+  if (direction === "asc") return sorted;
+  return sorted.reverse();
 }
 
-/**
- * Sort by multiple fields (priority order).
- * Example: first by status asc, then by date desc.
- * Does not mutate the original array.
- */
 export function sortByMultipleFields<T>(items: T[], fields: SortField<T>[]): T[] {
   if (fields.length === 0) return [...items];
 
-  return [...items].sort((a, b) => {
+  return [...items].sort((leftItem: T, rightItem: T): number => {
     for (const field of fields) {
-      const direction = field.direction ?? "asc";
-      const baseResult = compareValues(field.selector(a), field.selector(b));
-      if (baseResult !== 0) {
-        return direction === "asc" ? baseResult : -baseResult;
-      }
+      const direction: SortDirection = field.direction ?? "asc";
+      const base: number = compareSortValues(field.selector(leftItem), field.selector(rightItem));
+      if (base !== 0) return direction === "asc" ? base : -base;
     }
     return 0;
   });
 }
 
-/**
- * Sort alphabetically by a string field.
- * Does not mutate the original array.
- */
 export function sortAlphabetically<T>(
   items: T[],
   selector: (item: T) => string | null | undefined,
   direction: SortDirection = "asc"
 ): T[] {
-  return sortByField(items, selector, direction);
+  return sortByField<T>(items, selector, direction);
 }
