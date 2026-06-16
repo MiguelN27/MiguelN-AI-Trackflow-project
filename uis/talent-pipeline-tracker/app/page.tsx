@@ -14,7 +14,7 @@ import type { AsyncStatus } from "@/types/async-state";
 import type { CandidateFormValues, CandidateRecord } from "@/types/candidate";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
 
 type CandidateListItem = {
   id: string;
@@ -28,6 +28,22 @@ type CandidateListItem = {
 const apiBaseUrl = getApiBaseUrl();
 
 export default function CandidatesListPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="px-4 py-8 sm:px-6 sm:py-10">
+          <div className="mx-auto w-full max-w-6xl">
+            <StateMessage tone="info">Loading candidate pipeline...</StateMessage>
+          </div>
+        </main>
+      }
+    >
+      <CandidatesListContent />
+    </Suspense>
+  );
+}
+
+function CandidatesListContent() {
   const [candidates, setCandidates] = useState<CandidateRecord[]>([]);
   const [totalCandidates, setTotalCandidates] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);

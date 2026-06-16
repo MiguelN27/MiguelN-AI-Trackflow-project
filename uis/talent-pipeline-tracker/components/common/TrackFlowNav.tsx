@@ -23,7 +23,7 @@ export function TrackFlowNav({ subtitle = "Talent Pipeline Tracker" }: TrackFlow
           />
           <div>
             <p className="font-brand-display text-lg font-bold leading-none text-[color:var(--text-strong)]">TrackFlow</p>
-            <p className="text-xs text-[color:var(--text-muted)]">Faster routes, smarter deliveries</p>
+            <p className="text-xs text-[color:var(--text-muted)]">{subtitle}</p>
           </div>
         </Link>
 
