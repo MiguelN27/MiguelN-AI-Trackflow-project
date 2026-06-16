@@ -1,82 +1,45 @@
 "use client";
 
+import { StateMessage } from "@/components/common/StateMessage";
+import { getApiBaseUrl } from "@/lib/api-client";
+import {
+  candidateId,
+  emptyCandidateFormValues,
+  getCandidateFullName,
+  toDisplayText,
+  validateCandidateForm,
+} from "@/lib/candidate";
+import { createCandidate, fetchCandidates } from "@/services/candidates-service";
+import type { AsyncStatus } from "@/types/async-state";
+import type { CandidateFormValues, CandidateRecord } from "@/types/candidate";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type Candidate = Record<string, unknown>;
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, "") ?? "";
+type CandidateListItem = {
+  id: string;
+  fullName: string;
+  email: string;
+  position: string;
+  status: string;
+  stage: string;
+};
 
-function buildApiUrl(path: string): string {
-  if (!apiBaseUrl) {
-    throw new Error("NEXT_PUBLIC_API_URL is not configured");
-  }
-
-  return `${apiBaseUrl}${path.startsWith("/") ? path : `/${path}`}`;
-}
-
-function toDisplayText(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "-";
-  }
-
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-
-  return JSON.stringify(value);
-}
-
-function candidateId(candidate: Candidate, index: number): string {
-  const possibleId = candidate.id ?? candidate._id ?? candidate.candidateId ?? candidate.candidate_id;
-  return possibleId ? String(possibleId) : String(index);
-}
-
-function parseNumericValue(value: unknown, fallback: number): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-  }
-
-  return fallback;
-}
-
-function getStringField(candidate: Candidate, keys: string[]): string {
-  for (const key of keys) {
-    const value = candidate[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-
-  return "";
-}
-
-function getCandidateFullName(candidate: Candidate): string {
-  const fullName = getStringField(candidate, ["fullName", "name", "full_name", "candidateName"]);
-  if (fullName) {
-    return fullName;
-  }
-
-  const firstName = getStringField(candidate, ["firstName", "first_name"]);
-  const lastName = getStringField(candidate, ["lastName", "last_name"]);
-  const joined = `${firstName} ${lastName}`.trim();
-
-  return joined || "Unnamed candidate";
-}
+const apiBaseUrl = getApiBaseUrl();
 
 export default function CandidatesListPage() {
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candidates, setCandidates] = useState<CandidateRecord[]>([]);
   const [totalCandidates, setTotalCandidates] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageLimit, setPageLimit] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [listStatus, setListStatus] = useState<AsyncStatus>("loading");
+  const [listError, setListError] = useState<string | null>(null);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [isCreatingCandidate, setIsCreatingCandidate] = useState(false);
+  const [createCandidateError, setCreateCandidateError] = useState<string | null>(null);
+  const [createCandidateSuccess, setCreateCandidateSuccess] = useState<string | null>(null);
+  const [candidateFormValues, setCandidateFormValues] = useState<CandidateFormValues>(emptyCandidateFormValues());
 
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -85,63 +48,58 @@ export default function CandidatesListPage() {
   const statusFilter = (searchParams.get("status") ?? "").trim().toLowerCase();
   const stageFilter = (searchParams.get("stage") ?? "").trim().toLowerCase();
 
+  async function refreshCandidates(options?: { silent?: boolean }) {
+    if (!options?.silent) {
+      setListStatus("loading");
+    }
+
+    setListError(null);
+
+    try {
+      const data = await fetchCandidates();
+      setCandidates(data.candidates);
+      setTotalCandidates(data.total);
+      setCurrentPage(data.page);
+      setPageLimit(data.limit);
+      setListStatus("success");
+    } catch (loadError) {
+      const nextError = loadError instanceof Error ? loadError.message : "Unable to load candidates";
+      setListError(nextError);
+      setListStatus("error");
+      throw new Error(nextError);
+    }
+  }
+
   useEffect(() => {
     let active = true;
 
-    async function loadCandidates() {
-      setIsLoading(true);
-      setError(null);
+    async function loadCandidatesOnMount() {
+      setListStatus("loading");
+      setListError(null);
 
       try {
-        const response = await fetch(buildApiUrl("/records"), {
-          headers: {
-            Accept: "application/json",
-          },
-        });
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`);
+        const data = await fetchCandidates();
+        if (!active) {
+          return;
         }
 
-        const json: unknown = await response.json();
-        const normalized =
-          typeof json === "object" && json !== null && Array.isArray((json as { data?: unknown }).data)
-            ? ((json as { data: unknown[] }).data ?? [])
-            : [];
-        const total =
-          typeof json === "object" && json !== null
-            ? parseNumericValue((json as { total?: unknown }).total, normalized.length)
-            : normalized.length;
-        const page =
-          typeof json === "object" && json !== null
-            ? parseNumericValue((json as { page?: unknown }).page, 1)
-            : 1;
-        const limit =
-          typeof json === "object" && json !== null
-            ? parseNumericValue((json as { limit?: unknown }).limit, normalized.length)
-            : normalized.length;
-
-        if (active) {
-          const objectCandidates = normalized.filter(
-            (item): item is Candidate => typeof item === "object" && item !== null,
-          );
-          setCandidates(objectCandidates);
-          setTotalCandidates(total);
-          setCurrentPage(page);
-          setPageLimit(limit);
-        }
+        setCandidates(data.candidates);
+        setTotalCandidates(data.total);
+        setCurrentPage(data.page);
+        setPageLimit(data.limit);
+        setListStatus("success");
       } catch (loadError) {
-        if (active) {
-          setError(loadError instanceof Error ? loadError.message : "Unable to load candidates");
+        if (!active) {
+          return;
         }
-      } finally {
-        if (active) {
-          setIsLoading(false);
-        }
+
+        const nextError = loadError instanceof Error ? loadError.message : "Unable to load candidates";
+        setListError(nextError);
+        setListStatus("error");
       }
     }
 
-    loadCandidates();
+    void loadCandidatesOnMount();
 
     return () => {
       active = false;
@@ -149,14 +107,14 @@ export default function CandidatesListPage() {
   }, []);
 
   const totalLabel = useMemo(() => {
-    if (isLoading) {
+    if (listStatus === "loading") {
       return "Loading candidates...";
     }
 
     return `${totalCandidates} total candidates`;
-  }, [totalCandidates, isLoading]);
+  }, [listStatus, totalCandidates]);
 
-  const normalizedCandidates = useMemo(() => {
+  const normalizedCandidates = useMemo<CandidateListItem[]>(() => {
     return candidates.map((candidate, index) => {
       const id = candidateId(candidate, index);
       const fullName = getCandidateFullName(candidate);
@@ -216,12 +174,12 @@ export default function CandidatesListPage() {
   }, [normalizedCandidates, searchTerm, statusFilter, stageFilter]);
 
   const pageLabel = useMemo(() => {
-    if (isLoading) {
+    if (listStatus === "loading") {
       return "Loading page info...";
     }
 
     return `Page ${currentPage} • Limit ${pageLimit} • Showing ${filteredCandidates.length}`;
-  }, [currentPage, filteredCandidates.length, isLoading, pageLimit]);
+  }, [currentPage, filteredCandidates.length, listStatus, pageLimit]);
 
   function updateQueryFilter(key: "status" | "stage", value: string): void {
     const params = new URLSearchParams(searchParams.toString());
@@ -236,13 +194,83 @@ export default function CandidatesListPage() {
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
 
+  async function handleCreateCandidate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const validationError = validateCandidateForm(candidateFormValues);
+    if (validationError) {
+      setCreateCandidateError(validationError);
+      setCreateCandidateSuccess(null);
+      return;
+    }
+
+    setIsCreatingCandidate(true);
+    setCreateCandidateError(null);
+    setCreateCandidateSuccess(null);
+
+    try {
+      await createCandidate(candidateFormValues);
+      await refreshCandidates({ silent: true });
+      setCandidateFormValues(emptyCandidateFormValues());
+      setCreateCandidateSuccess("Candidate created successfully.");
+    } catch (createError) {
+      setCreateCandidateError(createError instanceof Error ? createError.message : "Unable to create candidate");
+    } finally {
+      setIsCreatingCandidate(false);
+    }
+  }
+
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-10">
-      <div className="mx-auto w-full max-w-5xl rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-        <header className="mb-6 border-b border-slate-200 pb-5">
-          <h1 className="text-2xl font-semibold text-slate-900">Candidate Pipeline</h1>
-          <p className="mt-2 text-sm text-slate-600">{totalLabel}</p>
-          <p className="mt-1 text-sm text-slate-500">{pageLabel}</p>
+    <main className="px-4 py-8 sm:px-6 sm:py-10">
+      <div className="mx-auto w-full max-w-6xl space-y-6">
+        <section className="overflow-hidden rounded-3xl border border-[color:var(--border-soft)] bg-[color:var(--surface)]/90 p-6 shadow-[0_24px_60px_-36px_rgba(37,99,235,0.45)] sm:p-8">
+          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[color:var(--border-soft)] bg-[color:var(--flow-blue)]/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[color:var(--flow-blue)]">
+            TrackFlow Tech
+          </div>
+          <h1 className="font-brand-display text-3xl font-bold leading-tight text-[color:var(--text-strong)] sm:text-4xl">
+            Candidate Pipeline Control Center
+          </h1>
+          <p className="mt-3 max-w-3xl text-sm leading-relaxed text-[color:var(--text-muted)] sm:text-base">
+            Built with the same TrackFlow identity used across our operations platform. Recruit faster, keep decisions visible,
+            and move talent through each stage with confidence.
+          </p>
+          <div className="mt-6 grid gap-3 sm:grid-cols-3">
+            <article className="rounded-2xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-[color:var(--text-muted)]">Candidates</p>
+              <p className="mt-2 font-brand-display text-2xl font-bold text-[color:var(--flow-blue)]">{totalCandidates}</p>
+            </article>
+            <article className="rounded-2xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-[color:var(--text-muted)]">Page</p>
+              <p className="mt-2 font-brand-display text-2xl font-bold text-[color:var(--flow-blue)]">{currentPage}</p>
+            </article>
+            <article className="rounded-2xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-[color:var(--text-muted)]">Motto</p>
+              <p className="mt-2 text-sm font-semibold text-[color:var(--flow-accent)]">Faster routes, smarter deliveries</p>
+            </article>
+          </div>
+        </section>
+
+        <div className="rounded-3xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] p-6 shadow-[0_16px_38px_-28px_rgba(37,99,235,0.35)] sm:p-8">
+          <header className="mb-6 border-b border-[color:var(--border-soft)] pb-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="font-brand-display text-2xl font-semibold text-[color:var(--text-strong)]">Candidate Pipeline</h2>
+              <p className="mt-2 text-sm text-[color:var(--text-muted)]">{totalLabel}</p>
+              <p className="mt-1 text-sm text-[color:var(--text-muted)]">{pageLabel}</p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setCreateCandidateError(null);
+                setCreateCandidateSuccess(null);
+                setIsCreateModalOpen(true);
+              }}
+              className="rounded-xl bg-[color:var(--flow-blue)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[color:var(--flow-soft-blue)]"
+            >
+              Register candidate
+            </button>
+          </div>
         </header>
 
         <section className="mb-6 grid gap-3 sm:grid-cols-3">
@@ -251,13 +279,13 @@ export default function CandidatesListPage() {
             value={searchTerm}
             onChange={(event) => setSearchTerm(event.target.value)}
             placeholder="Search by full name or email"
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none ring-blue-500 transition focus:ring-2"
+            className="rounded-xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none ring-[color:var(--flow-blue)] transition focus:ring-2"
           />
 
           <select
             value={searchParams.get("status") ?? ""}
             onChange={(event) => updateQueryFilter("status", event.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-blue-500 transition focus:ring-2"
+            className="rounded-xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none ring-[color:var(--flow-blue)] transition focus:ring-2"
           >
             <option value="">All statuses</option>
             {statusOptions.map((status) => (
@@ -270,7 +298,7 @@ export default function CandidatesListPage() {
           <select
             value={searchParams.get("stage") ?? ""}
             onChange={(event) => updateQueryFilter("stage", event.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-blue-500 transition focus:ring-2"
+            className="rounded-xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none ring-[color:var(--flow-blue)] transition focus:ring-2"
           >
             <option value="">All stages</option>
             {stageOptions.map((stage) => (
@@ -281,44 +309,42 @@ export default function CandidatesListPage() {
           </select>
         </section>
 
-        {isLoading ? (
-          <div className="rounded-lg border border-slate-200 bg-slate-100 p-4 text-sm text-slate-700">
+        {listStatus === "loading" ? (
+          <StateMessage tone="info">
             Loading candidates from {apiBaseUrl ? `${apiBaseUrl}/records` : "NEXT_PUBLIC_API_URL/records"}...
-          </div>
+          </StateMessage>
         ) : null}
 
-        {error ? (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-            Could not load candidates: {error}
-          </div>
+        {listStatus === "error" && listError ? (
+          <StateMessage tone="error">Could not load candidates: {listError}</StateMessage>
         ) : null}
 
-        {!isLoading && !error && normalizedCandidates.length === 0 ? (
-          <p className="text-slate-600">
+        {listStatus === "success" && normalizedCandidates.length === 0 ? (
+          <p className="text-[color:var(--text-muted)]">
             No candidates were returned by {apiBaseUrl ? `${apiBaseUrl}/records` : "NEXT_PUBLIC_API_URL/records"}.
           </p>
         ) : null}
 
-        {!isLoading && !error && normalizedCandidates.length > 0 && filteredCandidates.length === 0 ? (
-          <p className="text-slate-600">No candidates match the current search and filters.</p>
+        {listStatus === "success" && normalizedCandidates.length > 0 && filteredCandidates.length === 0 ? (
+          <p className="text-[color:var(--text-muted)]">No candidates match the current search and filters.</p>
         ) : null}
 
-        {!isLoading && !error && filteredCandidates.length > 0 ? (
+        {listStatus === "success" && filteredCandidates.length > 0 ? (
           <ul className="space-y-3">
             {filteredCandidates.map((candidate, index) => {
               return (
                 <li key={`${candidate.id}-${index}`}>
                   <Link
                     href={`/candidates/${encodeURIComponent(candidate.id)}`}
-                    className="block rounded-xl border border-slate-200 p-4 transition hover:border-blue-300 hover:bg-blue-50"
+                    className="block rounded-2xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] p-5 transition hover:-translate-y-0.5 hover:border-[color:var(--flow-soft-blue)] hover:bg-[color:var(--flow-blue)]/5"
                   >
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div>
-                        <h2 className="text-lg font-medium text-slate-900">{candidate.fullName}</h2>
-                        <p className="text-sm text-slate-600">{candidate.email}</p>
+                        <h3 className="font-brand-display text-lg font-semibold text-[color:var(--text-strong)]">{candidate.fullName}</h3>
+                        <p className="text-sm text-[color:var(--text-muted)]">{candidate.email}</p>
                       </div>
 
-                      <div className="text-sm text-slate-700 sm:text-right">
+                      <div className="text-sm text-[color:var(--text-muted)] sm:text-right">
                         <p>
                           <span className="font-medium">Position:</span> {candidate.position}
                         </p>
@@ -336,7 +362,138 @@ export default function CandidatesListPage() {
             })}
           </ul>
         ) : null}
+        </div>
       </div>
+
+      {isCreateModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--flow-blue)]/35 px-4 py-6">
+          <div className="w-full max-w-2xl rounded-3xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="font-brand-display text-xl font-semibold text-[color:var(--text-strong)]">Register new candidate</h2>
+                <p className="mt-1 text-sm text-[color:var(--text-muted)]">
+                  Create a candidate record with the required profile and pipeline fields.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsCreateModalOpen(false)}
+                className="rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-sm text-[color:var(--text-muted)] transition hover:bg-[color:var(--flow-blue)]/5"
+              >
+                Close
+              </button>
+            </div>
+
+            <form className="mt-5 grid gap-4 sm:grid-cols-2" onSubmit={handleCreateCandidate}>
+              <label className="block text-sm text-[color:var(--text-muted)] sm:col-span-2">
+                <span className="mb-1 block font-medium">Full name</span>
+                <input
+                  value={candidateFormValues.fullName}
+                  onChange={(event) => {
+                    setCreateCandidateError(null);
+                    setCreateCandidateSuccess(null);
+                    setCandidateFormValues((currentValues) => ({ ...currentValues, fullName: event.target.value }));
+                  }}
+                  className="w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
+                  placeholder="Candidate full name"
+                />
+              </label>
+
+              <label className="block text-sm text-[color:var(--text-muted)]">
+                <span className="mb-1 block font-medium">Email</span>
+                <input
+                  type="email"
+                  value={candidateFormValues.email}
+                  onChange={(event) => {
+                    setCreateCandidateError(null);
+                    setCreateCandidateSuccess(null);
+                    setCandidateFormValues((currentValues) => ({ ...currentValues, email: event.target.value }));
+                  }}
+                  className="w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
+                  placeholder="candidate@example.com"
+                />
+              </label>
+
+              <label className="block text-sm text-[color:var(--text-muted)]">
+                <span className="mb-1 block font-medium">Position</span>
+                <input
+                  value={candidateFormValues.position}
+                  onChange={(event) => {
+                    setCreateCandidateError(null);
+                    setCreateCandidateSuccess(null);
+                    setCandidateFormValues((currentValues) => ({ ...currentValues, position: event.target.value }));
+                  }}
+                  className="w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
+                  placeholder="Applied position"
+                />
+              </label>
+
+              <label className="block text-sm text-[color:var(--text-muted)]">
+                <span className="mb-1 block font-medium">Status</span>
+                <input
+                  value={candidateFormValues.status}
+                  onChange={(event) => {
+                    setCreateCandidateError(null);
+                    setCreateCandidateSuccess(null);
+                    setCandidateFormValues((currentValues) => ({ ...currentValues, status: event.target.value }));
+                  }}
+                  className="w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
+                  placeholder="Current status"
+                />
+              </label>
+
+              <label className="block text-sm text-[color:var(--text-muted)]">
+                <span className="mb-1 block font-medium">Stage</span>
+                <input
+                  value={candidateFormValues.stage}
+                  onChange={(event) => {
+                    setCreateCandidateError(null);
+                    setCreateCandidateSuccess(null);
+                    setCandidateFormValues((currentValues) => ({ ...currentValues, stage: event.target.value }));
+                  }}
+                  className="w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
+                  placeholder="Pipeline stage"
+                />
+              </label>
+
+              <div className="flex items-center gap-3 sm:col-span-2">
+                <button
+                  type="submit"
+                  disabled={isCreatingCandidate}
+                  className="rounded-xl bg-[color:var(--flow-blue)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[color:var(--flow-soft-blue)] disabled:cursor-not-allowed disabled:bg-[color:var(--flow-soft-blue)]/70"
+                >
+                  {isCreatingCandidate ? "Creating..." : "Create candidate"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCandidateFormValues(emptyCandidateFormValues());
+                    setCreateCandidateError(null);
+                    setCreateCandidateSuccess(null);
+                  }}
+                  className="rounded-xl border border-[color:var(--border-soft)] px-4 py-2 text-sm font-medium text-[color:var(--text-muted)] transition hover:bg-[color:var(--flow-blue)]/5"
+                >
+                  Reset
+                </button>
+              </div>
+            </form>
+
+            {createCandidateError ? (
+              <StateMessage tone="error" className="mt-4">
+                {createCandidateError}
+              </StateMessage>
+            ) : null}
+
+            {createCandidateSuccess ? (
+              <StateMessage tone="success" className="mt-4">
+                {createCandidateSuccess}
+              </StateMessage>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
