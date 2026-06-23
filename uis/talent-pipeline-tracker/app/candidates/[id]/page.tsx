@@ -64,6 +64,7 @@ export default function CandidateDetailPage() {
   const [recordActionError, setRecordActionError] = useState<string | null>(null);
   const [recordActionSuccess, setRecordActionSuccess] = useState<string | null>(null);
   const [noteActionError, setNoteActionError] = useState<string | null>(null);
+  const [noteActionSuccess, setNoteActionSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) {
@@ -208,6 +209,7 @@ export default function CandidateDetailPage() {
 
     setIsSavingNote(true);
     setNoteActionError(null);
+    setNoteActionSuccess(null);
 
     try {
       const createdNote = await createCandidateNote(id, noteContent);
@@ -222,6 +224,7 @@ export default function CandidateDetailPage() {
       }
 
       setNewNote("");
+      setNoteActionSuccess("Note added successfully.");
     } catch (createError) {
       setNoteActionError(createError instanceof Error ? createError.message : "Unable to add note");
     } finally {
@@ -236,10 +239,12 @@ export default function CandidateDetailPage() {
 
     setDeletingNoteId(noteId);
     setNoteActionError(null);
+    setNoteActionSuccess(null);
 
     try {
       await deleteCandidateNote(id, noteId);
       setNotes((currentNotes) => currentNotes.filter((note) => note.id !== noteId));
+      setNoteActionSuccess("Note deleted successfully.");
     } catch (deleteError) {
       setNoteActionError(deleteError instanceof Error ? deleteError.message : "Unable to delete note");
     } finally {
@@ -470,7 +475,11 @@ export default function CandidateDetailPage() {
                   <span className="mb-1 block font-medium">Add note</span>
                   <textarea
                     value={newNote}
-                    onChange={(event) => setNewNote(event.target.value)}
+                    onChange={(event) => {
+                      setNoteActionSuccess(null);
+                      setNoteActionError(null);
+                      setNewNote(event.target.value);
+                    }}
                     className="min-h-28 w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
                     placeholder="Write a note for this candidate"
                   />
@@ -493,6 +502,12 @@ export default function CandidateDetailPage() {
               {noteActionError ? (
                 <StateMessage tone="error" className="mt-4">
                   Note action failed: {noteActionError}
+                </StateMessage>
+              ) : null}
+
+              {noteActionSuccess ? (
+                <StateMessage tone="success" className="mt-4">
+                  {noteActionSuccess}
                 </StateMessage>
               ) : null}
 
