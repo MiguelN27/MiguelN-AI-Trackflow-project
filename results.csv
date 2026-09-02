@@ -1,0 +1,16 @@
+metric,dimension,value
+records_processed,all,100
+records_valid,all,97
+records_invalid,all,3
+records_by_category,DAMAGE,7
+records_by_category,DELAYED_DELIVERY,38
+records_by_category,LOST_PARCEL,15
+records_by_category,RETURN_REQUEST,17
+records_by_category,WRONG_ADDRESS,20
+records_by_status,OPEN,30
+records_by_status,CLOSED,53
+records_by_status,DISCARDED,14
+closed_satisfaction_average,scored_closed_cases,3.06
+invalid_record,row_4,tracking_number must be 10-20 uppercase letters or digits
+invalid_record,row_43,category is missing or unsupported
+invalid_record,row_69,customer_email is invalid
