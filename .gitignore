@@ -1,6 +1,8 @@
 **/node_modules
 **/dist
 **/build
+__pycache__/
+*.py[cod]
 .DS_Store
 .env
 .env.local
