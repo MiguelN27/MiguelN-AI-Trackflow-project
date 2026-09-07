@@ -10,7 +10,7 @@ export function TrackFlowNav({ subtitle = "Talent Pipeline Tracker" }: TrackFlow
     <header className="sticky top-0 z-30 border-b border-[color:var(--border-soft)] bg-[color:var(--surface)/0.9] backdrop-blur-md">
       <nav
         aria-label="Primary"
-        className="mx-auto flex w-full max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6"
+        className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6"
       >
         <Link href="/" className="flex items-center gap-3" aria-label="TrackFlow candidates home">
           <Image
@@ -27,12 +27,18 @@ export function TrackFlowNav({ subtitle = "Talent Pipeline Tracker" }: TrackFlow
           </div>
         </Link>
 
-        <div className="hidden items-center gap-6 sm:flex">
+        <div className="flex w-full items-center justify-end gap-4 sm:w-auto sm:gap-6">
           <Link
             href="/"
             className="text-sm font-semibold text-[color:var(--text-muted)] transition hover:text-[color:var(--flow-blue)]"
           >
             Candidates
+          </Link>
+          <Link
+            href="/incidents"
+            className="text-sm font-semibold text-[color:var(--text-muted)] transition hover:text-[color:var(--flow-blue)]"
+          >
+            Incident Analysis
           </Link>
         </div>
       </nav>
