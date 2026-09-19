@@ -2,7 +2,10 @@
 **/dist
 **/build
 **/.next
+.venv
+__pycache__/
+data/suppliers.json
 .DS_Store
 .env
 .env.local
-.env.*.local
+.env.*.local~
