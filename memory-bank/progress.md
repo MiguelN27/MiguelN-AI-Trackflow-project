@@ -1,6 +1,29 @@
 # Development Progress
 
-Last updated: 2026-08-23
+Last updated: 2026-09-19
+
+## Update 2026-09-19
+
+Goals accomplished:
+- Ran the mandatory memory-bank reading sequence before work: `context.md`, `projectbrief.md`, `techContext.md`, `progress.md`.
+- Built the Supplier Directory frontend in `uis/backoffice`, consuming the FastAPI service in `services/suppliers` at `http://localhost:8000`:
+	- Foundation: `types/supplier.ts` (unions, `SUPPLIER_CATEGORIES`, `CURRENCY_BY_COUNTRY`), `types/async-state.ts`, `lib/api-client.ts`, `lib/supplier.ts` (labels, rate formatting, `validateSupplierForm`, `buildSupplierPayload`, payload normalization), `services/suppliers-service.ts` (list, detail, create, rate patch, status patch).
+	- Shared UI and navigation: `components/common/StateMessage.tsx`, new `components/common/BackofficeNav.tsx` (Dashboard / Suppliers with `usePathname` active-link state) wired into `app/layout.tsx`, and `components/suppliers/SupplierStatusBadge.tsx`.
+	- List and filters: `app/suppliers/page.tsx` plus `SuppliersListPage`, with server-side country/category filtering persisted to the URL via `router.replace(..., { scroll: false })`, and inline `SupplierRateEditor` / `SupplierStatusToggle` that swap the edited row in state from the API response instead of refetching the list.
+	- Create form: `SupplierCreateForm` with client validation first and currency auto-derived from country as a read-only field.
+	- Detail view: `app/suppliers/[id]/page.tsx` (Next.js 16 async `params`) plus `SupplierDetailPage`, reusing the same rate editor and status toggle.
+	- Configuration: `.env.local` and `.env.example` with `NEXT_PUBLIC_API_URL`, `next dev -p 3001` so the backoffice does not collide with `uis/website` on port 3000, and a new `typecheck` script.
+- Centralized FastAPI error handling in `lib/api-client.ts`, covering both response shapes: `{ detail: string }` for 404 and the `{ detail: [{ loc, msg, type }] }` validation array for 422, which is flattened into a readable `field: message` string.
+- Executed formatting with auto-fix: `npm run lint -- --fix` in `uis/backoffice` (clean).
+- Executed typechecking: `npm run typecheck` in `uis/backoffice` (clean), and `npm run build` succeeded with `/suppliers` prerendered and `/suppliers/[id]` server-rendered on demand.
+- Attempted the test suite; `uis/backoffice` still has no `test` script, unchanged from the 2026-08-23 entry.
+- Verified the feature end to end against the running API and a headless browser: 15 rows listed, Laser Ship and SAP WM Cloud rendered as suspended, `country=Spain` returning 6 rows and `category=carrier_international` returning 2 without a page reload, supplier creation succeeding and a 422 surfacing in the form, and rate/status edits updating the row immediately and persisting across a refresh. Data created during verification was removed afterwards, leaving the seeded directory at 15 suppliers.
+
+Future goals / still missing:
+- Define and standardize test scripts (`test`) across root and UI packages so pre-commit test validation can run consistently.
+- Add baseline automated tests for `lib/api-client.ts` error extraction, `lib/supplier.ts` validation and payload building, and the suppliers service layer.
+- Refresh `techContext.md`, whose "Current consumed endpoints" section still describes only the `uis/website` `/records` API and does not yet mention the suppliers service or the backoffice UI.
+- Decide whether the backoffice needs pagination, supplier deletion, editing of name/country/categories, and authentication, all of which were deliberately excluded from this iteration.
 
 ## Update 2026-08-23
 

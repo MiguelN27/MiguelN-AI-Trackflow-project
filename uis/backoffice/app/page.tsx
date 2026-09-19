@@ -17,7 +17,7 @@ export default function BackofficeHomePage() {
   );
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col justify-center px-6 py-12 md:px-10">
+    <main className="mx-auto flex w-full max-w-5xl flex-col justify-center px-6 py-12 md:px-10">
       <BackofficeConsoleBeacon
         message={`[Backoffice] Client console -> returns range ${RETURNS_SHARE_MIN_PERCENT}-${RETURNS_SHARE_MAX_PERCENT}% (midpoint ${returnsMidpointPercent}%).`}
       />
