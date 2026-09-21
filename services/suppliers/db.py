@@ -1,25 +1,15 @@
-import os
-from functools import lru_cache
 from pathlib import Path
 
-from tinydb import TinyDB
 from tinydb.table import Table
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_DB_PATH = ROOT_DIR / "data" / "suppliers.json"
+from services.core import db as core_db
+
 TABLE_NAME = "suppliers"
 
 
 def get_db_path() -> Path:
-    return Path(os.getenv("DB_PATH", DEFAULT_DB_PATH))
-
-
-@lru_cache(maxsize=1)
-def get_db() -> TinyDB:
-    path = get_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return TinyDB(path, indent=2, ensure_ascii=False)
+    return core_db.get_db_path()
 
 
 def get_table() -> Table:
-    return get_db().table(TABLE_NAME)
+    return core_db.get_table(TABLE_NAME)

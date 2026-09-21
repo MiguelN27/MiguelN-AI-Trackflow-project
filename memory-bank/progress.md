@@ -1,6 +1,40 @@
 # Development Progress
 
-Last updated: 2026-09-19
+Last updated: 2026-09-20
+
+## Update 2026-09-20
+
+Goals accomplished:
+- Ran the mandatory memory-bank reading sequence before work: `context.md`, `projectbrief.md`, `techContext.md`, `progress.md`.
+- Implemented AUTH-01: stateless JWT authentication and route protection across the FastAPI service. No session or cookie authentication anywhere; the bearer token is the only credential.
+- Restructured the API into a composition root plus domain modules, following `docs/ARCHITECTURE_PROPOSAL.md`:
+	- `services/main.py` now owns the FastAPI app and CORS, and mounts every domain router. `services/suppliers/main.py` became `services/suppliers/router.py`.
+	- New `services/core/`: `config.py` (pydantic-settings, validated at startup), `db.py` (shared TinyDB handle, one table per domain), `errors.py` (domain errors the routers translate to HTTP), `security.py` (bcrypt + JWT).
+	- New `services/users/`, `services/profiles/`, `services/auth/`, each with models, service and router layers.
+	- `services/suppliers/db.py` now delegates to `services/core/db.py` and keeps owning the `suppliers` table name, so `seed.py` was unchanged.
+- `User` and `Profile` are stored in TinyDB only, in the `users` and `profiles` tables of the existing database file. The `id` is a UUID4 string rather than a TinyDB `doc_id`, because PostgreSQL tables will reference it as `user_uuid`.
+- `User` holds credentials only (`id`, `email`, `hashed_password`, `is_active`, `role`, `created_at`); display name and contact data live on the one-to-one `Profile` (`id`, `user_id`, `name`, `phone`, `address`). `Role` is an `Enum` of `admin|manager|user`, so anything else is rejected with 422.
+- Endpoints added: `POST/GET/PUT/DELETE /users`, `GET/PUT /profiles/me`, `POST /auth/login`, `POST /auth/token` (OAuth2 form variant that powers the Authorize button in `/docs`), `GET /auth/me`.
+- `POST /users` hashes the password, accepts optional `name`/`phone`/`address` and creates the linked profile in the same operation, rolling the user row back if the profile insert fails. It always creates role `user`, so nobody can self-grant privileges at signup. `DELETE /users/{id}` removes the linked profile too.
+- Added a reusable `get_current_user` dependency that reads `Authorization: Bearer <token>` via `OAuth2PasswordBearer`, decodes and validates the JWT with `python-jose`, loads the user from TinyDB, and raises 401 on any failure. A valid token for a deactivated account is 403, not 401.
+- Protected 13 of 16 routes. Only `POST /users`, `POST /auth/login` and `POST /auth/token` are public. All six existing `/suppliers` routes are now token-protected, which exceeds the minimum of five.
+- Authorization rules: `PUT`/`DELETE /users/{id}` are self-or-admin (403 otherwise), `role` and `is_active` are admin-only, and `/profiles/me` is scoped to the caller by construction.
+- Passwords use `libpass[bcrypt]` at cost 12, capped at 72 bytes. A login against an unknown email still performs one bcrypt verification so a missing account is not faster to probe.
+- Secrets moved to a git-ignored `.env` with a committed `.env.example`: `JWT_SECRET_KEY` (validated at minimum 32 chars), `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`. Nothing is hardcoded.
+- Added `uv run seed-user` to bootstrap or promote an admin, since `POST /users` deliberately cannot create one. Renamed the `api:suppliers` npm script to `api`, pointing at `services.main:app`.
+- Dependencies added via `uv add`: `libpass[bcrypt]`, `python-jose[cryptography]`, `pydantic-settings`, `python-multipart`.
+- Verified with a 74-check end-to-end suite against a running server on an isolated database: registration and duplicate/validation failures, login success and failure, `/profiles/me` scoping and partial updates, ownership and admin rules, deactivated accounts, all six supplier routes rejecting unauthenticated calls, and cascade deletion leaving no orphaned profile rows. Confirmed directly against the stored records that no plain-text password is persisted, that hashes are bcrypt `$2b$` cost 12, and that `User` carries no profile fields.
+- Verified 401 on every token failure mode: absent header, malformed token, garbage string, wrong scheme, missing `Bearer` prefix, empty bearer, tampered payload, stripped signature, `alg=none` forgery, a `role` claim escalated to `admin`, a token signed with a different secret, an expired token, and a token whose user has been deleted.
+- Confirmed `ACCESS_TOKEN_EXPIRE_MINUTES` is honoured end to end by issuing a token with a one-minute lifetime, checking `exp - iat = 60`, and re-calling the route after it lapsed.
+- The production database was left untouched: 15 suppliers, 0 users, 0 profiles. All verification ran against a scratch database.
+- Added `docs/AUTHENTICATION.md` covering module layout, endpoint table, status-code contract, configuration, and the manual `/docs` walkthrough.
+
+Future goals / still missing:
+- Update `uis/backoffice` to log in and send `Authorization: Bearer <token>`. Its `/suppliers` calls now return 401, which is the expected outcome of this stage and the next piece of work.
+- Decide whether `GET /users` and `GET /users/{id}` should be narrowed to admin and manager. They currently require a token only, which is what the ticket specified, but listing every account's email is broad for a plain `user`.
+- Add refresh tokens or a token-revocation story. Today a token stays valid until it expires; deactivating a user is caught because `get_current_user` reloads the record on every request, but there is no way to revoke a single token.
+- Define and standardize test scripts (`test`) across root and UI packages, and promote the end-to-end auth checks into a committed pytest suite. Still outstanding from the 2026-08-23 and 2026-09-19 entries.
+- Refresh `techContext.md`, partially addressed in this update for the auth layer.
 
 ## Update 2026-09-19
 

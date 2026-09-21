@@ -5,7 +5,7 @@
   "description": "Root scripts for running the TrackFlow project",
   "scripts": {
     "start": "python3 services/server.py",
-    "api:suppliers": "uv run uvicorn services.suppliers.main:app --reload --port 8000",
+    "api": "uv run uvicorn services.main:app --reload --port 8000",
     "seed:suppliers": "uv run seed",
     "install:all": "npm --prefix uis/website install && npm --prefix uis/backoffice install && python3 -m pip install -r requirements.txt",
     "dev:website": "npm --prefix uis/website run dev",

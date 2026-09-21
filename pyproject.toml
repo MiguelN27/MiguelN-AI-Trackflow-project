@@ -8,10 +8,15 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "tinydb>=4.8",
     "pydantic[email]>=2.7",
+    "libpass[bcrypt]>=1.9",
+    "python-jose[cryptography]>=3.3",
+    "pydantic-settings>=2.4",
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]
 seed = "services.suppliers.seed:main"
+seed-user = "services.users.seed:main"
 
 [build-system]
 requires = ["hatchling"]

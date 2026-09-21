@@ -22,20 +22,35 @@ This repository currently contains two website implementations related to TrackF
 
 ### Backend
 
-- Python Flask app (`server.py`) used as a lightweight web server for static delivery:
+- FastAPI service mounted from `services/main.py`, the composition root. It owns CORS and mounts one router per domain: `auth`, `users`, `profiles`, `suppliers`. Run with `npm run api` (`uvicorn services.main:app --reload --port 8000`).
+- Domain modules follow the layering in `docs/ARCHITECTURE_PROPOSAL.md`: `models.py` (Pydantic contracts), `service.py` (business rules and persistence), `router.py` (HTTP only).
+- `services/core/` holds shared technical concerns and no business rules: `config.py` (pydantic-settings), `db.py` (TinyDB handle), `errors.py` (domain errors), `security.py` (bcrypt + JWT).
+- Python Flask app (`services/server.py`) remains a separate lightweight static server:
   - Serves `apps/website/index.html` at `/`
   - Serves static files from `apps/website` and fallback static files from repository root
-- The Next.js UI is configured to consume an external REST API and does not define its own API routes in this repo.
+
+### Authentication
+
+- Stateless JWT only. There is no session store and no auth cookie.
+- `OAuth2PasswordBearer` extracts `Authorization: Bearer <token>`; `python-jose` signs and validates it with `HS256`.
+- `services/auth/dependencies.py::get_current_user` is the single gate for protected routes: decode, validate, load the user from TinyDB, 401 on any failure.
+- Passwords are hashed with `libpass[bcrypt]` at cost 12. The import path stays `from passlib.hash import bcrypt`.
+- Configuration lives in a git-ignored `.env` (`JWT_SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`), with `.env.example` committed. See `docs/AUTHENTICATION.md`.
 
 ### Database
 
-- No database implementation is present in the repository.
-- Data persistence is expected to be handled by the external API behind `NEXT_PUBLIC_API_URL`.
+- TinyDB, one JSON file at `data/suppliers.json` (override with `DB_PATH`), with one table per domain: `suppliers`, `users`, `profiles`.
+- `User` and `Profile` are TinyDB-only and are never mirrored into Supabase/SQLModel. Their `id` is a UUID4 string, not a TinyDB `doc_id`, because future PostgreSQL tables reference it as `user_uuid`.
+- Suppliers still key on the TinyDB `doc_id` integer, unchanged from the original implementation.
 
 ### APIs / Integrations
 
 - External REST API integration in `uis/website` through `NEXT_PUBLIC_API_URL`.
-- Current consumed endpoints:
+- Endpoints exposed by the in-repo FastAPI service:
+  - Public: `POST /users`, `POST /auth/login`, `POST /auth/token`
+  - Token-protected: `GET /users`, `GET /users/{id}`, `PUT /users/{id}`, `DELETE /users/{id}`, `GET /auth/me`, `GET /profiles/me`, `PUT /profiles/me`, and all six `/suppliers` routes
+- `uis/backoffice` consumes the `/suppliers` routes and does not yet send a token, so those calls return 401 until it is updated.
+- Endpoints consumed by `uis/website` from a separate external API:
   - `GET /records`
   - `GET /records/:id`
   - `POST /records`
