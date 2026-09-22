@@ -1,17 +1,26 @@
 import { handleUnauthorized, readToken } from "@/lib/auth-storage";
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, "") ?? "";
+/**
+ * Client for the in-repo TrackFlow identity API (`services/`).
+ *
+ * Deliberately separate from `lib/api-client.ts`: that one talks to the
+ * external candidate records API through `NEXT_PUBLIC_API_URL`, which is a
+ * different host with a different contract. Sending our bearer token there
+ * would hand a TrackFlow credential to a third party.
+ */
+const authApiBaseUrl =
+  process.env.NEXT_PUBLIC_AUTH_API_URL?.trim().replace(/\/+$/, "") ?? "http://localhost:8000";
 
-export function getApiBaseUrl(): string {
-  return apiBaseUrl;
+export function getAuthApiBaseUrl(): string {
+  return authApiBaseUrl;
 }
 
-export function buildApiUrl(path: string): string {
-  if (!apiBaseUrl) {
-    throw new Error("NEXT_PUBLIC_API_URL is not configured");
+export function buildAuthApiUrl(path: string): string {
+  if (!authApiBaseUrl) {
+    throw new Error("NEXT_PUBLIC_AUTH_API_URL is not configured");
   }
 
-  return `${apiBaseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+  return `${authApiBaseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 type ValidationDetail = {
@@ -27,8 +36,7 @@ export type ApiFieldError = {
 
 /**
  * Carries the decoded body alongside the flattened message, so a form can map
- * a 422 back onto its inputs. `message` keeps the shape every existing call
- * site already relies on.
+ * a 422 back onto its inputs.
  */
 export class ApiError extends Error {
   readonly status: number;
@@ -64,7 +72,7 @@ function formatValidationDetail(detail: ValidationDetail): string {
   return fieldPath ? `${fieldPath}: ${message}` : message;
 }
 
-/** Handles both FastAPI error shapes: `{ detail: string }` (404) and `{ detail: [...] }` (422). */
+/** Handles both FastAPI error shapes: `{ detail: string }` (401, 409) and `{ detail: [...] }` (422). */
 export function extractApiErrorMessage(payload: unknown, status: number): string {
   const detail =
     typeof payload === "object" && payload !== null ? (payload as { detail?: unknown }).detail : undefined;
@@ -124,8 +132,8 @@ function withJsonHeaders(init?: RequestInit, token?: string | null): HeadersInit
 }
 
 /** Unauthenticated call. Use it only for `POST /users` and `POST /auth/login`. */
-export async function requestApi(path: string, init?: RequestInit): Promise<Response> {
-  const response = await fetch(buildApiUrl(path), {
+export async function requestAuthApi(path: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(buildAuthApiUrl(path), {
     ...init,
     headers: withJsonHeaders(init),
   });
@@ -150,7 +158,7 @@ export async function requestAuthenticatedApi(path: string, init?: RequestInit):
     throw new UnauthorizedError({ detail: "Your session has expired. Please sign in again." });
   }
 
-  const response = await fetch(buildApiUrl(path), {
+  const response = await fetch(buildAuthApiUrl(path), {
     ...init,
     headers: withJsonHeaders(init, token),
   });
@@ -168,7 +176,7 @@ export async function requestAuthenticatedApi(path: string, init?: RequestInit):
   return response;
 }
 
-export async function parseResponseJson(response: Response): Promise<unknown | null> {
+export async function parseAuthResponseJson(response: Response): Promise<unknown | null> {
   if (response.status === 204) {
     return null;
   }

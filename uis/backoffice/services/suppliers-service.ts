@@ -1,4 +1,4 @@
-import { parseResponseJson, requestApi } from "@/lib/api-client";
+import { parseResponseJson, requestAuthenticatedApi } from "@/lib/api-client";
 import { normalizeSupplier, normalizeSuppliers } from "@/lib/supplier";
 import type {
   Supplier,
@@ -24,19 +24,19 @@ function buildSuppliersQuery(filters?: Partial<SupplierFilters>): string {
 }
 
 export async function fetchSuppliers(filters?: Partial<SupplierFilters>): Promise<Supplier[]> {
-  const response = await requestApi(`/suppliers${buildSuppliersQuery(filters)}`);
+  const response = await requestAuthenticatedApi(`/suppliers${buildSuppliersQuery(filters)}`);
 
   return normalizeSuppliers(await parseResponseJson(response));
 }
 
 export async function fetchSupplierById(id: string): Promise<Supplier> {
-  const response = await requestApi(`/suppliers/${encodeURIComponent(id)}`);
+  const response = await requestAuthenticatedApi(`/suppliers/${encodeURIComponent(id)}`);
 
   return normalizeSupplier(await parseResponseJson(response));
 }
 
 export async function createSupplier(payload: SupplierCreatePayload): Promise<Supplier> {
-  const response = await requestApi("/suppliers", {
+  const response = await requestAuthenticatedApi("/suppliers", {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
@@ -46,7 +46,7 @@ export async function createSupplier(payload: SupplierCreatePayload): Promise<Su
 }
 
 export async function updateSupplierRate(id: number, ratePerShipment: number): Promise<Supplier> {
-  const response = await requestApi(`/suppliers/${id}/rate`, {
+  const response = await requestAuthenticatedApi(`/suppliers/${id}/rate`, {
     method: "PATCH",
     headers: JSON_HEADERS,
     body: JSON.stringify({ rate_per_shipment: ratePerShipment }),
@@ -56,7 +56,7 @@ export async function updateSupplierRate(id: number, ratePerShipment: number): P
 }
 
 export async function updateSupplierStatus(id: number, status: SupplierStatus): Promise<Supplier> {
-  const response = await requestApi(`/suppliers/${id}/status`, {
+  const response = await requestAuthenticatedApi(`/suppliers/${id}/status`, {
     method: "PATCH",
     headers: JSON_HEADERS,
     body: JSON.stringify({ status }),

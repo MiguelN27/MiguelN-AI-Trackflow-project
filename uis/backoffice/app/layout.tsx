@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Manrope } from "next/font/google";
-import { BackofficeNav } from "@/components/common/BackofficeNav";
 import "./globals.css";
 
 const manrope = Manrope({
@@ -19,6 +18,10 @@ export const metadata: Metadata = {
   description: "Internal operations workspace for TrackFlow teams, including the supplier directory.",
 };
 
+/**
+ * Shell only. Navigation lives in `app/(protected)/layout.tsx` because it is
+ * session-aware, and the sign-in and registration screens render without it.
+ */
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -26,10 +29,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${manrope.variable} ${ibmPlexMono.variable}`}>
-      <body className="min-h-screen text-[color:var(--foreground)]">
-        <BackofficeNav />
-        {children}
-      </body>
+      <body className="min-h-screen text-[color:var(--foreground)]">{children}</body>
     </html>
   );
 }

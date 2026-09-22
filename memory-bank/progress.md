@@ -1,6 +1,63 @@
 # Development Progress
 
-Last updated: 2026-09-20
+Last updated: 2026-09-22
+
+## Update 2026-09-22
+
+Goals accomplished:
+- Ran the mandatory memory-bank reading sequence before work: `context.md`, `projectbrief.md`, `techContext.md`, `progress.md`.
+- Gave the `uis/backoffice` sign-in and registration screens the same header bar as the signed-in views, so the app no longer changes shape at the door. The wordmark links to `/`, the dashboard.
+- Split `BackofficeNav` rather than duplicating it:
+	- `components/common/BackofficeNavShell.tsx` holds the bar itself, the wordmark link and the Dashboard / Suppliers / Profile destinations, with an optional `actions` slot. It owns the `usePathname` active-link state and has no session of its own.
+	- `components/common/BackofficeNav.tsx` is now a thin session-aware wrapper that fills `actions` with the signed-in email and the Log out button.
+	- The auth screens render the shell directly, so they show the destinations without the account controls there is no session to back.
+- Added an `app/(auth)/` route group with a layout that renders the shell, and moved `login/` and `register/` into it. Like `(protected)`, the group adds no URL segment, so `/login` and `/register` are unchanged. The two groups now state the app's two modes structurally.
+- Removed the centred wordmark `AuthCard` used to draw, since the header bar carries the branding, and tightened the card's vertical padding to suit.
+- On the auth screens the destinations still point at protected routes; following one bounces back to `/login` through the existing guard, which is the intended behaviour rather than a dead link.
+- `uis/website` needed no change: its sign-in and registration screens already inherit `TrackFlowNav` from the root layout.
+- Executed formatting with auto-fix and typechecking in `uis/backoffice`: both clean.
+- Attempted the test suite; still no `test` script, unchanged from every prior entry.
+- Verified in a real headless browser: 11 checks on the signed-out header (both screens render exactly one header, carrying the wordmark and all three destinations, with no Log out; the wordmark's href is `/` and following it returns to `/login` via the guard) and 6 on the signed-in header against a scratch database (one header, destinations intact, account email and Log out present, suppliers still load with the token, logout still works). All 17 passed.
+- The production database was left untouched by this work. It now holds one user, registered by the developer through the UI while reviewing the flows; the verification account went to a scratch copy that was deleted afterwards.
+
+Future goals / still missing:
+- Carried over from 2026-09-21: no `test` scripts anywhere, the auth modules are duplicated across the two apps, there is no refresh-token or revocation story, `GET /users` is still token-only rather than admin-scoped, and `uis/website` has no `.env.local` so `/candidates` cannot load records data locally.
+
+## Update 2026-09-21
+
+Goals accomplished:
+- Ran the mandatory memory-bank reading sequence before work: `context.md`, `projectbrief.md`, `techContext.md`, `progress.md`.
+- Implemented AUTH-02: authentication flows and protected views in both Next.js apps, closing the loop opened by AUTH-01. No separate auth app was created; the flows were integrated into `uis/website` and `uis/backoffice`.
+- Identified the views that require a session and protected exactly those:
+	- `uis/backoffice`: `/`, `/suppliers`, `/suppliers/[id]`, `/account/profile`.
+	- `uis/website`: `/candidates`, `/candidates/[id]`, `/account/profile`.
+	- Left public: `uis/website/` (the Milestone 1 corporate page), `/login` and `/register` in both apps, and the static `apps/website`, which is not a Next.js app and was not touched.
+- Protection is structural rather than per-page: protected routes moved into an `app/(protected)/` route group whose layout renders `AuthProvider` + `AuthGuard`. Route groups add no URL segment, so every existing path is unchanged, and any route added under that folder is protected by construction.
+- The check is client-side on purpose. The token lives in `localStorage` and there is no auth cookie, so Next.js middleware cannot read it. This is recorded in `docs/AUTHENTICATION-FRONTEND.md` so the decision is not re-litigated.
+- Authentication views: `/login` (email and password, error message on failure) and `/register` (email, password with confirmation, plus optional `name`/`phone`/`address`). Registration calls `POST /users`, then `POST /auth/login` with the same credentials, stores the token and redirects. A failure between the two steps is reported as "account created, sign in manually" rather than as a registration failure.
+- Account view: `/account/profile` shows the email and role from `GET /auth/me` and edits name, phone and address through `PUT /profiles/me`. A cleared input is sent as an explicit null, which is how the API erases a field.
+- Token lifecycle centralized: stored under `trackflow.access_token`, attached as `Authorization: Bearer <token>` by `requestAuthenticatedApi`, and cleared on logout. A 401 clears the token and dispatches a `trackflow:unauthorized` event that `AuthProvider` turns into a redirect, so expiry is handled in one place instead of at every call site. The redirect carries a `?next=` path that is sanitized to same-origin absolute paths before use.
+- Every `localStorage` access is wrapped in `try`/`catch`, so a browser that blocks site data sends the user to `/login` instead of throwing.
+- `uis/backoffice`: all six `/suppliers` calls now go through `requestAuthenticatedApi`. `BackofficeNav` moved into the protected layout and gained the signed-in email, a Profile link and a Log out button, so the sign-in screens render without it.
+- `uis/website`: identity calls go through a new `lib/auth-api-client.ts` on `NEXT_PUBLIC_AUTH_API_URL`, separate from `lib/api-client.ts`, because `NEXT_PUBLIC_API_URL` there points at the external records API. Sending the TrackFlow bearer token to that third-party host would leak a credential; verified in the browser that it never receives one.
+- The public corporate page stays inert: `TrackFlowNav` remains a server component and gained only a static `Sign in` link. Verified in the browser that loading `/` performs no token read and no identity API call, both anonymously and while signed in.
+- `ApiError` now carries the decoded body alongside the flattened message, so forms map failures back onto inputs: a 422 `detail` array becomes per-field messages, a 409 on `POST /users` lands on the email field, and a 401 from login stays a form-level message because the API reports a wrong email and a wrong password identically.
+- Executed formatting with auto-fix: `npm run lint -- --fix` in both UIs (clean).
+- Executed typechecking: `npm run typecheck` in both UIs (clean). Added the missing `typecheck` script to `uis/website`, which only had `lint`. `npm run build` succeeded for both apps with every route accounted for.
+- Attempted the test suite; neither UI has a `test` script, unchanged from the 2026-08-23, 2026-09-19 and 2026-09-20 entries.
+- Verified end to end in a real headless browser against a running API on an isolated copy of the database: 57 checks, all passing.
+	- Route protection (17): every protected route in both apps redirects an anonymous visitor to `/login` with the correct `next` path, and the public page renders with no token read and no identity call.
+	- Token lifecycle in `uis/backoffice` (25): wrong password shows the API message and stores nothing, client-side validation runs before any request, registration validates password length and confirmation, a duplicate email surfaces the 409 on the email field, a real registration creates the account and signs in, the profile loads from `GET /auth/me` and persists through `PUT /profiles/me` across a reload, `/suppliers` and `/profiles/me` carry the bearer header, a tampered token is cleared and redirected, and logout clears the token and closes the protected view again.
+	- `uis/website` (15): sign-in honours `?next=`, the session bar shows the signed-in email, the external records API receives no bearer token, the profile view works, and logout clears the token while `/` stays reachable throughout.
+- The production database was left untouched: 15 suppliers, 0 users, 0 profiles. All verification ran against a scratch copy.
+- Documentation: added `docs/AUTHENTICATION-FRONTEND.md` (protected-view table, route-group layout, the middleware decision, token lifecycle, module layout, form error handling, configuration) and replaced the now-stale "Known follow-up" section in `docs/AUTHENTICATION.md`, which still said the backoffice sent no token.
+
+Future goals / still missing:
+- Define and standardize test scripts (`test`) across root and UI packages, and promote the browser verification above into a committed suite. Still outstanding from the 2026-08-23, 2026-09-19 and 2026-09-20 entries.
+- The auth modules are duplicated between the two apps because `localStorage` is origin-scoped and `packages/shared` is not wired into either app's build. If a third app appears, move `types/auth.ts`, `lib/auth-storage.ts`, `lib/auth.ts` and the auth components into a shared package.
+- Add refresh tokens or a token-revocation story. A token stays valid until it expires, and the UI has no silent-refresh path, so a long session ends with an abrupt redirect to `/login`.
+- Decide whether `GET /users` and `GET /users/{id}` should be narrowed to admin and manager, carried over from the 2026-09-20 entry.
+- `uis/website` still has no `.env.local`; `NEXT_PUBLIC_AUTH_API_URL` falls back to `http://localhost:8000` and `NEXT_PUBLIC_API_URL` for the records API remains unset, so `/candidates` cannot load data locally.
 
 ## Update 2026-09-20
 

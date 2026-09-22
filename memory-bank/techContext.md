@@ -5,7 +5,7 @@
 This repository currently contains two website implementations related to TrackFlow:
 
 - `apps/website`: static marketing pages served by Flask.
-- `uis/website`: interactive hiring tracker built with Next.js.
+- `uis/website`: Next.js app holding the public corporate page plus the session-protected hiring tracker and account views.
 
 ### Frontend
 
@@ -36,6 +36,8 @@ This repository currently contains two website implementations related to TrackF
 - `services/auth/dependencies.py::get_current_user` is the single gate for protected routes: decode, validate, load the user from TinyDB, 401 on any failure.
 - Passwords are hashed with `libpass[bcrypt]` at cost 12. The import path stays `from passlib.hash import bcrypt`.
 - Configuration lives in a git-ignored `.env` (`JWT_SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`), with `.env.example` committed. See `docs/AUTHENTICATION.md`.
+- Frontend side: the token is stored in `localStorage` under `trackflow.access_token` and attached to every protected call. Protected views live in an `app/(protected)/` route group guarded by a client-side `AuthProvider`/`AuthGuard` pair; Next.js middleware is deliberately not used, because it cannot read `localStorage` and there is no auth cookie. A 401 clears the token and redirects to `/login?next=<path>`. See `docs/AUTHENTICATION-FRONTEND.md`.
+- The public corporate page at `uis/website/` and the static `apps/website` carry no session logic at all: no token read, no redirect.
 
 ### Database
 
@@ -49,7 +51,8 @@ This repository currently contains two website implementations related to TrackF
 - Endpoints exposed by the in-repo FastAPI service:
   - Public: `POST /users`, `POST /auth/login`, `POST /auth/token`
   - Token-protected: `GET /users`, `GET /users/{id}`, `PUT /users/{id}`, `DELETE /users/{id}`, `GET /auth/me`, `GET /profiles/me`, `PUT /profiles/me`, and all six `/suppliers` routes
-- `uis/backoffice` consumes the `/suppliers` routes and does not yet send a token, so those calls return 401 until it is updated.
+- `uis/backoffice` consumes the `/suppliers` routes with `Authorization: Bearer <token>` on every call.
+- Both Next.js apps consume `POST /users`, `POST /auth/login`, `GET /auth/me` and `PUT /profiles/me` for their sign-in, registration and profile views.
 - Endpoints consumed by `uis/website` from a separate external API:
   - `GET /records`
   - `GET /records/:id`
@@ -88,6 +91,7 @@ This repository currently contains two website implementations related to TrackF
 
 1. `NEXT_PUBLIC_API_URL` is mandatory for tracker API communication.
 	- Missing configuration causes runtime errors in API client initialization.
+	- `uis/website` needs a second variable, `NEXT_PUBLIC_AUTH_API_URL`, because its identity calls go to the in-repo FastAPI service while `NEXT_PUBLIC_API_URL` points at the external records API. It defaults to `http://localhost:8000`.
 2. External API contract dependency.
 	- UI behavior depends on `/records` and `/notes` endpoints and their HTTP semantics (status codes, JSON content types).
 3. No in-repo backend/data source for the tracker.

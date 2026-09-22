@@ -112,8 +112,8 @@ with `seed-user`. Run it again on an existing email to change that user's role.
 4. **Logout** in the Authorize dialog and retry - `401`.
 5. Paste a mangled token into Authorize and retry - `401`.
 
-## Known follow-up
+## Frontend
 
-The backoffice UI at `uis/backoffice` calls `/suppliers` without a token and will
-get `401` until it is updated to log in and send the header. That is expected at
-this stage and is the next piece of work.
+Both Next.js apps now sign in against this API, store the token and send it on
+every protected call. See [AUTHENTICATION-FRONTEND.md](./AUTHENTICATION-FRONTEND.md)
+for the client-side contract (AUTH-02).
