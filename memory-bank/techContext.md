@@ -24,7 +24,7 @@ This repository currently contains two website implementations related to TrackF
 
 - FastAPI service mounted from `services/main.py`, the composition root. It owns CORS and mounts one router per domain: `auth`, `users`, `profiles`, `suppliers`. Run with `npm run api` (`uvicorn services.main:app --reload --port 8000`).
 - Domain modules follow the layering in `docs/ARCHITECTURE_PROPOSAL.md`: `models.py` (Pydantic contracts), `service.py` (business rules and persistence), `router.py` (HTTP only).
-- `services/core/` holds shared technical concerns and no business rules: `config.py` (pydantic-settings), `db.py` (TinyDB handle), `errors.py` (domain errors), `security.py` (bcrypt + JWT).
+- `services/core/` holds shared technical concerns and no business rules: `config.py` (pydantic-settings), `db.py` (TinyDB handle), `email.py` (transactional email transport), `errors.py` (domain errors), `security.py` (bcrypt + JWT).
 - Python Flask app (`services/server.py`) remains a separate lightweight static server:
   - Serves `apps/website/index.html` at `/`
   - Serves static files from `apps/website` and fallback static files from repository root
@@ -35,13 +35,15 @@ This repository currently contains two website implementations related to TrackF
 - `OAuth2PasswordBearer` extracts `Authorization: Bearer <token>`; `python-jose` signs and validates it with `HS256`.
 - `services/auth/dependencies.py::get_current_user` is the single gate for protected routes: decode, validate, load the user from TinyDB, 401 on any failure.
 - Passwords are hashed with `libpass[bcrypt]` at cost 12. The import path stays `from passlib.hash import bcrypt`.
-- Configuration lives in a git-ignored `.env` (`JWT_SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`), with `.env.example` committed. See `docs/AUTHENTICATION.md`.
+- Every JWT carries a `typ` claim naming what it may do: `access` for a session, `password_reset` for a reset link. Each decoder accepts only its own kind, so a reset link cannot be replayed as a bearer credential and a session cannot reset a password. Tokens minted before the claim existed are read as access tokens.
+- Password recovery (`POST /auth/forgot-password`, `/auth/reset-password`, `/auth/change-password`) is in `services/auth/service.py`. Reset tokens are signed JWTs whose `jti` is registered in a TinyDB `password_resets` table so each one works exactly once; the table holds the `jti` and never the token. Setting a password by either route spends every outstanding reset link for that user. See `docs/PASSWORD-RECOVERY.md`.
+- Configuration lives in a git-ignored `.env` (`JWT_SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES`, `RESEND_API_KEY`, `EMAIL_FROM`, `FRONTEND_BASE_URL`), with `.env.example` committed. See `docs/AUTHENTICATION.md`.
 - Frontend side: the token is stored in `localStorage` under `trackflow.access_token` and attached to every protected call. Protected views live in an `app/(protected)/` route group guarded by a client-side `AuthProvider`/`AuthGuard` pair; Next.js middleware is deliberately not used, because it cannot read `localStorage` and there is no auth cookie. A 401 clears the token and redirects to `/login?next=<path>`. See `docs/AUTHENTICATION-FRONTEND.md`.
 - The public corporate page at `uis/website/` and the static `apps/website` carry no session logic at all: no token read, no redirect.
 
 ### Database
 
-- TinyDB, one JSON file at `data/suppliers.json` (override with `DB_PATH`), with one table per domain: `suppliers`, `users`, `profiles`.
+- TinyDB, one JSON file at `data/suppliers.json` (override with `DB_PATH`), with one table per domain: `suppliers`, `users`, `profiles`, `password_resets`.
 - `User` and `Profile` are TinyDB-only and are never mirrored into Supabase/SQLModel. Their `id` is a UUID4 string, not a TinyDB `doc_id`, because future PostgreSQL tables reference it as `user_uuid`.
 - Suppliers still key on the TinyDB `doc_id` integer, unchanged from the original implementation.
 
@@ -49,8 +51,8 @@ This repository currently contains two website implementations related to TrackF
 
 - External REST API integration in `uis/website` through `NEXT_PUBLIC_API_URL`.
 - Endpoints exposed by the in-repo FastAPI service:
-  - Public: `POST /users`, `POST /auth/login`, `POST /auth/token`
-  - Token-protected: `GET /users`, `GET /users/{id}`, `PUT /users/{id}`, `DELETE /users/{id}`, `GET /auth/me`, `GET /profiles/me`, `PUT /profiles/me`, and all six `/suppliers` routes
+  - Public: `POST /users`, `POST /auth/login`, `POST /auth/token`, `POST /auth/forgot-password`, `POST /auth/reset-password`
+  - Token-protected: `GET /users`, `GET /users/{id}`, `PUT /users/{id}`, `DELETE /users/{id}`, `GET /auth/me`, `POST /auth/change-password`, `GET /profiles/me`, `PUT /profiles/me`, and all six `/suppliers` routes
 - `uis/backoffice` consumes the `/suppliers` routes with `Authorization: Bearer <token>` on every call.
 - Both Next.js apps consume `POST /users`, `POST /auth/login`, `GET /auth/me` and `PUT /profiles/me` for their sign-in, registration and profile views.
 - Endpoints consumed by `uis/website` from a separate external API:
@@ -62,6 +64,7 @@ This repository currently contains two website implementations related to TrackF
   - `GET /records/:id/notes`
   - `POST /records/:id/notes`
   - `DELETE /records/:id/notes/:noteId`
+- Transactional email through Resend (`resend>=2.0`), used only to carry the password reset link. `services/core/email.py` picks the backend from configuration: Resend when `RESEND_API_KEY` is set, otherwise a console backend that logs the whole message so the recovery flow is walkable locally without an email account. Message bodies live in `services/auth/emails.py`, which knows nothing about the provider.
 - Branding assets and web fonts are loaded from external sources (Google Fonts and social metadata targets).
 
 ### Language / Type System
@@ -102,5 +105,9 @@ This repository currently contains two website implementations related to TrackF
 	- Multiple possible field names for candidate data imply unstable upstream payload shapes.
 6. Limited server-side rendering usage for data-heavy tracker pages.
 	- Current client-side fetching model can impact first-load latency and SEO relevance for authenticated app content.
-7. Root Flask dependency version appears non-standard.
+7. Password reset email delivery depends on external configuration.
+	- With `RESEND_API_KEY` unset the API still works, but no mail leaves the machine: the reset link is only logged. This is deliberate for development and wrong for anything else.
+	- Resend's shared sender `onboarding@resend.dev` needs no DNS setup but in test mode only delivers to the address owning the Resend account. Mailing real recipients requires verifying a domain.
+	- `FRONTEND_BASE_URL` must point at whichever Next.js app serves `/reset-password`, or the emailed link goes nowhere.
+8. Root Flask dependency version appears non-standard.
 	- Root `package.json` declares `flask` under npm dependencies, while runtime uses Python `flask` in `server.py`; setup consistency depends on developers understanding this split.

@@ -1,11 +1,17 @@
 from datetime import datetime
 from enum import Enum
+from typing import Annotated
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from services.core.security import MAX_PASSWORD_BYTES
 
-PasswordField = Field(min_length=8, max_length=MAX_PASSWORD_BYTES)
+MIN_PASSWORD_LENGTH = 8
+
+# One definition of what counts as a password, shared by registration, admin
+# edits, reset and change. An `Annotated` alias rather than a bare `Field` so
+# the same constraint can be reused across models without sharing one instance.
+Password = Annotated[str, Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_BYTES)]
 
 
 class Role(str, Enum):
@@ -29,7 +35,7 @@ class UserCreate(BaseModel):
     """
 
     email: EmailStr
-    password: str = PasswordField
+    password: Password
     name: str | None = Field(default=None, max_length=120)
     phone: str | None = Field(default=None, max_length=40)
     address: str | None = Field(default=None, max_length=255)
@@ -44,7 +50,7 @@ class UserUpdate(BaseModel):
     """Credential-only updates. `role` and `is_active` are admin-gated in the router."""
 
     email: EmailStr | None = None
-    password: str | None = Field(default=None, min_length=8, max_length=MAX_PASSWORD_BYTES)
+    password: Password | None = None
     role: Role | None = None
     is_active: bool | None = None
 
