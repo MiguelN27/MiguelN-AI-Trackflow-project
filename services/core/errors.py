@@ -30,3 +30,25 @@ class IncorrectPassword(DomainError):
 
     def __init__(self) -> None:
         super().__init__("Current password is incorrect")
+
+
+class ValidationFailed(DomainError):
+    """A payload the service layer refused on a business rule.
+
+    Routers turn this into a 400 whose body names `field` and repeats `message`
+    verbatim, so the message has to read as plain language for whoever is
+    looking at the form - not as a rule identifier.
+    """
+
+    def __init__(self, field: str, message: str) -> None:
+        super().__init__(f"{field}: {message}")
+        self.field = field
+        self.message = message
+
+
+class IncidentNotFound(DomainError):
+    """No incident exists with the requested id."""
+
+    def __init__(self, incident_id: str) -> None:
+        super().__init__(f"Incident {incident_id} not found")
+        self.incident_id = incident_id

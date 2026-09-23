@@ -9,6 +9,9 @@ This repository currently contains two website implementations related to TrackF
 
 ### Frontend
 
+- `uis/backoffice`
+  - The internal console: supplier directory and the centralized incident manager (`/incidents`, `/incidents/new`), both in the `(protected)` route group. Same Next.js 16.2.7 / React 19 / Tailwind v4 stack as `uis/website`.
+  - The incident screens are where the data-viz rules apply: `components/incidents/IncidentSummaryPanel.tsx` picks its form before its colour, and the status tokens in `app/globals.css` carry their measured contrast and separation figures in a comment. See `docs/INCIDENTS.md`.
 - `uis/website`
   - Next.js `16.2.7` (App Router structure under `app/`)
   - React `19.2.4`
@@ -23,9 +26,12 @@ This repository currently contains two website implementations related to TrackF
 
 ### Backend
 
-- FastAPI service mounted from `services/main.py`, the composition root. It owns CORS and mounts one router per domain: `auth`, `users`, `profiles`, `suppliers`. Run with `npm run api` (`uvicorn services.main:app --reload --port 8000`).
+- FastAPI service mounted from `services/main.py`, the composition root. It owns CORS, the app-wide exception handlers, and mounts one router per domain: `auth`, `users`, `profiles`, `suppliers`, `incidents`. Run with `npm run api` (`uvicorn services.main:app --reload --port 8000`).
 - Domain modules follow the layering in `docs/ARCHITECTURE_PROPOSAL.md`: `models.py` (Pydantic contracts), `service.py` (business rules and persistence), `router.py` (HTTP only).
-- `services/core/` holds shared technical concerns and no business rules: `config.py` (pydantic-settings), `db.py` (TinyDB handle), `email.py` (transactional email transport), `errors.py` (domain errors), `security.py` (bcrypt + JWT).
+- `services/core/` holds shared technical concerns and no business rules: `config.py` (pydantic-settings), `db.py` (TinyDB handle), `email.py` (transactional email transport), `errors.py` (domain errors), `http_errors.py` (exception -> response translation), `security.py` (bcrypt + JWT).
+- `packages/shared/trackflow_shared/` is a Python package mapped into the wheel from `pyproject.toml` next to `services` and `scripts`. It carries rules that both the API and the `/scripts` tooling must agree on and that neither owns: the incident enumerations and lifecycle (`incidents.py`) and the helpdesk-CSV validation plus CSV -> model maps (`incidents_csv.py`). It imports no framework.
+- Error translation lives in `services/core/http_errors.py`. Domain errors (`ValidationFailed`, `IncidentNotFound`) are translated there, so the service layer stays HTTP-agnostic, and a bare `Exception` handler turns any unhandled failure into a 500 that names nothing about the exception, with the traceback going to the `trackflow.errors` logger. Every incident error body has the same `{detail: {field, message}}` shape. See `docs/INCIDENTS.md`.
+- **The 422 -> 400 remapping is scoped to `/api/incidents`, and must stay that way.** Starlette's exception handlers are global, so `make_validation_error_handler(prefixes)` takes the prefix (read off `incidents_router.prefix`) and hands everything else to FastAPI's own handler. Applying it app-wide breaks password recovery: `resetPassword` in `uis/*/services/auth-service.ts` reads **any** 400 as a spent reset token and replaces the form with "request a new link", so a too-short password would tell the user their link had expired. `changePassword` reads a 400 as "current password is wrong". `tests/test_error_contract.py` pins both halves.
 - Python Flask app (`services/server.py`) remains a separate lightweight static server:
   - Serves `apps/website/index.html` at `/`
   - Serves static files from `apps/website` and fallback static files from repository root
@@ -45,7 +51,8 @@ This repository currently contains two website implementations related to TrackF
 
 ### Database
 
-- TinyDB, one JSON file at `data/suppliers.json` (override with `DB_PATH`), with one table per domain: `suppliers`, `users`, `profiles`, `password_resets`.
+- TinyDB, one JSON file at `data/suppliers.json` (override with `DB_PATH`), with one table per domain: `suppliers`, `users`, `profiles`, `password_resets`, `incidents`.
+- `incidents` keys on a UUID4 `id` like `users` and `profiles`. Rows carry an internal `source_incident_id` - the `incident_id` of the helpdesk CSV row they were seeded from - which is excluded from `IncidentResponse` and is `None` on anything created through the API. It is what makes `scripts/seed_incidents.py` idempotent.
 - `User` and `Profile` are TinyDB-only and are never mirrored into Supabase/SQLModel. Their `id` is a UUID4 string, not a TinyDB `doc_id`, because future PostgreSQL tables reference it as `user_uuid`.
 - Suppliers still key on the TinyDB `doc_id` integer, unchanged from the original implementation.
 
@@ -55,6 +62,7 @@ This repository currently contains two website implementations related to TrackF
 - Endpoints exposed by the in-repo FastAPI service:
   - Public: `POST /users`, `POST /auth/login`, `POST /auth/token`, `POST /auth/forgot-password`, `POST /auth/reset-password`
   - Token-protected: `GET /users`, `GET /users/{id}`, `PUT /users/{id}`, `DELETE /users/{id}`, `GET /auth/me`, `POST /auth/change-password`, `GET /profiles/me`, `PUT /profiles/me`, and all six `/suppliers` routes
+  - Unauthenticated at this stage: `POST /api/incidents`, `GET /api/incidents` (filters `status`, `origin`, `branch`, `category`), `GET /api/incidents/summary`, `GET /api/incidents/{id}`, `PATCH /api/incidents/{id}/status`. Anyone in the company reports incidents, and no incident route exposes the commercially sensitive data that makes `/suppliers` token-only. Revisit when the panel lands.
 - `uis/backoffice` consumes the `/suppliers` routes with `Authorization: Bearer <token>` on every call.
 - Both Next.js apps consume `POST /users`, `POST /auth/login`, `GET /auth/me` and `PUT /profiles/me` for their sign-in, registration and profile views.
 - Endpoints consumed by `uis/website` from a separate external API:
@@ -74,6 +82,8 @@ This repository currently contains two website implementations related to TrackF
 - TypeScript in the Next.js tracker app with `strict: true` enabled in `tsconfig.json`.
 - JavaScript (vanilla) for `apps/website/signup.js` form behavior.
 - Python for Flask static server (`server.py`).
+- `pytest` (dev dependency group) for the backend, run with `npm run test:api`. `tests/conftest.py` gives each test its own TinyDB file by setting `DB_PATH` **and** clearing the `lru_cache` on `services.core.db.get_db` - the redirect alone is not enough, and without the cache clear one test's rows leak into the next and into `data/suppliers.json`.
+- The repo still ships no ruff/mypy config; both are run as throwaway tools (`uvx ruff`, `uvx mypy`) at line length 100.
 
 ## Architectural Decisions Made
 
@@ -93,7 +103,11 @@ This repository currently contains two website implementations related to TrackF
 	- Confirmation fields are checked in the browser and never sent; the API has no field to reject them with.
 7. Client-rendered interaction model for tracker screens.
 	- Main pages use `"use client"` and browser-side state management for filtering, forms, and optimistic-ish refresh behavior.
-8. Shared visual identity through design tokens.
+8. Domain rules that two runtimes share live in `packages/shared/`, not in either.
+	- The incident vocabulary and the CSV rules are used by both the API and `scripts/seed_incidents.py`. Keeping them in `services/incidents/` would have made the seed depend on the web layer; duplicating them would have let the two drift the first time a category was added.
+9. One gate decides what a user reads about a failure.
+	- `uis/backoffice/lib/friendly-error.ts` surfaces an API message only when it arrived in the documented `{field, message}` shape and the status is 400 or 404. Everything else - 5xx, unreadable bodies, network errors, thrown non-Errors - gets frontend-authored text. Without it, `ApiError`'s "Request failed with status 500" fallback and the browser's `TypeError: Failed to fetch` reach the screen.
+10. Shared visual identity through design tokens.
 	- CSS custom properties and brand fonts in `globals.css` and `layout.tsx` define consistent TrackFlow theming.
 
 ## Technical Constraints

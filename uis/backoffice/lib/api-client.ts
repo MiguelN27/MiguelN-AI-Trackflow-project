@@ -64,13 +64,39 @@ function formatValidationDetail(detail: ValidationDetail): string {
   return fieldPath ? `${fieldPath}: ${message}` : message;
 }
 
-/** Handles both FastAPI error shapes: `{ detail: string }` (404) and `{ detail: [...] }` (422). */
+/** `{ detail: { field, message } }` - the shape every `/api/incidents` error uses. */
+function readProblemDetail(detail: unknown): ApiFieldError | null {
+  if (typeof detail !== "object" || detail === null || Array.isArray(detail)) {
+    return null;
+  }
+
+  const record = detail as { field?: unknown; message?: unknown };
+  if (typeof record.message !== "string" || !record.message.trim()) {
+    return null;
+  }
+
+  return {
+    field: typeof record.field === "string" ? record.field : "",
+    message: record.message.trim(),
+  };
+}
+
+/**
+ * Handles every error shape this API surface produces: `{ detail: string }`
+ * (FastAPI's 404), `{ detail: [...] }` (FastAPI's 422) and
+ * `{ detail: { field, message } }` (the incident routes).
+ */
 export function extractApiErrorMessage(payload: unknown, status: number): string {
   const detail =
     typeof payload === "object" && payload !== null ? (payload as { detail?: unknown }).detail : undefined;
 
   if (typeof detail === "string" && detail.trim()) {
     return detail.trim();
+  }
+
+  const problem = readProblemDetail(detail);
+  if (problem) {
+    return problem.message;
   }
 
   if (Array.isArray(detail)) {
@@ -105,6 +131,40 @@ export function extractApiFieldErrors(payload: unknown): ApiFieldError[] {
 
       return { field: location.slice(1).join("."), message };
     });
+}
+
+/**
+ * Per-field errors from an `/api/incidents` response, in the order the API
+ * listed them.
+ *
+ * A validation failure carries `errors` with every bad field plus `detail`
+ * holding the first; a business-rule refusal or a 404 carries `detail` alone.
+ * Reading `errors` first and falling back to `detail` covers both without the
+ * caller having to know which it got.
+ *
+ * Separate from `extractApiFieldErrors`, which reads FastAPI's raw 422 array:
+ * the supplier and auth screens depend on that one, and the two payload shapes
+ * have nothing in common beyond the word "detail".
+ */
+export function extractApiProblems(payload: unknown): ApiFieldError[] {
+  if (typeof payload !== "object" || payload === null) {
+    return [];
+  }
+
+  const record = payload as { detail?: unknown; errors?: unknown };
+
+  if (Array.isArray(record.errors)) {
+    const problems = record.errors
+      .map(readProblemDetail)
+      .filter((problem): problem is ApiFieldError => problem !== null);
+
+    if (problems.length > 0) {
+      return problems;
+    }
+  }
+
+  const single = readProblemDetail(record.detail);
+  return single ? [single] : [];
 }
 
 async function readErrorPayload(response: Response): Promise<unknown> {

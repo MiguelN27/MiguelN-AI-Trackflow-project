@@ -6,16 +6,38 @@ import type { ReactNode } from "react";
 
 const NAV_LINKS = [
   { href: "/", label: "Dashboard" },
+  { href: "/incidents", label: "Incidents" },
+  // Its own entry rather than a button buried in the list: the people the
+  // incident manager is for are reporting from a warehouse terminal, and the
+  // form is the destination they arrive wanting.
+  { href: "/incidents/new", label: "Report incident" },
   { href: "/suppliers", label: "Suppliers" },
   { href: "/account/profile", label: "Profile" },
 ] as const;
 
-function isActiveLink(pathname: string, href: string): boolean {
+function matchesLink(pathname: string, href: string): boolean {
   if (href === "/") {
     return pathname === "/";
   }
 
   return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+/**
+ * The href of the one link to mark as current, or null.
+ *
+ * The longest match wins, because `/incidents` is a prefix of
+ * `/incidents/new` and both are in the bar: a plain prefix test would mark two
+ * links `aria-current="page"` at once, which tells a screen reader the page is
+ * in two places.
+ */
+function activeHref(pathname: string): string | null {
+  return NAV_LINKS.map((link) => link.href)
+    .filter((href) => matchesLink(pathname, href))
+    .reduce<string | null>(
+      (best, href) => (best === null || href.length > best.length ? href : best),
+      null,
+    );
 }
 
 type BackofficeNavShellProps = {
@@ -33,6 +55,7 @@ type BackofficeNavShellProps = {
  */
 export function BackofficeNavShell({ actions }: BackofficeNavShellProps) {
   const pathname = usePathname();
+  const currentHref = activeHref(pathname);
 
   return (
     <header className="sticky top-0 z-30 border-b border-[color:var(--border-soft)] bg-[color:var(--surface)]/85 backdrop-blur">
@@ -50,7 +73,7 @@ export function BackofficeNavShell({ actions }: BackofficeNavShellProps) {
         <div className="flex flex-wrap items-center gap-3">
           <ul className="flex items-center gap-1">
             {NAV_LINKS.map((link) => {
-              const isActive = isActiveLink(pathname, link.href);
+              const isActive = link.href === currentHref;
 
               return (
                 <li key={link.href}>
