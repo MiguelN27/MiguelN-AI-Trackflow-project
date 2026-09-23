@@ -1,4 +1,9 @@
-import { parseResponseJson, requestApi, requestAuthenticatedApi } from "@/lib/api-client";
+import {
+  ApiError,
+  parseResponseJson,
+  requestApi,
+  requestAuthenticatedApi,
+} from "@/lib/api-client";
 import { clearToken, storeToken } from "@/lib/auth-storage";
 import {
   buildProfilePayload,
@@ -9,6 +14,8 @@ import {
 } from "@/lib/auth";
 import type {
   AuthenticatedUser,
+  ChangePasswordFormValues,
+  ForgotPasswordFormValues,
   LoginFormValues,
   Profile,
   ProfileFormValues,
@@ -78,6 +85,84 @@ export async function updateMyProfile(values: ProfileFormValues): Promise<Profil
   });
 
   return normalizeProfile(await parseResponseJson(response));
+}
+
+/** Raised when the API refuses a reset token: expired, already used, or never real. */
+export class InvalidResetTokenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidResetTokenError";
+  }
+}
+
+/** Raised when `POST /auth/change-password` rejects the current password. */
+export class IncorrectCurrentPasswordError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IncorrectCurrentPasswordError";
+  }
+}
+
+/**
+ * Starts password recovery.
+ *
+ * The API answers `200` for a registered and an unregistered address alike, so
+ * there is nothing here to branch on - and deliberately nothing returned that a
+ * caller could use to tell the two apart.
+ */
+export async function requestPasswordReset(values: ForgotPasswordFormValues): Promise<void> {
+  await requestApi("/auth/forgot-password", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ email: values.email.trim().toLowerCase() }),
+  });
+}
+
+/**
+ * Finishes password recovery with the token from the emailed link.
+ *
+ * Any stored session is discarded on success: it was issued against the old
+ * password, and the user is on their way to sign in again with the new one.
+ */
+export async function resetPassword(token: string, newPassword: string): Promise<void> {
+  try {
+    await requestApi("/auth/reset-password", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token, new_password: newPassword }),
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 400) {
+      throw new InvalidResetTokenError(error.message);
+    }
+
+    throw error;
+  }
+
+  clearToken();
+}
+
+/**
+ * Changes the password of the signed-in account. The confirmation field is a
+ * client-side concern and is never sent: the API takes only the two passwords.
+ */
+export async function changePassword(values: ChangePasswordFormValues): Promise<void> {
+  try {
+    await requestAuthenticatedApi("/auth/change-password", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        current_password: values.currentPassword,
+        new_password: values.newPassword,
+      }),
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 400) {
+      throw new IncorrectCurrentPasswordError(error.message);
+    }
+
+    throw error;
+  }
 }
 
 /** There is no server-side session to end, so logging out is discarding the token. */

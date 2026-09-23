@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { AuthField } from "@/components/auth/AuthField";
 import { useSession } from "@/components/auth/AuthProvider";
@@ -77,6 +78,15 @@ export default function ProfilePage() {
             <dd className="mt-1 text-sm capitalize text-[color:var(--text-strong)]">{user?.role ?? "-"}</dd>
           </div>
         </dl>
+
+        <p className="mt-5 text-sm">
+          <Link
+            href="/account/change-password"
+            className="font-semibold text-[color:var(--flow-blue)] hover:underline"
+          >
+            Change password
+          </Link>
+        </p>
       </section>
 
       <section className="mt-6 rounded-3xl border border-[color:var(--border-soft)] bg-[color:var(--surface)]/90 p-6 shadow-[0_24px_90px_rgba(37,99,235,0.1)] backdrop-blur md:p-8">

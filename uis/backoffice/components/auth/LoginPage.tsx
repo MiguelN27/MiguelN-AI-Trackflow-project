@@ -7,7 +7,13 @@ import { AuthCard } from "@/components/auth/AuthCard";
 import { AuthField } from "@/components/auth/AuthField";
 import { StateMessage } from "@/components/common/StateMessage";
 import { emptyLoginFormValues, toFieldErrors, validateLoginForm } from "@/lib/auth";
-import { DEFAULT_AUTHENTICATED_PATH, sanitizeNextPath } from "@/lib/auth-storage";
+import {
+  DEFAULT_AUTHENTICATED_PATH,
+  FORGOT_PASSWORD_PATH,
+  hasResetSuccessFlag,
+  sanitizeNextPath,
+} from "@/lib/auth-storage";
+import { useLocationSearch } from "@/hooks/useLocationSearch";
 import { login } from "@/services/auth-service";
 import type { FieldErrors, LoginField, LoginFormValues } from "@/types/auth";
 
@@ -29,6 +35,10 @@ export default function LoginPage() {
   const [values, setValues] = useState<LoginFormValues>(emptyLoginFormValues());
   const [errors, setErrors] = useState<FieldErrors<LoginField>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Set by the redirect out of `/reset-password`.
+  const search = useLocationSearch();
+  const showResetSuccess = search !== null && hasResetSuccessFlag(search);
 
   function updateValues(patch: Partial<LoginFormValues>): void {
     setErrors({});
@@ -72,6 +82,12 @@ export default function LoginPage() {
       }
     >
       <form className="mt-6 grid gap-4" onSubmit={handleSubmit} noValidate>
+        {showResetSuccess ? (
+          <StateMessage tone="success">
+            Your password has been reset. Sign in with your new password.
+          </StateMessage>
+        ) : null}
+
         <AuthField
           label="Email"
           type="email"
@@ -91,6 +107,15 @@ export default function LoginPage() {
           onValueChange={(password) => updateValues({ password })}
           error={errors.password}
         />
+
+        <div className="-mt-1 flex justify-end">
+          <Link
+            href={FORGOT_PASSWORD_PATH}
+            className="text-xs font-medium text-[color:var(--brand-primary)] hover:underline"
+          >
+            Forgot your password?
+          </Link>
+        </div>
 
         {errors.form ? <StateMessage tone="error">{errors.form}</StateMessage> : null}
 

@@ -11,7 +11,7 @@ type AuthFieldProps = {
 } & Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "id">;
 
 const baseFieldClassName =
-  "w-full rounded-xl border bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none transition";
+  "w-full rounded-xl border bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none transition disabled:cursor-not-allowed disabled:opacity-60";
 
 /** Labeled input that renders its own validation message and wires `aria-describedby`. */
 export function AuthField({ label, value, onValueChange, error, hint, ...inputProps }: AuthFieldProps) {

@@ -1,7 +1,11 @@
 import { ApiError, extractApiFieldErrors } from "@/lib/auth-api-client";
 import type {
   AuthenticatedUser,
+  ChangePasswordField,
+  ChangePasswordFormValues,
   FieldErrors,
+  ForgotPasswordField,
+  ForgotPasswordFormValues,
   LoginField,
   LoginFormValues,
   Profile,
@@ -9,6 +13,8 @@ import type {
   ProfileFormValues,
   RegisterField,
   RegisterFormValues,
+  ResetPasswordField,
+  ResetPasswordFormValues,
   UserRole,
 } from "@/types/auth";
 
@@ -27,6 +33,18 @@ export function emptyLoginFormValues(): LoginFormValues {
 
 export function emptyRegisterFormValues(): RegisterFormValues {
   return { email: "", password: "", confirmPassword: "", name: "", phone: "", address: "" };
+}
+
+export function emptyForgotPasswordFormValues(): ForgotPasswordFormValues {
+  return { email: "" };
+}
+
+export function emptyResetPasswordFormValues(): ResetPasswordFormValues {
+  return { newPassword: "", confirmPassword: "" };
+}
+
+export function emptyChangePasswordFormValues(): ChangePasswordFormValues {
+  return { currentPassword: "", newPassword: "", confirmPassword: "" };
 }
 
 export function profileFormValuesFrom(profile: Profile | null): ProfileFormValues {
@@ -105,6 +123,71 @@ export function validateRegisterForm(values: RegisterFormValues): FieldErrors<Re
   const addressError = validateLength(values.address, MAX_ADDRESS_LENGTH, "Address");
   if (addressError) {
     errors.address = addressError;
+  }
+
+  return withoutEmptyEntries(errors);
+}
+
+/**
+ * The new-password rules, shared by the reset and change forms so the two
+ * cannot drift apart. Both mirror `Password` in `services/users/models.py`.
+ */
+function newPasswordErrors(
+  newPassword: string,
+  confirmPassword: string,
+): { newPassword?: string; confirmPassword?: string } {
+  const errors: { newPassword?: string; confirmPassword?: string } = {};
+
+  if (!newPassword) {
+    errors.newPassword = "New password is required.";
+  } else if (newPassword.length < MIN_PASSWORD_LENGTH) {
+    errors.newPassword = `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
+  }
+
+  if (!confirmPassword) {
+    errors.confirmPassword = "Confirm your new password.";
+  } else if (confirmPassword !== newPassword) {
+    errors.confirmPassword = "Passwords do not match.";
+  }
+
+  return errors;
+}
+
+export function validateForgotPasswordForm(
+  values: ForgotPasswordFormValues,
+): FieldErrors<ForgotPasswordField> | null {
+  const errors: FieldErrors<ForgotPasswordField> = {};
+
+  const emailError = validateEmail(values.email);
+  if (emailError) {
+    errors.email = emailError;
+  }
+
+  return withoutEmptyEntries(errors);
+}
+
+export function validateResetPasswordForm(
+  values: ResetPasswordFormValues,
+): FieldErrors<ResetPasswordField> | null {
+  return withoutEmptyEntries<ResetPasswordField>(
+    newPasswordErrors(values.newPassword, values.confirmPassword),
+  );
+}
+
+/**
+ * Checked before the API is called at all, so a mismatched confirmation never
+ * costs a request - the API has no confirmation field to reject it with.
+ */
+export function validateChangePasswordForm(
+  values: ChangePasswordFormValues,
+): FieldErrors<ChangePasswordField> | null {
+  const errors: FieldErrors<ChangePasswordField> = newPasswordErrors(
+    values.newPassword,
+    values.confirmPassword,
+  );
+
+  if (!values.currentPassword) {
+    errors.currentPassword = "Your current password is required.";
   }
 
   return withoutEmptyEntries(errors);
@@ -212,10 +295,14 @@ export function extractAccessToken(payload: unknown): string {
 /**
  * Turns an API failure into per-field messages. Anything the form has no input
  * for lands on `form`, so no message is ever silently dropped.
+ *
+ * `aliases` maps an API field name onto the form's own where they differ - the
+ * API speaks snake_case (`new_password`), these forms camelCase.
  */
 export function toFieldErrors<TField extends string>(
   error: unknown,
   knownFields: readonly TField[],
+  aliases?: Readonly<Record<string, TField>>,
 ): FieldErrors<TField> {
   const errors: FieldErrors<TField> = {};
 
@@ -225,8 +312,10 @@ export function toFieldErrors<TField extends string>(
   }
 
   for (const { field, message } of extractApiFieldErrors(error.payload)) {
-    if ((knownFields as readonly string[]).includes(field)) {
-      errors[field as TField] = message;
+    const formField = aliases?.[field] ?? field;
+
+    if ((knownFields as readonly string[]).includes(formField)) {
+      errors[formField as TField] = message;
     } else {
       errors.form = errors.form ? `${errors.form} · ${message}` : message;
     }

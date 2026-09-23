@@ -2,6 +2,45 @@
 
 Last updated: 2026-09-22
 
+## Update 2026-09-22 (later) - AUTH-03 frontend
+
+Goals accomplished:
+- Built the second half of AUTH-03: the three password screens, in **both** Next.js apps, on the API delivered earlier today.
+- Routes added, following each app's existing structure rather than inventing a new one:
+	- `uis/website`: `app/forgot-password/`, `app/reset-password/`, `app/(protected)/account/change-password/`.
+	- `uis/backoffice`: `app/(auth)/forgot-password/`, `app/(auth)/reset-password/`, `app/(protected)/account/change-password/`. The public screens join the existing `(auth)` group, so they inherit the signed-out header; the protected one joins `(protected)` and is guarded by construction.
+- `/forgot-password`: email field, one confirmation message, and the form locked afterwards. The email input and the submit button are both disabled and the button reads "Link sent", and the submit handler returns early once sent - so a programmatic `form.requestSubmit()` is refused too, not just a click on a disabled button.
+- `/reset-password`: reads `?token=`, takes a new password plus confirmation, and on success redirects to `/login?reset=success`, where `LoginPage` renders a success banner. Two failure kinds are handled differently on purpose: a `400` means the token is dead, so the form is *replaced* by the error and a "Request a new link" button, because resubmitting cannot help; a `422` is mapped back onto the password input and the form stays, because a second attempt can succeed. A missing token shows the same replaced state without any request.
+- `/account/change-password`: current password, new password and confirmation, with the match validated before any request. A `400` lands on the current-password field. Fields are cleared on success so the new password is not left sitting in the DOM.
+- `/login` gained the "Forgot your password?" link under the password field, and `/account/profile` gained a link to the change-password screen, so neither new route is reachable only by typing the URL.
+- Held the line on user enumeration in the client, not just the API: one confirmation string rendered from a constant for every success, so the registered and unregistered cases are character-identical; client validation that only checks the address *looks* valid and never asks the API whether it exists; and `requestPasswordReset` returning `void`, so there is deliberately nothing for a caller to inspect. A failure re-enables the form, which is safe because the route does not fail for an unknown address.
+- Added `hooks/useLocationSearch.ts` to both apps, wrapping `useSyncExternalStore`. `useSearchParams` would force the calling page behind a Suspense boundary at build time (the reason `LoginPage` has always read `?next=` off `window`), and reading in an effect trips React 19's `react-hooks/set-state-in-effect`. The hook returns `null` on the server and the real query string on the client, so `/reset-password` shows "Checking your reset link..." instead of flashing a "link is missing" error at someone whose link is fine.
+- Shared code rather than copying logic where it mattered:
+	- `validateResetPasswordForm` and `validateChangePasswordForm` share one `newPasswordErrors` helper, so the two cannot drift apart.
+	- `toFieldErrors` gained an optional alias map, so the API's snake_case field names (`new_password`, `current_password`) land on the camelCase inputs instead of falling through to a form-level message. Existing call sites were untouched.
+	- `AuthField` gained `disabled:` styling, so a disabled input reads as disabled in every form, not just the new ones.
+- A successful reset clears any stored token before redirecting, since it was issued against the old password. A successful change keeps the session, because the user is already signed in and proved it. Neither is a revocation story, which is still on the backlog.
+- Executed formatting with auto-fix: `npm run lint -- --fix` in both apps. The first pass failed with four `react-hooks/set-state-in-effect` errors, which is what prompted the `useSyncExternalStore` hook rather than a suppression. Clean afterwards.
+- Executed typechecking: `npm run typecheck` clean in both apps, and `npm run build` succeeded with all four new routes prerendered as static content.
+- Attempted the test suite; still no `test` script anywhere, unchanged from every prior entry.
+- Verified in a real headless browser against a running API on a scratch database: 102 checks across the two apps, all passing. Per app:
+	- The `/login` link exists, points at `/forgot-password` and navigates there.
+	- `/forgot-password` catches an empty and a malformed address client-side with no request sent; a registered address shows the confirmation on exactly one request; the input and button are disabled afterwards and the button reads "Link sent"; a programmatic re-submit sends nothing.
+	- An unknown address produces a character-identical confirmation, a `200`, and the same locked form - the enumeration check, asserted on the rendered text rather than on the API alone.
+	- `/reset-password` with no token shows the error, renders no form, and offers a link to `/forgot-password`; with a valid token it catches a mismatch and a short password client-side without a request, then redirects to `/login?reset=success` and shows the banner, leaving no stale token behind; the new password signs in and the old one does not; replaying the same link shows the error, removes the form, and offers a new link, and changes nothing.
+	- `/account/change-password` sends an anonymous visitor to `/login` with the right `next`; is reachable from the profile page; catches a mismatch client-side with no request; reports a wrong current password after a real call; and on success clears the fields, keeps the session, and swaps which password works.
+	- Two bugs in the verification script itself were found and fixed before trusting it: it matched the API on `127.0.0.1` while the apps call `localhost`, which made every "no request fired" assertion vacuous, and it waited on text that exists on both the source and destination page, so a navigation assertion passed before the navigation happened.
+- Confirmed the disabled state is real rather than assumed: computed `opacity` settles at `0.6` and `cursor` at `not-allowed` on both the input and the button in both apps. The first screenshot was taken mid-transition and looked unstyled, which is what prompted measuring it.
+- Reviewed the rendered screens at 1100px in both apps and removed a redundancy found there: the change-password subtitle repeated the signed-in email already shown in the session bar directly above it.
+- Documentation: extended `docs/AUTHENTICATION-FRONTEND.md` with the route table, the anti-enumeration measures, the form lock, the query-string hook and why it exists, the recoverable-versus-not failure split, confirmation fields, field-name translation, and what happens to sessions. Updated `docs/PASSWORD-RECOVERY.md` to point at it, and added a section on the single `FRONTEND_BASE_URL` serving two apps.
+- The production database was left untouched: 15 suppliers, 1 user, 1 profile. All verification ran against a scratch copy.
+
+Future goals / still missing:
+- Promote the 102 browser checks and the 111 backend checks into a committed suite. They are the closest thing this repo has to tests and they still live in a scratchpad.
+- The two apps now duplicate five more files each. The case for moving `types/auth.ts`, `lib/auth.ts`, `lib/auth-storage.ts`, `hooks/useLocationSearch.ts` and the auth components into `packages/shared` is stronger than it was, since a change to the recovery rules now has to be made twice.
+- Decide whether the backoffice should own the reset link instead of the website, or whether the API should learn which app a request came from.
+- Carried over: rate-limiting `POST /auth/forgot-password`, a "your password was changed" notification, a guard against the console email backend running in production, refresh tokens or revocation, admin-scoping `GET /users`, and `uis/website` having no `.env.local`.
+
 ## Update 2026-09-22 (later) - AUTH-03 backend
 
 Goals accomplished:

@@ -32,6 +32,21 @@ export type RegisterFormValues = {
   address: string;
 };
 
+export type ForgotPasswordFormValues = {
+  email: string;
+};
+
+export type ResetPasswordFormValues = {
+  newPassword: string;
+  confirmPassword: string;
+};
+
+export type ChangePasswordFormValues = {
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+};
+
 export type ProfileFormValues = {
   name: string;
   phone: string;
@@ -47,5 +62,8 @@ export type FieldErrors<TField extends string> = Partial<Record<TField | "form",
 export type LoginField = keyof LoginFormValues;
 export type RegisterField = keyof RegisterFormValues;
 export type ProfileField = keyof ProfileFormValues;
+export type ForgotPasswordField = keyof ForgotPasswordFormValues;
+export type ResetPasswordField = keyof ResetPasswordFormValues;
+export type ChangePasswordField = keyof ChangePasswordFormValues;
 
 export type SessionStatus = "loading" | "authenticated" | "unauthenticated";

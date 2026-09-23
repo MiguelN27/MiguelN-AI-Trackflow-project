@@ -15,6 +15,7 @@ This repository currently contains two website implementations related to TrackF
   - TypeScript `^5`
   - Tailwind CSS `^4` via PostCSS plugin (`@tailwindcss/postcss`)
   - `next/font` with Plus Jakarta Sans and Space Grotesk for branding consistency
+  - `hooks/useLocationSearch.ts` wraps `useSyncExternalStore` to read the query string. `useSearchParams` would force the calling page behind a Suspense boundary at build time, and React 19 rejects setting state from an effect body, so this is the remaining supported route for a browser-only value.
 - `apps/website`
   - HTML + vanilla JavaScript
   - Tailwind via CDN (`https://cdn.tailwindcss.com`)
@@ -38,6 +39,7 @@ This repository currently contains two website implementations related to TrackF
 - Every JWT carries a `typ` claim naming what it may do: `access` for a session, `password_reset` for a reset link. Each decoder accepts only its own kind, so a reset link cannot be replayed as a bearer credential and a session cannot reset a password. Tokens minted before the claim existed are read as access tokens.
 - Password recovery (`POST /auth/forgot-password`, `/auth/reset-password`, `/auth/change-password`) is in `services/auth/service.py`. Reset tokens are signed JWTs whose `jti` is registered in a TinyDB `password_resets` table so each one works exactly once; the table holds the `jti` and never the token. Setting a password by either route spends every outstanding reset link for that user. See `docs/PASSWORD-RECOVERY.md`.
 - Configuration lives in a git-ignored `.env` (`JWT_SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES`, `RESEND_API_KEY`, `EMAIL_FROM`, `FRONTEND_BASE_URL`), with `.env.example` committed. See `docs/AUTHENTICATION.md`.
+- Password recovery screens (`/forgot-password`, `/reset-password`, `/account/change-password`) exist in both Next.js apps. `FRONTEND_BASE_URL` is a single value, so the emailed link points at one of them - `uis/website` on :3000 by default. See `docs/AUTHENTICATION-FRONTEND.md`.
 - Frontend side: the token is stored in `localStorage` under `trackflow.access_token` and attached to every protected call. Protected views live in an `app/(protected)/` route group guarded by a client-side `AuthProvider`/`AuthGuard` pair; Next.js middleware is deliberately not used, because it cannot read `localStorage` and there is no auth cookie. A 401 clears the token and redirects to `/login?next=<path>`. See `docs/AUTHENTICATION-FRONTEND.md`.
 - The public corporate page at `uis/website/` and the static `apps/website` carry no session logic at all: no token read, no redirect.
 
@@ -85,9 +87,13 @@ This repository currently contains two website implementations related to TrackF
 	- Dedicated modules (`services/candidates-service.ts`, `services/notes-service.ts`) encapsulate HTTP calls.
 5. Payload normalization boundary.
 	- Candidate and note payloads are normalized in `lib/` utilities to absorb schema variants (for example `fullName` vs `name`, `status` vs `currentStatus`).
-6. Client-rendered interaction model for tracker screens.
+6. Password-recovery forms never ask the API a question they should not.
+	- `/forgot-password` renders one confirmation constant for every success, so the registered and unregistered cases are character-identical, and `requestPasswordReset` returns `void` so there is nothing for a caller to inspect.
+	- The form locks after a successful submit, and the submit handler returns early once sent, so the disabled attribute is the visible half of the guard rather than the whole of it.
+	- Confirmation fields are checked in the browser and never sent; the API has no field to reject them with.
+7. Client-rendered interaction model for tracker screens.
 	- Main pages use `"use client"` and browser-side state management for filtering, forms, and optimistic-ish refresh behavior.
-7. Shared visual identity through design tokens.
+8. Shared visual identity through design tokens.
 	- CSS custom properties and brand fonts in `globals.css` and `layout.tsx` define consistent TrackFlow theming.
 
 ## Technical Constraints

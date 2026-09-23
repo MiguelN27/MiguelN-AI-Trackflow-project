@@ -23,6 +23,29 @@ export const DEFAULT_AUTHENTICATED_PATH = "/candidates";
  */
 export const UNAUTHORIZED_EVENT = "trackflow:unauthorized";
 
+export const FORGOT_PASSWORD_PATH = "/forgot-password";
+
+/**
+ * How `/reset-password` tells `/login` that it just succeeded. A query flag
+ * rather than stored state, so the message belongs to the redirect that set it
+ * and cannot resurface on a later visit.
+ */
+export const RESET_DONE_PARAM = "reset";
+export const RESET_DONE_VALUE = "success";
+export const LOGIN_AFTER_RESET_PATH = `${LOGIN_PATH}?${RESET_DONE_PARAM}=${RESET_DONE_VALUE}`;
+
+/** Reads that flag out of a `window.location.search` string. */
+export function hasResetSuccessFlag(search: string): boolean {
+  return new URLSearchParams(search).get(RESET_DONE_PARAM) === RESET_DONE_VALUE;
+}
+
+/** Reads the reset token out of a `window.location.search` string. */
+export function readResetToken(search: string): string | null {
+  const token = new URLSearchParams(search).get("token");
+
+  return token && token.trim() ? token : null;
+}
+
 export function readToken(): string | null {
   if (typeof window === "undefined") {
     return null;
