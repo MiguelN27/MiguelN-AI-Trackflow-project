@@ -11,10 +11,13 @@ Which backend runs is decided by configuration, not by a flag at the call site:
 
 The console backend exists so the whole recovery flow can be walked locally
 without an email account. It prints the reset link, which is exactly what the
-recipient would have clicked.
+recipient would have clicked - a live credential. So it only does that while
+`FRONTEND_BASE_URL` points at this machine; anywhere else a missing key is a
+failed delivery, reported without the message.
 """
 
 import logging
+from urllib.parse import urlparse
 
 import resend
 from resend.exceptions import ResendError
@@ -48,10 +51,30 @@ def _send_via_resend(sender: str, recipient: str, subject: str, html: str, text:
     except Exception as error:  # network failure, DNS, TLS - never a 200
         raise EmailDeliveryError(f"Could not reach Resend: {error}") from error
 
-    return response["id"]
+    message_id = response.get("id") if isinstance(response, dict) else None
+    if not message_id:
+        # Accepted but unacknowledged: reported as a failed delivery rather than
+        # escaping as a KeyError from the background task that sent it.
+        raise EmailDeliveryError("Resend answered without a message id")
+    return str(message_id)
+
+
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _is_local(url: str) -> bool:
+    return urlparse(url).hostname in _LOCAL_HOSTS
 
 
 def _send_via_console(sender: str, recipient: str, subject: str, text: str) -> str:
+    if not _is_local(get_settings().frontend_base_url):
+        # A deployment that forgot its key must not write working reset links
+        # (or the addresses they were meant for) into its logs.
+        raise EmailDeliveryError(
+            "RESEND_API_KEY is not set and FRONTEND_BASE_URL is not local, so the message "
+            "was neither sent nor logged. Set RESEND_API_KEY."
+        )
+
     logger.warning(
         "RESEND_API_KEY is not set, so no mail was sent. The message follows.\n"
         "From:    %s\nTo:      %s\nSubject: %s\n\n%s",
@@ -66,8 +89,8 @@ def _send_via_console(sender: str, recipient: str, subject: str, text: str) -> s
 def send_email(recipient: str, subject: str, html: str, text: str) -> str:
     """Send one message and return the provider's id for it.
 
-    Raises `EmailDeliveryError` when the provider is configured but the send
-    failed. The console backend cannot fail.
+    Raises `EmailDeliveryError` when the send failed, or when there is no
+    provider key outside a local setup.
     """
     settings = get_settings()
     if not settings.email_is_live:

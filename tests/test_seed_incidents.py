@@ -310,3 +310,62 @@ def test_the_console_report_never_prints_a_customer_email(db_path, write_csv, ca
     assert secret not in output
     assert "real.customer" not in output
     assert "TRF-000002" in output, "the rejected row is still identifiable"
+
+
+# --- Failures the run has to survive, or report and exit non-zero -------------
+
+
+def run_main(monkeypatch, *argv):
+    monkeypatch.setattr("sys.argv", ["seed-incidents", *map(str, argv)])
+    return seed_incidents.main()
+
+
+def test_a_row_the_model_refuses_is_rejected_and_the_run_continues(db_path, write_csv):
+    """Passes every CSV rule, but the description is longer than the model allows."""
+    too_long = "Parcel " + "x" * 4000
+    path = write_csv(
+        [row(incident_id="TRF-000001", description=too_long), row(incident_id="TRF-000002")]
+    )
+
+    report = seed_incidents.seed(path)
+
+    assert report.inserted == 1
+    assert [rejected.incident_id for rejected in report.rejected] == ["TRF-000001"]
+    assert {issue.rule for issue in report.rejected[0].issues} == {seed_incidents.MODEL_RULE}
+    assert all(too_long not in issue.message for issue in report.rejected[0].issues)
+
+
+def test_main_exits_non_zero_when_every_row_is_rejected(db_path, write_csv, monkeypatch, capsys):
+    path = write_csv([row(incident_id="TRF-000001", date="08/01/2024")])
+
+    assert run_main(monkeypatch, path) == 1
+    assert "every row" in capsys.readouterr().err
+
+
+def test_main_exits_zero_when_only_some_rows_are_rejected(db_path, write_csv, monkeypatch):
+    path = write_csv([row(incident_id="TRF-000001"), row(incident_id="TRF-000002", country="FR")])
+
+    assert run_main(monkeypatch, path) == 0
+
+
+def test_main_reports_a_missing_file_on_stderr(db_path, tmp_path, monkeypatch, capsys):
+    assert run_main(monkeypatch, tmp_path / "nowhere.csv") == 1
+    assert "no such file" in capsys.readouterr().err
+
+
+def test_main_reports_an_unparseable_csv_instead_of_a_traceback(
+    db_path, tmp_path, monkeypatch, capsys
+):
+    """A field past the csv module's size limit raises `csv.Error` mid-file."""
+    path = tmp_path / "export.csv"
+    path.write_text(",".join(HEADER) + "\nTRF-000001," + "x" * 200_000 + "\n", encoding="utf-8")
+
+    assert run_main(monkeypatch, path) == 1
+    assert "could not be parsed" in capsys.readouterr().err
+
+
+def test_an_unreadable_database_stops_the_run_before_any_insert(db_path, write_csv):
+    db_path.write_text("{ this is not json", encoding="utf-8")
+
+    with pytest.raises(seed_incidents.SeedError, match="could not be read"):
+        seed_incidents.seed(write_csv([row()]))

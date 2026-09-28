@@ -8,8 +8,13 @@ import { handleUnauthorized, readToken } from "@/lib/auth-storage";
  * different host with a different contract. Sending our bearer token there
  * would hand a TrackFlow credential to a third party.
  */
+const configuredAuthApiUrl = process.env.NEXT_PUBLIC_AUTH_API_URL?.trim().replace(/\/+$/, "") ?? "";
+
+// The localhost default exists for development only. A production build with
+// the variable missing must fail loudly as a configuration error, not quietly
+// point every sign-in at a machine that is not there.
 const authApiBaseUrl =
-  process.env.NEXT_PUBLIC_AUTH_API_URL?.trim().replace(/\/+$/, "") ?? "http://localhost:8000";
+  configuredAuthApiUrl || (process.env.NODE_ENV === "production" ? "" : "http://localhost:8000");
 
 export function getAuthApiBaseUrl(): string {
   return authApiBaseUrl;
@@ -55,6 +60,48 @@ export class UnauthorizedError extends ApiError {
   constructor(payload: unknown = null) {
     super(401, payload);
     this.name = "UnauthorizedError";
+  }
+}
+
+/**
+ * The request never produced a response: offline, DNS, CORS, or the API is
+ * down. `fetch` reports all of these as a bare `TypeError`, which is also what
+ * a coding bug throws, so it is wrapped where the two can still be told apart.
+ * Shared with `lib/api-client.ts`, whose records API fails the same way.
+ */
+export class NetworkError extends Error {
+  constructor(cause: unknown) {
+    super("The request did not reach the API", { cause });
+    this.name = "NetworkError";
+  }
+}
+
+/** A successful status whose body claimed to be JSON and was not. */
+export class UnreadableResponseError extends Error {
+  readonly status: number;
+
+  constructor(status: number, cause: unknown) {
+    super(`The API answered ${status} with a body that is not valid JSON`, { cause });
+    this.name = "UnreadableResponseError";
+    this.status = status;
+  }
+}
+
+/** `fetch`, with a network failure turned into a `NetworkError`. */
+export async function sendRequest(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (cause) {
+    throw new NetworkError(cause);
+  }
+}
+
+/** `response.json()` for a body already known to be JSON, with a broken one reported as such. */
+export async function readJsonBody(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch (cause) {
+    throw new UnreadableResponseError(response.status, cause);
   }
 }
 
@@ -115,7 +162,7 @@ export function extractApiFieldErrors(payload: unknown): ApiFieldError[] {
     });
 }
 
-async function readErrorPayload(response: Response): Promise<unknown> {
+export async function readErrorPayload(response: Response): Promise<unknown> {
   try {
     return await response.json();
   } catch {
@@ -133,7 +180,7 @@ function withJsonHeaders(init?: RequestInit, token?: string | null): HeadersInit
 
 /** Unauthenticated call. Use it only for `POST /users` and `POST /auth/login`. */
 export async function requestAuthApi(path: string, init?: RequestInit): Promise<Response> {
-  const response = await fetch(buildAuthApiUrl(path), {
+  const response = await sendRequest(buildAuthApiUrl(path), {
     ...init,
     headers: withJsonHeaders(init),
   });
@@ -158,7 +205,7 @@ export async function requestAuthenticatedApi(path: string, init?: RequestInit):
     throw new UnauthorizedError({ detail: "Your session has expired. Please sign in again." });
   }
 
-  const response = await fetch(buildAuthApiUrl(path), {
+  const response = await sendRequest(buildAuthApiUrl(path), {
     ...init,
     headers: withJsonHeaders(init, token),
   });
@@ -186,5 +233,5 @@ export async function parseAuthResponseJson(response: Response): Promise<unknown
     return null;
   }
 
-  return response.json();
+  return readJsonBody(response);
 }

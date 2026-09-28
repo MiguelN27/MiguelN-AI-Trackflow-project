@@ -69,20 +69,25 @@ export default function ResetPasswordPage() {
 
     setIsSubmitting(true);
     setErrors({});
+    let isLeaving = false;
 
     try {
       await resetPassword(token, values.newPassword);
+      isLeaving = true;
       router.replace(LOGIN_AFTER_RESET_PATH);
     } catch (resetError) {
       if (resetError instanceof InvalidResetTokenError) {
         // The token is spent or expired. Resubmitting cannot help, so the form
         // is replaced with a way to start over rather than left to be retried.
+        // The message was already passed through `describeError` in the service.
         setRejectionMessage(resetError.message);
       } else {
         setErrors(toFieldErrors(resetError, RESET_PASSWORD_FIELDS, RESET_FIELD_ALIASES));
       }
-
-      setIsSubmitting(false);
+    } finally {
+      if (!isLeaving) {
+        setIsSubmitting(false);
+      }
     }
   }
 

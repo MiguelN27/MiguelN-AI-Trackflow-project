@@ -4,11 +4,15 @@ Mounts every domain router behind one FastAPI app. Authentication is stateless
 JWT only: no sessions, no auth cookies.
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.auth.router import router as auth_router
+from services.core.config import get_settings
 from services.core.errors import IncidentNotFound, ValidationFailed
 from services.core.http_errors import (
     incident_not_found_handler,
@@ -21,7 +25,20 @@ from services.profiles.router import router as profiles_router
 from services.suppliers.router import router as suppliers_router
 from services.users.router import router as users_router
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Load the settings before the first request is served.
+
+    A missing or malformed setting then stops startup with a message naming
+    it, instead of surfacing as a 500 on whichever request first needs it.
+    """
+    get_settings()
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="TrackFlow API",
     description=(
         "Supplier directory, identity and incident services for TrackFlow "

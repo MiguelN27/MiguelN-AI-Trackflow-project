@@ -1,5 +1,6 @@
 "use client";
 
+import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import { formatStatusLabel } from "@/lib/supplier";
 import { updateSupplierStatus } from "@/services/suppliers-service";
 import type { Supplier, SupplierStatus } from "@/types/supplier";
@@ -27,7 +28,8 @@ export function SupplierStatusToggle({ supplier, onUpdated }: SupplierStatusTogg
     try {
       onUpdated(await updateSupplierStatus(supplier.id, targetStatus));
     } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : "Unable to update the status");
+      const described = describeError(updateError, "Could not change the status. Try again.", GENERAL_ERROR_COPY);
+      setError(described.fieldErrors.status ?? described.message);
     } finally {
       setIsSaving(false);
     }

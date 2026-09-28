@@ -7,6 +7,10 @@ from services.users.models import UserCreate, UserInDB, UserResponse, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
 
+# Deliberately does not repeat the address: the caller already knows what they
+# typed, and an error body is not the place to echo personal data back.
+EMAIL_TAKEN_MESSAGE = "An account with this email address already exists."
+
 
 def _to_response(user: UserInDB) -> UserResponse:
     return UserResponse(**user.model_dump(exclude={"hashed_password"}))
@@ -41,7 +45,7 @@ def register_user(payload: UserCreate) -> UserResponse:
     except EmailAlreadyRegistered as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=str(error),
+            detail=EMAIL_TAKEN_MESSAGE,
         ) from error
     return _to_response(user)
 
@@ -89,7 +93,7 @@ def update_user(user_id: str, payload: UserUpdate, current_user: CurrentUser) ->
     except EmailAlreadyRegistered as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=str(error),
+            detail=EMAIL_TAKEN_MESSAGE,
         ) from error
 
     if updated is None:

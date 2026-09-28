@@ -11,13 +11,19 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { UnauthorizedError } from "@/lib/api-client";
 import { buildLoginUrl, LOGIN_PATH, readToken, UNAUTHORIZED_EVENT } from "@/lib/auth-storage";
+import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import { fetchCurrentUser, logout } from "@/services/auth-service";
 import type { AuthenticatedUser, Profile, SessionStatus } from "@/types/auth";
 
 type SessionContextValue = {
   status: SessionStatus;
   user: AuthenticatedUser | null;
+  /** Why the session could not be checked. Set only while `status` is `error`. */
+  error: string | null;
+  /** Checks the session again after a failure that was not the token's fault. */
+  retry: () => void;
   /** Replaces the cached profile after a successful `PUT /profiles/me`. */
   applyProfile: (profile: Profile) => void;
   signOut: () => void;
@@ -46,6 +52,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [status, setStatus] = useState<SessionStatus>("loading");
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const hasRedirected = useRef(false);
 
   const redirectToLogin = useCallback(() => {
@@ -85,19 +93,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(currentUser);
         setStatus("authenticated");
       })
-      .catch(() => {
-        // `requestAuthenticatedApi` already cleared the token and dispatched
-        // the unauthorized event on a 401; anything else is treated the same
-        // way, because an unverified session must not render protected data.
-        if (isCurrent) {
-          redirectToLogin();
+      .catch((sessionError: unknown) => {
+        if (!isCurrent) {
+          return;
         }
+
+        // The token itself was refused: `requestAuthenticatedApi` already
+        // cleared it and dispatched the unauthorized event.
+        if (sessionError instanceof UnauthorizedError) {
+          redirectToLogin();
+          return;
+        }
+
+        // The API was unreachable, failed, or answered with something
+        // unreadable. None of that says the token is bad, so signing the user
+        // out would turn an outage into an unexplained logout. The guard keeps
+        // protected data hidden and shows the reason with a retry instead.
+        setError(describeError(sessionError, "We could not confirm your session.", GENERAL_ERROR_COPY).message);
+        setStatus("error");
       });
 
     return () => {
       isCurrent = false;
     };
-  }, [redirectToLogin]);
+  }, [redirectToLogin, attempt]);
+
+  const retry = useCallback(() => {
+    setError(null);
+    setStatus("loading");
+    setAttempt((current) => current + 1);
+  }, []);
 
   const applyProfile = useCallback((profile: Profile) => {
     setUser((currentUser) => (currentUser ? { ...currentUser, profile } : currentUser));
@@ -112,8 +137,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [router]);
 
   const value = useMemo<SessionContextValue>(
-    () => ({ status, user, applyProfile, signOut }),
-    [status, user, applyProfile, signOut],
+    () => ({ status, user, error, retry, applyProfile, signOut }),
+    [status, user, error, retry, applyProfile, signOut],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

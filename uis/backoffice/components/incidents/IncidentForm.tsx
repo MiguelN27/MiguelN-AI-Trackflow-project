@@ -2,7 +2,7 @@
 
 import { StateMessage } from "@/components/common/StateMessage";
 import { IncidentField, controlClassName } from "@/components/incidents/IncidentField";
-import { describeError } from "@/lib/friendly-error";
+import { INCIDENT_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
   buildIncidentPayload,
   describeOrigin,
@@ -111,7 +111,11 @@ export function IncidentForm({ onCreated }: IncidentFormProps) {
       setConfirmation(created);
       onCreated?.(created);
     } catch (submitError) {
-      const described = describeError(submitError, "Please fix the highlighted fields and submit again.");
+      const described = describeError(
+        submitError,
+        "Please fix the highlighted fields and submit again.",
+        INCIDENT_ERROR_COPY,
+      );
 
       setFieldErrors(toIncidentFieldErrors(described.fieldErrors));
       setFormError(described.message);

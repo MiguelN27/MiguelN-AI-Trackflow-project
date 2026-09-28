@@ -19,7 +19,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import Request, Response, status
-from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -94,6 +93,15 @@ def _plain_message(error: dict[str, Any]) -> str:
     if error_type in {"int_parsing", "int_type"}:
         return "Must be a whole number."
 
+    if error_type in {"float_parsing", "float_type"}:
+        return "Must be a number."
+
+    if error_type == "greater_than":
+        return f"Must be greater than {context.get('gt')}."
+
+    if error_type == "too_short":
+        return f"Must contain at least {context.get('min_length')} item(s)."
+
     if error_type in {"datetime_parsing", "datetime_from_date_parsing", "datetime_type"}:
         return "Must be a valid date and time."
 
@@ -106,7 +114,16 @@ def _plain_message(error: dict[str, Any]) -> str:
     if error_type == "extra_forbidden":
         return "This field is not recognised."
 
-    return str(error.get("msg", "This value is not valid.")).capitalize()
+    message = str(error.get("msg", "This value is not valid."))
+
+    if error_type == "value_error":
+        # A validator's own `ValueError`, prefixed by pydantic. The email type
+        # appends the parser's diagnosis, which is more than a form needs.
+        if message.startswith("value is not a valid email address"):
+            return "Enter a valid email address."
+        message = message.removeprefix("Value error, ")
+
+    return message[:1].upper() + message[1:]
 
 
 def make_validation_error_handler(
@@ -121,8 +138,13 @@ def make_validation_error_handler(
     in `uis/*/services/auth-service.ts` reads **any** 400 as a spent reset
     token and replaces the form with "request a new link", so remapping a
     too-short password from 422 to 400 there would tell someone their link had
-    expired when it had not. Anything outside `prefixes` is handed to FastAPI's
-    own handler untouched.
+    expired when it had not.
+
+    Outside `prefixes` the status and the `detail` array stay exactly as
+    FastAPI shapes them - `type`, `loc`, `msg` - with two differences: the
+    submitted value is not echoed back under `input` (FastAPI's default returns
+    a rejected password verbatim), and `msg` is the same plain sentence the
+    incident routes use.
     """
 
     async def handler(request: Request, exc: Exception) -> Response:
@@ -130,7 +152,19 @@ def make_validation_error_handler(
             return unhandled_exception_handler(request, exc)
 
         if not request.url.path.startswith(prefixes):
-            return await request_validation_exception_handler(request, exc)
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "detail": [
+                        {
+                            "type": error.get("type", ""),
+                            "loc": list(error.get("loc", ())),
+                            "msg": _plain_message(error),
+                        }
+                        for error in exc.errors()
+                    ]
+                },
+            )
 
         # `detail` carries the first problem so a form can focus that input;
         # `errors` carries all of them so it can mark every bad field at once.

@@ -1,4 +1,4 @@
-import { ApiError, extractApiFieldErrors } from "@/lib/auth-api-client";
+import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import type {
   AuthenticatedUser,
   ChangePasswordField,
@@ -296,6 +296,10 @@ export function extractAccessToken(payload: unknown): string {
  * Turns an API failure into per-field messages. Anything the form has no input
  * for lands on `form`, so no message is ever silently dropped.
  *
+ * Every message passes through `describeError` first, so a network failure, a
+ * 5xx or an unreadable body reaches the form as a sentence written for the
+ * reader - never as `Failed to fetch` or `Request failed with status 500`.
+ *
  * `aliases` maps an API field name onto the form's own where they differ - the
  * API speaks snake_case (`new_password`), these forms camelCase.
  */
@@ -305,24 +309,23 @@ export function toFieldErrors<TField extends string>(
   aliases?: Readonly<Record<string, TField>>,
 ): FieldErrors<TField> {
   const errors: FieldErrors<TField> = {};
+  const described = describeError(error, "Please check the highlighted fields and try again.", GENERAL_ERROR_COPY);
+  const unplaced: string[] = [];
 
-  if (!(error instanceof ApiError)) {
-    errors.form = error instanceof Error ? error.message : "Something went wrong. Please try again.";
-    return errors;
-  }
-
-  for (const { field, message } of extractApiFieldErrors(error.payload)) {
+  for (const [field, message] of Object.entries(described.fieldErrors)) {
     const formField = aliases?.[field] ?? field;
 
     if ((knownFields as readonly string[]).includes(formField)) {
       errors[formField as TField] = message;
     } else {
-      errors.form = errors.form ? `${errors.form} · ${message}` : message;
+      unplaced.push(message);
     }
   }
 
-  if (Object.keys(errors).length === 0) {
-    errors.form = error.message;
+  if (unplaced.length > 0) {
+    errors.form = unplaced.join(" · ");
+  } else if (Object.keys(errors).length === 0) {
+    errors.form = described.message;
   }
 
   return errors;

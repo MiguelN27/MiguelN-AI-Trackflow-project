@@ -10,6 +10,7 @@ import { emptyLoginFormValues, toFieldErrors, validateLoginForm } from "@/lib/au
 import {
   DEFAULT_AUTHENTICATED_PATH,
   FORGOT_PASSWORD_PATH,
+  hasRegisteredFlag,
   hasResetSuccessFlag,
   sanitizeNextPath,
 } from "@/lib/auth-storage";
@@ -39,6 +40,8 @@ export default function LoginPage() {
   // Set by the redirect out of `/reset-password`.
   const search = useLocationSearch();
   const showResetSuccess = search !== null && hasResetSuccessFlag(search);
+  // Set by `/register` when the account was created but the automatic sign-in failed.
+  const showRegistered = search !== null && hasRegisteredFlag(search);
 
   function updateValues(patch: Partial<LoginFormValues>): void {
     setErrors({});
@@ -56,15 +59,22 @@ export default function LoginPage() {
 
     setIsSubmitting(true);
     setErrors({});
+    let isLeaving = false;
 
     try {
       await login(values);
+      isLeaving = true;
       router.replace(resolveNextPath());
     } catch (loginError) {
       // The API answers a wrong email and a wrong password identically, so the
       // message belongs to the form rather than to either input.
       setErrors(toFieldErrors(loginError, LOGIN_FIELDS));
-      setIsSubmitting(false);
+    } finally {
+      // Stays locked only while the page is navigating away, so a second click
+      // cannot sign in twice; every other outcome hands the form back.
+      if (!isLeaving) {
+        setIsSubmitting(false);
+      }
     }
   }
 
@@ -85,6 +95,13 @@ export default function LoginPage() {
         {showResetSuccess ? (
           <StateMessage tone="success">
             Your password has been reset. Sign in with your new password.
+          </StateMessage>
+        ) : null}
+
+        {showRegistered ? (
+          <StateMessage tone="success">
+            Your account was created, but we could not sign you in automatically. Sign in with the email and
+            password you just chose.
           </StateMessage>
         ) : null}
 

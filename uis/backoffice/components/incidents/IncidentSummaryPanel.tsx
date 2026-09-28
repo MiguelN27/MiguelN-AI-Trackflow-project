@@ -1,7 +1,7 @@
 "use client";
 
 import { StateMessage } from "@/components/common/StateMessage";
-import { describeError } from "@/lib/friendly-error";
+import { INCIDENT_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
   formatBranchLabel,
   formatCategoryLabel,
@@ -181,7 +181,7 @@ export function IncidentSummaryPanel({ reloadToken = 0 }: IncidentSummaryPanelPr
           return;
         }
 
-        setError(describeError(loadError, "Could not load the incident metrics.").message);
+        setError(describeError(loadError, "Could not load the incident metrics.", INCIDENT_ERROR_COPY).message);
         setStatus("error");
       }
     }

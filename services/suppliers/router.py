@@ -1,6 +1,8 @@
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import ValidationError
 from tinydb.table import Document
 
 from services.auth.dependencies import get_current_user
@@ -14,6 +16,8 @@ from services.suppliers.models import (
     SupplierInDB,
     SupplierResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/suppliers",
@@ -52,10 +56,21 @@ def list_suppliers(
 ) -> list[SupplierResponse]:
     docs = get_table().all()
     if country is not None:
-        docs = [doc for doc in docs if doc["country"] == country.value]
+        docs = [doc for doc in docs if doc.get("country") == country.value]
     if category is not None:
-        docs = [doc for doc in docs if category.value in doc["categories"]]
-    return [to_response(doc) for doc in docs]
+        docs = [doc for doc in docs if category.value in doc.get("categories", [])]
+
+    # A stored row that no longer fits the model is skipped and logged rather
+    # than failing the whole directory with a 500.
+    suppliers = []
+    for doc in docs:
+        try:
+            suppliers.append(to_response(doc))
+        except ValidationError:
+            logger.warning(
+                "Skipping stored supplier %s: it no longer matches the model", doc.doc_id
+            )
+    return suppliers
 
 
 @router.get("/{supplier_id}", response_model=SupplierResponse)

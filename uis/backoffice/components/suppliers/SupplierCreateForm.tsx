@@ -1,6 +1,7 @@
 "use client";
 
 import { StateMessage } from "@/components/common/StateMessage";
+import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
   buildSupplierPayload,
   currencyForCountry,
@@ -29,6 +30,25 @@ type SupplierCreateFormProps = {
 
 const fieldClassName =
   "w-full rounded-xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--foreground)] outline-none transition focus:border-[color:var(--brand-primary)]";
+
+/**
+ * The form shows one message, so per-field problems from a 422 are listed with
+ * a readable label (`rate_per_shipment` becomes "Rate per shipment") rather
+ * than collapsed into a generic line that hides which input was wrong.
+ */
+function describeCreateError(error: unknown): string {
+  const described = describeError(
+    error,
+    "Could not register the supplier. Check the form and try again.",
+    GENERAL_ERROR_COPY,
+  );
+  const fieldMessages = Object.entries(described.fieldErrors).map(([field, message]) => {
+    const label = field.replace(/_/g, " ").replace(/\./g, " ");
+    return `${label.charAt(0).toUpperCase()}${label.slice(1)}: ${message}`;
+  });
+
+  return fieldMessages.length > 0 ? fieldMessages.join(" ") : described.message;
+}
 
 export function SupplierCreateForm({ onCreated, onCancel }: SupplierCreateFormProps) {
   const [values, setValues] = useState<SupplierFormValues>(emptySupplierFormValues());
@@ -75,7 +95,7 @@ export function SupplierCreateForm({ onCreated, onCancel }: SupplierCreateFormPr
       setSuccess(`${created.name} was added to the directory.`);
       onCreated(created);
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Unable to create the supplier");
+      setError(describeCreateError(createError));
     } finally {
       setIsSubmitting(false);
     }

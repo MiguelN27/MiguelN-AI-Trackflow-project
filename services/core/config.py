@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -44,6 +44,31 @@ class Settings(BaseSettings):
         return bool(self.resend_api_key)
 
 
+class ConfigurationError(RuntimeError):
+    """The environment does not describe a runnable service.
+
+    The message names each setting and what is wrong with it, and never its
+    value: this ends up in logs and on the terminal.
+    """
+
+
+def _describe(error: ValidationError) -> str:
+    problems = []
+    for item in error.errors(include_input=False, include_url=False):
+        name = ".".join(str(part) for part in item["loc"]).upper() or "SETTINGS"
+        problems.append(f"{name}: {item['msg']}")
+    return "; ".join(problems)
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as error:
+        # pydantic's own message quotes the rejected input: a too-short
+        # JWT_SECRET_KEY verbatim, and for a missing one every other setting,
+        # RESEND_API_KEY included. `from None` keeps that message out of the
+        # traceback as well, so only names and reasons are ever printed.
+        raise ConfigurationError(
+            f"Invalid configuration - {_describe(error)}. Compare .env with .env.example."
+        ) from None

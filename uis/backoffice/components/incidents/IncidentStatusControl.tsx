@@ -1,6 +1,7 @@
 "use client";
 
-import { describeError } from "@/lib/friendly-error";
+import { ApiError } from "@/lib/api-client";
+import { INCIDENT_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import { allowedTransitionsFrom, formatStatusLabel, isFinalStatus, isIncidentStatus } from "@/lib/incident";
 import { updateIncidentStatus } from "@/services/incidents-service";
 import type { Incident, IncidentStatus } from "@/types/incident";
@@ -12,6 +13,8 @@ type IncidentStatusControlProps = {
   onStatusChange: (id: string, status: IncidentStatus) => void;
   /** Replaces the whole row with what the API returned, once it is confirmed. */
   onConfirmed: (incident: Incident) => void;
+  /** Reloads the list. Offered when the incident turns out to no longer exist. */
+  onRefresh: () => void;
 };
 
 /**
@@ -32,9 +35,13 @@ export function IncidentStatusControl({
   incident,
   onStatusChange,
   onConfirmed,
+  onRefresh,
 }: IncidentStatusControlProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A 404 means the row is stale, so picking another status cannot help; the
+  // way forward is reloading the list.
+  const [isGone, setIsGone] = useState(false);
 
   const transitions = allowedTransitionsFrom(incident.status);
 
@@ -52,6 +59,7 @@ export function IncidentStatusControl({
 
     setIsSaving(true);
     setError(null);
+    setIsGone(false);
     onStatusChange(incident.id, nextStatus);
 
     try {
@@ -62,14 +70,21 @@ export function IncidentStatusControl({
       const described = describeError(
         updateError,
         `Could not move this incident to ${formatStatusLabel(nextStatus)}.`,
+        INCIDENT_ERROR_COPY,
       );
+      const notFound = updateError instanceof ApiError && updateError.status === 404;
 
       // A refused transition comes back attached to the `status` field, and
       // this control *is* that field - there is no separate input to hang the
       // message on. Preferring it keeps the API's explanation of why the move
       // was refused instead of replacing it with the generic fallback.
-      const reason = described.fieldErrors.status ?? described.message;
-      setError(`${reason} Left as ${formatStatusLabel(previousStatus)}.`);
+      if (notFound) {
+        setIsGone(true);
+        setError(INCIDENT_ERROR_COPY.notFound ?? described.message);
+      } else {
+        const reason = described.fieldErrors.status ?? described.message;
+        setError(`${reason} Left as ${formatStatusLabel(previousStatus)}.`);
+      }
     } finally {
       setIsSaving(false);
     }
@@ -110,6 +125,16 @@ export function IncidentStatusControl({
         {isSaving ? <span className="text-xs text-slate-500">Saving...</span> : null}
         {!isSaving && error ? <span className="text-xs font-semibold text-red-600">{error}</span> : null}
       </span>
+
+      {!isSaving && isGone ? (
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="self-start rounded-lg border border-red-300 bg-white px-2.5 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-100"
+        >
+          Refresh list
+        </button>
+      ) : null}
     </div>
   );
 }

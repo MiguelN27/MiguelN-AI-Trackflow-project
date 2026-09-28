@@ -3,7 +3,7 @@
 import { StateMessage } from "@/components/common/StateMessage";
 import { IncidentStatusControl } from "@/components/incidents/IncidentStatusControl";
 import { IncidentSummaryPanel } from "@/components/incidents/IncidentSummaryPanel";
-import { describeError } from "@/lib/friendly-error";
+import { INCIDENT_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
   countActiveFilters,
   formatBranchLabel,
@@ -95,7 +95,7 @@ function IncidentsListContent() {
           return;
         }
 
-        setListError(describeError(loadError, "Could not load the incident list.").message);
+        setListError(describeError(loadError, "Could not load the incident list.", INCIDENT_ERROR_COPY).message);
         setListStatus("error");
       }
     }
@@ -380,6 +380,7 @@ function IncidentsListContent() {
                           incident={incident}
                           onStatusChange={applyStatus}
                           onConfirmed={replaceIncident}
+                          onRefresh={retry}
                         />
                       </td>
                     </tr>

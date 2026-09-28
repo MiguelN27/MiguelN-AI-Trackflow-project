@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -5,6 +6,8 @@ from jose import JWTError, jwt
 from passlib.hash import bcrypt
 
 from services.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 BCRYPT_ROUNDS = 12
 # bcrypt silently ignores anything past 72 bytes, so payloads are capped there.
@@ -27,6 +30,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
         return bcrypt.verify(plain_password, hashed_password)
     except (ValueError, TypeError):
+        # The caller still sees a failed check, but a stored hash that cannot
+        # be parsed is data corruption, not a wrong password, and must be visible.
+        logger.warning("A stored password hash could not be read; treating the check as failed")
         return False
 
 

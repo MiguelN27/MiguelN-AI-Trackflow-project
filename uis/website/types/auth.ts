@@ -66,4 +66,8 @@ export type ForgotPasswordField = keyof ForgotPasswordFormValues;
 export type ResetPasswordField = keyof ResetPasswordFormValues;
 export type ChangePasswordField = keyof ChangePasswordFormValues;
 
-export type SessionStatus = "loading" | "authenticated" | "unauthenticated";
+/**
+ * `error` means the session could not be checked at all - the API was
+ * unreachable or failed - which says nothing about whether the token is good.
+ */
+export type SessionStatus = "loading" | "authenticated" | "unauthenticated" | "error";

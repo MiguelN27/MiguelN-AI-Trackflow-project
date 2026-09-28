@@ -51,6 +51,29 @@ export class UnauthorizedError extends ApiError {
 }
 
 /**
+ * The request never produced a response: offline, DNS, CORS, or the API is
+ * down. `fetch` reports all of these as a bare `TypeError`, which is also what
+ * a coding bug throws, so it is wrapped here where the two can still be told apart.
+ */
+export class NetworkError extends Error {
+  constructor(cause: unknown) {
+    super("The request did not reach the API", { cause });
+    this.name = "NetworkError";
+  }
+}
+
+/** A successful status whose body claimed to be JSON and was not. */
+export class UnreadableResponseError extends Error {
+  readonly status: number;
+
+  constructor(status: number, cause: unknown) {
+    super(`The API answered ${status} with a body that is not valid JSON`, { cause });
+    this.name = "UnreadableResponseError";
+    this.status = status;
+  }
+}
+
+/**
  * FastAPI validation errors arrive as `{ loc: ["body", "name"], msg: "..." }`.
  * The first segment names the request part, so only the rest is useful as a field path.
  */
@@ -183,9 +206,17 @@ function withJsonHeaders(init?: RequestInit, token?: string | null): HeadersInit
   };
 }
 
+async function send(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (cause) {
+    throw new NetworkError(cause);
+  }
+}
+
 /** Unauthenticated call. Use it only for `POST /users` and `POST /auth/login`. */
 export async function requestApi(path: string, init?: RequestInit): Promise<Response> {
-  const response = await fetch(buildApiUrl(path), {
+  const response = await send(buildApiUrl(path), {
     ...init,
     headers: withJsonHeaders(init),
   });
@@ -210,7 +241,7 @@ export async function requestAuthenticatedApi(path: string, init?: RequestInit):
     throw new UnauthorizedError({ detail: "Your session has expired. Please sign in again." });
   }
 
-  const response = await fetch(buildApiUrl(path), {
+  const response = await send(buildApiUrl(path), {
     ...init,
     headers: withJsonHeaders(init, token),
   });
@@ -238,5 +269,9 @@ export async function parseResponseJson(response: Response): Promise<unknown | n
     return null;
   }
 
-  return response.json();
+  try {
+    return await response.json();
+  } catch (cause) {
+    throw new UnreadableResponseError(response.status, cause);
+  }
 }

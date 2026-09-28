@@ -6,6 +6,7 @@ import { SupplierRateEditor } from "@/components/suppliers/SupplierRateEditor";
 import { SupplierStatusBadge } from "@/components/suppliers/SupplierStatusBadge";
 import { SupplierStatusToggle } from "@/components/suppliers/SupplierStatusToggle";
 import { getApiBaseUrl } from "@/lib/api-client";
+import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
   formatCategoriesLabel,
   formatCategoryLabel,
@@ -23,7 +24,7 @@ import {
 } from "@/types/supplier";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 const apiBaseUrl = getApiBaseUrl();
 const suppliersEndpointLabel = apiBaseUrl ? `${apiBaseUrl}/suppliers` : "NEXT_PUBLIC_API_URL/suppliers";
@@ -49,7 +50,10 @@ function SuppliersListContent() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [listStatus, setListStatus] = useState<AsyncStatus>("loading");
   const [listError, setListError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [isCreateFormOpen, setIsCreateFormOpen] = useState(false);
+
+  const retry = useCallback(() => setAttempt((current) => current + 1), []);
 
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -81,7 +85,7 @@ function SuppliersListContent() {
           return;
         }
 
-        setListError(loadError instanceof Error ? loadError.message : "Unable to load suppliers");
+        setListError(describeError(loadError, "Could not load the supplier directory.", GENERAL_ERROR_COPY).message);
         setListStatus("error");
       }
     }
@@ -91,7 +95,7 @@ function SuppliersListContent() {
     return () => {
       active = false;
     };
-  }, [countryFilter, categoryFilter]);
+  }, [countryFilter, categoryFilter, attempt]);
 
   const suspendedCount = useMemo(
     () => suppliers.filter((supplier) => supplier.status === "suspended").length,
@@ -231,11 +235,20 @@ function SuppliersListContent() {
           </div>
 
           {listStatus === "loading" ? (
-            <StateMessage tone="info">Loading suppliers from {suppliersEndpointLabel}...</StateMessage>
+            <StateMessage tone="info">Loading suppliers...</StateMessage>
           ) : null}
 
           {listStatus === "error" && listError ? (
-            <StateMessage tone="error">Could not load suppliers: {listError}</StateMessage>
+            <StateMessage tone="error">
+              <p>{listError}</p>
+              <button
+                type="button"
+                onClick={retry}
+                className="mt-3 inline-flex min-h-10 items-center rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100"
+              >
+                Try again
+              </button>
+            </StateMessage>
           ) : null}
 
           {listStatus === "success" && suppliers.length === 0 ? (

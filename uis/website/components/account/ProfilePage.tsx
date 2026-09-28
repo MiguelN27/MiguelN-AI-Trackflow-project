@@ -139,7 +139,8 @@ export default function ProfilePage() {
           </form>
         ) : (
           <StateMessage tone="info" className="mt-4">
-            No profile is linked to this account, so there is nothing to edit yet.
+            No profile is linked to this account, so there is nothing to edit yet. Contact TrackFlow Tech
+            and they can link one for you.
           </StateMessage>
         )}
       </section>

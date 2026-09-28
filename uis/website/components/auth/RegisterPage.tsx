@@ -7,13 +7,14 @@ import { AuthCard } from "@/components/auth/AuthCard";
 import { AuthField } from "@/components/auth/AuthField";
 import { StateMessage } from "@/components/common/StateMessage";
 import { ApiError } from "@/lib/auth-api-client";
+import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
   emptyRegisterFormValues,
   MIN_PASSWORD_LENGTH,
   toFieldErrors,
   validateRegisterForm,
 } from "@/lib/auth";
-import { DEFAULT_AUTHENTICATED_PATH, LOGIN_PATH } from "@/lib/auth-storage";
+import { buildLoginAfterRegisterUrl, DEFAULT_AUTHENTICATED_PATH, LOGIN_PATH } from "@/lib/auth-storage";
 import { PostRegistrationLoginError, register } from "@/services/auth-service";
 import type { FieldErrors, RegisterField, RegisterFormValues } from "@/types/auth";
 
@@ -42,25 +43,38 @@ export default function RegisterPage() {
 
     setIsSubmitting(true);
     setErrors({});
+    let isLeaving = false;
 
     try {
       await register(values);
+      isLeaving = true;
       router.replace(DEFAULT_AUTHENTICATED_PATH);
     } catch (registerError) {
       if (registerError instanceof PostRegistrationLoginError) {
-        // The account exists; only the automatic sign-in failed.
-        router.replace(`${LOGIN_PATH}?next=${encodeURIComponent(DEFAULT_AUTHENTICATED_PATH)}`);
+        // The account exists; only the automatic sign-in failed. The login page
+        // says so, so the user does not try to register a second time.
+        console.error(registerError);
+        isLeaving = true;
+        router.replace(buildLoginAfterRegisterUrl(DEFAULT_AUTHENTICATED_PATH));
         return;
       }
 
       if (registerError instanceof ApiError && registerError.status === 409) {
         // `POST /users` reports a taken email as a plain-string 409 detail.
-        setErrors({ email: registerError.message });
+        setErrors({
+          email: describeError(
+            registerError,
+            "An account with this email address already exists.",
+            GENERAL_ERROR_COPY,
+          ).message,
+        });
       } else {
         setErrors(toFieldErrors(registerError, REGISTER_FIELDS));
       }
-
-      setIsSubmitting(false);
+    } finally {
+      if (!isLeaving) {
+        setIsSubmitting(false);
+      }
     }
   }
 

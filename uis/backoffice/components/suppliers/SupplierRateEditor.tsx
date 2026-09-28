@@ -1,5 +1,6 @@
 "use client";
 
+import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import { parseRateInput } from "@/lib/supplier";
 import { updateSupplierRate } from "@/services/suppliers-service";
 import type { Supplier } from "@/types/supplier";
@@ -40,7 +41,8 @@ export function SupplierRateEditor({ supplier, onUpdated }: SupplierRateEditorPr
     try {
       onUpdated(await updateSupplierRate(supplier.id, parsedRate));
     } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : "Unable to update the rate");
+      const described = describeError(updateError, "Could not update the rate. Try again.", GENERAL_ERROR_COPY);
+      setError(described.fieldErrors.rate_per_shipment ?? described.message);
     } finally {
       setIsSaving(false);
     }

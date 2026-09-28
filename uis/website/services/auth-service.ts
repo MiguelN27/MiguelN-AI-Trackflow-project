@@ -5,6 +5,7 @@ import {
   requestAuthenticatedApi,
 } from "@/lib/auth-api-client";
 import { clearToken, storeToken } from "@/lib/auth-storage";
+import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
   buildProfilePayload,
   buildRegistrationPayload,
@@ -46,8 +47,8 @@ export async function login(values: LoginFormValues): Promise<string> {
  * account exists, so the form must not report it as a registration failure.
  */
 export class PostRegistrationLoginError extends Error {
-  constructor() {
-    super("Your account was created, but signing you in failed. Please sign in manually.");
+  constructor(cause: unknown) {
+    super("Your account was created, but signing you in failed. Please sign in manually.", { cause });
     this.name = "PostRegistrationLoginError";
   }
 }
@@ -66,8 +67,8 @@ export async function register(values: RegisterFormValues): Promise<string> {
 
   try {
     return await login({ email: values.email, password: values.password });
-  } catch {
-    throw new PostRegistrationLoginError();
+  } catch (loginError) {
+    throw new PostRegistrationLoginError(loginError);
   }
 }
 
@@ -133,7 +134,9 @@ export async function resetPassword(token: string, newPassword: string): Promise
     });
   } catch (error) {
     if (error instanceof ApiError && error.status === 400) {
-      throw new InvalidResetTokenError(error.message);
+      throw new InvalidResetTokenError(
+        describeError(error, "This password reset link is invalid or has expired.", GENERAL_ERROR_COPY).message,
+      );
     }
 
     throw error;
@@ -158,7 +161,9 @@ export async function changePassword(values: ChangePasswordFormValues): Promise<
     });
   } catch (error) {
     if (error instanceof ApiError && error.status === 400) {
-      throw new IncorrectCurrentPasswordError(error.message);
+      throw new IncorrectCurrentPasswordError(
+        describeError(error, "Your current password is incorrect.", GENERAL_ERROR_COPY).message,
+      );
     }
 
     throw error;

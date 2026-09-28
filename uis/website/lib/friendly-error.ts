@@ -7,9 +7,11 @@
  * page from a proxy, a network failure, a thrown non-Error - is answered with
  * text written here.
  *
- * Without that rule the fallback in `ApiError` ("Request failed with status
- * 500") and the browser's own network errors leak straight into the UI, which
- * is exactly what a form must never show.
+ * Without that rule `ApiError`'s fallback ("Request failed with status 500")
+ * and the browser's own network errors leak straight into the UI.
+ *
+ * Mirrors `uis/backoffice/lib/friendly-error.ts`, minus the incident routes
+ * this app does not call.
  */
 
 import {
@@ -18,9 +20,8 @@ import {
   UnauthorizedError,
   UnreadableResponseError,
   extractApiFieldErrors,
-  extractApiProblems,
   type ApiFieldError,
-} from "@/lib/api-client";
+} from "@/lib/auth-api-client";
 
 export type FriendlyError = {
   /** Safe to render as-is. Never empty. */
@@ -35,22 +36,29 @@ export type ErrorCopy = {
   server: string;
   /** For a 404 whose body could not be read. The call site's fallback is used when absent. */
   notFound?: string;
+  /**
+   * Whether the API's own error text may be shown. True for the in-repo
+   * identity API, whose messages are written for a reader; false for the
+   * external records API, whose wording this project does not control.
+   */
+  trustApiText: boolean;
 };
 
-export const INCIDENT_ERROR_COPY: ErrorCopy = {
-  offline: "Could not reach the incident service. Check your connection and try again.",
-  // Deliberately makes no promise about whether a write landed: the API's own
-  // 500 cannot know which side of the write it failed on.
-  server:
-    "The incident service is having trouble right now. Please try again in a moment, and contact TrackFlow Tech if it keeps happening.",
-  notFound: "That incident no longer exists. Refresh the list to see the latest.",
-};
-
-/** Suppliers, sign-in and account screens: everything that is not the incident manager. */
+/** Sign-in, registration and account screens, served by the in-repo identity API. */
 export const GENERAL_ERROR_COPY: ErrorCopy = {
   offline: "Could not reach TrackFlow. Check your connection and try again.",
   server:
     "TrackFlow is having trouble right now. Please try again in a moment, and contact TrackFlow Tech if it keeps happening.",
+  trustApiText: true,
+};
+
+/** The hiring tracker, served by the external candidate records API. */
+export const RECORDS_ERROR_COPY: ErrorCopy = {
+  offline: "Could not reach the candidate records service. Check your connection and try again.",
+  server:
+    "The candidate records service is having trouble right now. Please try again in a moment, and contact TrackFlow Tech if it keeps happening.",
+  notFound: "This candidate could not be found. It may have been removed.",
+  trustApiText: false,
 };
 
 const SESSION_MESSAGE = "Your session has expired. Please sign in again.";
@@ -59,27 +67,17 @@ const UNEXPECTED_MESSAGE =
   "Something went wrong on our side. Please try again, and contact TrackFlow Tech if the problem continues.";
 
 /**
- * Statuses whose body the API authors for a reader.
- *
- * 400 covers both halves of `services/core/http_errors.py` - a field that
- * failed to validate and a lifecycle transition that was refused - as well as
- * the auth routes' refusals. 401/403/404/409 carry a sentence written in the
- * routers, and 422 carries per-field messages. A 5xx is deliberately absent:
- * the body is generic by design, and trusting it would also trust whatever a
- * proxy or gateway put there instead.
+ * Statuses whose body the identity API authors for a reader: 400/401/403/404/409
+ * carry a sentence written in the routers, 422 carries per-field messages. A
+ * 5xx is deliberately absent - its body is generic by design, and trusting it
+ * would also trust whatever a proxy or gateway put there instead.
  */
 const READABLE_STATUSES = new Set([400, 401, 403, 404, 409, 422]);
 
 /** Longer than any message the API writes; a runaway string is not a sentence. */
 const MAX_TRUSTED_MESSAGE_LENGTH = 300;
 
-/**
- * Shapes that betray a message was never meant for a reader.
- *
- * A last line of defence rather than a routine check: the API is not supposed
- * to be able to produce any of these, so if one appears the frontend's own text
- * is the right answer.
- */
+/** Shapes that betray a message was never meant for a reader. A last line of defence. */
 const LEAKED_INTERNALS = [
   /traceback/i,
   /\bat [\w$.]+ \(/,
@@ -97,19 +95,11 @@ function isReadable(message: string): boolean {
 }
 
 /**
- * Every error body this API produces, flattened to `{ field, message }`.
- *
- * The incident routes answer `{ detail: { field, message } }`, the other
- * routes' validation failures are FastAPI's `{ detail: [{ loc, msg }] }`, and
- * their refusals are `{ detail: "sentence" }`. A problem with no field is a
- * form-level message.
+ * The identity API's error bodies, flattened to `{ field, message }`:
+ * FastAPI's `{ detail: [{ loc, msg }] }` for validation, `{ detail: "sentence" }`
+ * for a refusal. A problem with no field is a form-level message.
  */
 function readProblems(payload: unknown): ApiFieldError[] {
-  const problems = extractApiProblems(payload);
-  if (problems.length > 0) {
-    return problems;
-  }
-
   const validation = extractApiFieldErrors(payload);
   if (validation.length > 0) {
     return validation;
@@ -124,10 +114,9 @@ function readProblems(payload: unknown): ApiFieldError[] {
 /**
  * Reduce any thrown value to something showable.
  *
- * `fallback` is the form-level message for a validation failure, where the real
- * information is next to the inputs and a repeat of the first field error at
- * the top of the form would only be noise. `copy` supplies the wording for the
- * failures the API cannot describe: unreachable, broken, or gone.
+ * `fallback` is the form-level message when the API named nothing more useful.
+ * `copy` supplies the wording for the failures the API cannot describe:
+ * unreachable, broken, or gone.
  */
 export function describeError(error: unknown, fallback: string, copy: ErrorCopy): FriendlyError {
   if (error instanceof UnauthorizedError) {
@@ -145,7 +134,7 @@ export function describeError(error: unknown, fallback: string, copy: ErrorCopy)
 
   if (!(error instanceof ApiError)) {
     // A bug, a missing environment variable, or a throw from outside the API
-    // client. Nothing in it is written for a reader, but whoever investigates
+    // clients. Nothing in it is written for a reader, but whoever investigates
     // needs the original, so it goes to the console instead of the screen.
     console.error(error);
     return { message: UNEXPECTED_MESSAGE, fieldErrors: {} };
@@ -155,15 +144,12 @@ export function describeError(error: unknown, fallback: string, copy: ErrorCopy)
     return { message: copy.server, fieldErrors: {} };
   }
 
-  if (!READABLE_STATUSES.has(error.status)) {
-    return { message: fallback, fieldErrors: {} };
-  }
-
-  const problems = readProblems(error.payload).filter((problem) => isReadable(problem.message));
+  const problems =
+    copy.trustApiText && READABLE_STATUSES.has(error.status)
+      ? readProblems(error.payload).filter((problem) => isReadable(problem.message))
+      : [];
 
   if (problems.length === 0) {
-    // A readable status whose body we could not read. The status is still
-    // known, so the more specific message is safe to use for a 404.
     return {
       message: error.status === 404 ? (copy.notFound ?? fallback) : fallback,
       fieldErrors: {},
@@ -172,17 +158,13 @@ export function describeError(error: unknown, fallback: string, copy: ErrorCopy)
 
   const fieldErrors: Record<string, string> = {};
   for (const problem of problems) {
-    // First message per field wins: the API lists them in the order it found
-    // them, and re-reporting the same input twice tells the user nothing.
+    // First message per field wins: re-reporting the same input twice tells
+    // the user nothing.
     if (problem.field && !(problem.field in fieldErrors)) {
       fieldErrors[problem.field] = problem.message;
     }
   }
 
-  // A problem with no field name - a refused transition, a 404, a wrong
-  // password - has nowhere to sit next to an input, so it becomes the
-  // form-level message. When every problem did name a field, the fallback
-  // introduces them.
   const unattached = problems.find((problem) => !problem.field);
 
   return {

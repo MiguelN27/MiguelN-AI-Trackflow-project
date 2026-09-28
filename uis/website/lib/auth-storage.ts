@@ -39,12 +39,36 @@ export function hasResetSuccessFlag(search: string): boolean {
   return new URLSearchParams(search).get(RESET_DONE_PARAM) === RESET_DONE_VALUE;
 }
 
+/**
+ * How `/register` tells `/login` that the account exists even though the
+ * automatic sign-in after it failed, so the user is not left wondering whether
+ * to register again.
+ */
+export const REGISTERED_PARAM = "registered";
+export const REGISTERED_VALUE = "1";
+
+export function buildLoginAfterRegisterUrl(nextPath: string): string {
+  return `${LOGIN_PATH}?${REGISTERED_PARAM}=${REGISTERED_VALUE}&next=${encodeURIComponent(nextPath)}`;
+}
+
+/** Reads that flag out of a `window.location.search` string. */
+export function hasRegisteredFlag(search: string): boolean {
+  return new URLSearchParams(search).get(REGISTERED_PARAM) === REGISTERED_VALUE;
+}
+
 /** Reads the reset token out of a `window.location.search` string. */
 export function readResetToken(search: string): string | null {
   const token = new URLSearchParams(search).get("token");
 
   return token && token.trim() ? token : null;
 }
+
+/**
+ * The token for this page load when `localStorage` refused it. Client-side
+ * navigation keeps this module alive, so a browser that blocks storage still
+ * gets a working session until the next full reload.
+ */
+let memoryToken: string | null = null;
 
 export function readToken(): string | null {
   if (typeof window === "undefined") {
@@ -53,10 +77,14 @@ export function readToken(): string | null {
 
   try {
     const token = window.localStorage.getItem(TOKEN_STORAGE_KEY);
-    return token && token.trim() ? token : null;
+    if (token && token.trim()) {
+      return token;
+    }
   } catch {
-    return null;
+    // Storage is blocked; the in-memory copy below is all there is.
   }
+
+  return memoryToken;
 }
 
 export function storeToken(token: string): void {
@@ -66,13 +94,19 @@ export function storeToken(token: string): void {
 
   try {
     window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    // Held only when storage failed, so signing out in another tab (which
+    // clears storage) still ends this tab's session too.
+    memoryToken = null;
   } catch {
     // A browser that refuses storage still gets a working session for this
-    // page load; the next protected call will simply send it back to login.
+    // page load through `memoryToken`; a full reload sends it back to login.
+    memoryToken = token;
   }
 }
 
 export function clearToken(): void {
+  memoryToken = null;
+
   if (typeof window === "undefined") {
     return;
   }

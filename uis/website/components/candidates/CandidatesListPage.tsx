@@ -1,7 +1,7 @@
 "use client";
 
 import { StateMessage } from "@/components/common/StateMessage";
-import { getApiBaseUrl } from "@/lib/api-client";
+import { RECORDS_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
   candidateId,
   emptyCandidateFormValues,
@@ -14,7 +14,7 @@ import type { AsyncStatus } from "@/types/async-state";
 import type { CandidateFormValues, CandidateRecord } from "@/types/candidate";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 type CandidateListItem = {
   id: string;
@@ -24,8 +24,6 @@ type CandidateListItem = {
   status: string;
   stage: string;
 };
-
-const apiBaseUrl = getApiBaseUrl();
 
 export default function CandidatesListPage() {
   return (
@@ -51,6 +49,7 @@ function CandidatesListContent() {
   const [searchTerm, setSearchTerm] = useState("");
   const [listStatus, setListStatus] = useState<AsyncStatus>("loading");
   const [listError, setListError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isCreatingCandidate, setIsCreatingCandidate] = useState(false);
   const [createCandidateError, setCreateCandidateError] = useState<string | null>(null);
@@ -64,6 +63,13 @@ function CandidatesListContent() {
   const statusFilter = (searchParams.get("status") ?? "").trim().toLowerCase();
   const stageFilter = (searchParams.get("stage") ?? "").trim().toLowerCase();
 
+  const retry = useCallback(() => setAttempt((current) => current + 1), []);
+
+  /**
+   * Reloads the list in place after a create. It reports its own failure on the
+   * list, with a retry, and never throws: a failed refresh must not be mistaken
+   * for a failed create by the caller.
+   */
   async function refreshCandidates(options?: { silent?: boolean }) {
     if (!options?.silent) {
       setListStatus("loading");
@@ -79,10 +85,8 @@ function CandidatesListContent() {
       setPageLimit(data.limit);
       setListStatus("success");
     } catch (loadError) {
-      const nextError = loadError instanceof Error ? loadError.message : "Unable to load candidates";
-      setListError(nextError);
+      setListError(describeError(loadError, "Could not refresh the candidate list.", RECORDS_ERROR_COPY).message);
       setListStatus("error");
-      throw new Error(nextError);
     }
   }
 
@@ -109,8 +113,7 @@ function CandidatesListContent() {
           return;
         }
 
-        const nextError = loadError instanceof Error ? loadError.message : "Unable to load candidates";
-        setListError(nextError);
+        setListError(describeError(loadError, "Could not load the candidate list.", RECORDS_ERROR_COPY).message);
         setListStatus("error");
       }
     }
@@ -120,7 +123,7 @@ function CandidatesListContent() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [attempt]);
 
   const totalLabel = useMemo(() => {
     if (listStatus === "loading") {
@@ -224,16 +227,33 @@ function CandidatesListContent() {
     setCreateCandidateError(null);
     setCreateCandidateSuccess(null);
 
+    let isCreated = false;
+
     try {
       await createCandidate(candidateFormValues);
-      await refreshCandidates({ silent: true });
-      setCandidateFormValues(emptyCandidateFormValues());
-      setCreateCandidateSuccess("Candidate created successfully.");
+      isCreated = true;
     } catch (createError) {
-      setCreateCandidateError(createError instanceof Error ? createError.message : "Unable to create candidate");
+      setCreateCandidateError(
+        describeError(
+          createError,
+          "Could not create the candidate. Check the details and try again.",
+          RECORDS_ERROR_COPY,
+        ).message,
+      );
     } finally {
       setIsCreatingCandidate(false);
     }
+
+    if (!isCreated) {
+      return;
+    }
+
+    // The record exists from here on. The form is cleared and the success shown
+    // before the list reloads, so a refresh that fails can never read as a
+    // failed create and invite a duplicate submit.
+    setCandidateFormValues(emptyCandidateFormValues());
+    setCreateCandidateSuccess("Candidate created successfully.");
+    await refreshCandidates({ silent: true });
   }
 
   return (
@@ -326,18 +346,25 @@ function CandidatesListContent() {
         </section>
 
         {listStatus === "loading" ? (
-          <StateMessage tone="info">
-            Loading candidates from {apiBaseUrl ? `${apiBaseUrl}/records` : "NEXT_PUBLIC_API_URL/records"}...
-          </StateMessage>
+          <StateMessage tone="info">Loading candidates...</StateMessage>
         ) : null}
 
         {listStatus === "error" && listError ? (
-          <StateMessage tone="error">Could not load candidates: {listError}</StateMessage>
+          <StateMessage tone="error">
+            <p>{listError}</p>
+            <button
+              type="button"
+              onClick={retry}
+              className="mt-3 inline-flex min-h-10 items-center rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100"
+            >
+              Try again
+            </button>
+          </StateMessage>
         ) : null}
 
         {listStatus === "success" && normalizedCandidates.length === 0 ? (
           <p className="text-[color:var(--text-muted)]">
-            No candidates were returned by {apiBaseUrl ? `${apiBaseUrl}/records` : "NEXT_PUBLIC_API_URL/records"}.
+            No candidates have been registered yet.
           </p>
         ) : null}
 

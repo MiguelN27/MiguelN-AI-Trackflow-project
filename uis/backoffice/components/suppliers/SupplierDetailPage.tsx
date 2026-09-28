@@ -4,12 +4,13 @@ import { StateMessage } from "@/components/common/StateMessage";
 import { SupplierRateEditor } from "@/components/suppliers/SupplierRateEditor";
 import { SupplierStatusBadge } from "@/components/suppliers/SupplierStatusBadge";
 import { SupplierStatusToggle } from "@/components/suppliers/SupplierStatusToggle";
+import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import { formatCategoryLabel, formatRatePerShipment, formatUpdatedAt } from "@/lib/supplier";
 import { fetchSupplierById } from "@/services/suppliers-service";
 import type { AsyncStatus } from "@/types/async-state";
 import type { Supplier } from "@/types/supplier";
 import Link from "next/link";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect, useState } from "react";
 
 type SupplierDetailPageProps = {
   supplierId: string;
@@ -19,6 +20,9 @@ export default function SupplierDetailPage({ supplierId }: SupplierDetailPagePro
   const [supplier, setSupplier] = useState<Supplier | null>(null);
   const [detailStatus, setDetailStatus] = useState<AsyncStatus>("loading");
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  const retry = useCallback(() => setAttempt((current) => current + 1), []);
 
   useEffect(() => {
     let active = true;
@@ -40,7 +44,13 @@ export default function SupplierDetailPage({ supplierId }: SupplierDetailPagePro
           return;
         }
 
-        setDetailError(loadError instanceof Error ? loadError.message : "Unable to load the supplier");
+        setDetailError(
+          describeError(
+            loadError,
+            "Could not load this supplier. Check the address, or go back to the directory.",
+            GENERAL_ERROR_COPY,
+          ).message,
+        );
         setDetailStatus("error");
       }
     }
@@ -50,7 +60,7 @@ export default function SupplierDetailPage({ supplierId }: SupplierDetailPagePro
     return () => {
       active = false;
     };
-  }, [supplierId]);
+  }, [supplierId, attempt]);
 
   return (
     <main className="mx-auto w-full max-w-4xl px-6 py-10 md:px-10">
@@ -62,10 +72,24 @@ export default function SupplierDetailPage({ supplierId }: SupplierDetailPagePro
       </Link>
 
       <div className="mt-5 space-y-6">
-        {detailStatus === "loading" ? <StateMessage tone="info">Loading supplier {supplierId}...</StateMessage> : null}
+        {detailStatus === "loading" ? <StateMessage tone="info">Loading supplier...</StateMessage> : null}
 
         {detailStatus === "error" && detailError ? (
-          <StateMessage tone="error">Could not load supplier {supplierId}: {detailError}</StateMessage>
+          <StateMessage tone="error">
+            <p>{detailError}</p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={retry}
+                className="inline-flex min-h-10 items-center rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100"
+              >
+                Try again
+              </button>
+              <Link href="/suppliers" className="text-sm font-semibold text-red-700 underline-offset-4 hover:underline">
+                Back to the directory
+              </Link>
+            </div>
+          </StateMessage>
         ) : null}
 
         {detailStatus === "success" && supplier ? (

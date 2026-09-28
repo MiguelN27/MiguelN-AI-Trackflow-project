@@ -4,9 +4,11 @@ HTTP-agnostic on purpose: this module raises `ValidationFailed` and
 `IncidentNotFound`, and `router.py` decides what those become on the wire.
 """
 
+import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from pydantic import ValidationError
 from tinydb import Query
 from tinydb.table import Table
 from trackflow_shared.incidents import can_transition, explain_invalid_transition
@@ -23,9 +25,29 @@ from services.incidents.models import (
     IncidentSummary,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _table() -> Table:
     return get_table()
+
+
+def _all_incidents() -> list[IncidentInDB]:
+    """Every stored incident that still reads as one.
+
+    A row that no longer fits the model - edited by hand, or written before a
+    rule changed - is skipped and logged by id, so one bad row cannot turn the
+    whole list and the summary into a 500.
+    """
+    incidents = []
+    for doc in _table().all():
+        try:
+            incidents.append(IncidentInDB(**doc))
+        except ValidationError:
+            logger.warning(
+                "Skipping stored incident %s: it no longer matches the model", doc.get("id", "?")
+            )
+    return incidents
 
 
 def _now() -> datetime:
@@ -71,7 +93,7 @@ def list_incidents(
     Filters combine with AND. All four omitted returns the whole table; an
     empty table returns an empty list rather than failing.
     """
-    incidents = [IncidentInDB(**doc) for doc in _table().all()]
+    incidents = _all_incidents()
 
     if status is not None:
         incidents = [item for item in incidents if item.status is status]
@@ -130,7 +152,7 @@ def summarize() -> IncidentSummary:
     Buckets are pre-seeded with every allowed value at zero, so an empty
     database answers with zeros across the board instead of empty objects.
     """
-    incidents = [IncidentInDB(**doc) for doc in _table().all()]
+    incidents = _all_incidents()
 
     by_status = dict.fromkeys(IncidentStatus, 0)
     by_category = dict.fromkeys(IncidentCategory, 0)

@@ -29,6 +29,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pydantic import ValidationError
 from trackflow_shared.incidents import IncidentOrigin
 from trackflow_shared.incidents_csv import (
     CATEGORY_MAP,
@@ -41,7 +42,7 @@ from trackflow_shared.incidents_csv import (
 )
 
 from services.incidents import service
-from services.incidents.db import get_db_path
+from services.incidents.db import get_db_path, get_table
 from services.incidents.models import IncidentBranch, IncidentCreate
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -114,7 +115,18 @@ class SeedReport:
 
 
 class SeedError(Exception):
-    """The file cannot be read at all. Nothing was inserted."""
+    """The run could not complete. The message says whether anything was inserted.
+
+    Every message is written for whoever ran the script: what failed, and what
+    to do about it. Re-running after a fix is always safe, because rows that were
+    already seeded are skipped.
+    """
+
+
+# Not one of the analyser's CSV rules: a row that passes all of them can still
+# break a limit of the incident model itself, e.g. a description longer than
+# the model accepts. It is rejected like any other invalid row.
+MODEL_RULE = "rejected_by_model"
 
 
 def read_rows(csv_path: Path) -> Iterator[tuple[int, Mapping[str, str | None]]]:
@@ -123,12 +135,22 @@ def read_rows(csv_path: Path) -> Iterator[tuple[int, Mapping[str, str | None]]]:
     Line numbers count the header, so they match what a spreadsheet shows and
     the first data row is line 2.
     """
-    with csv_path.open(newline="", encoding="utf-8") as handle:
+    try:
+        handle = csv_path.open(newline="", encoding="utf-8")
+    except OSError as error:
+        raise SeedError(f"{csv_path} could not be opened ({error.strerror}).") from error
+
+    with handle:
         reader = csv.DictReader(handle)
-        if reader.fieldnames is None:
+        try:
+            fieldnames = reader.fieldnames
+        except csv.Error as error:
+            raise SeedError(f"{csv_path} is not a readable CSV file ({error}).") from error
+
+        if fieldnames is None:
             raise SeedError(f"{csv_path} is empty: no header row.")
 
-        missing = REQUIRED_COLUMNS - set(reader.fieldnames)
+        missing = REQUIRED_COLUMNS - set(fieldnames)
         if missing:
             raise SeedError(
                 f"{csv_path} is missing required column(s): {', '.join(sorted(missing))}."
@@ -136,7 +158,13 @@ def read_rows(csv_path: Path) -> Iterator[tuple[int, Mapping[str, str | None]]]:
 
         # start=2 because line 1 is the header, so the first data row is line 2
         # and the numbers match what a spreadsheet shows.
-        yield from enumerate(reader, start=2)
+        try:
+            yield from enumerate(reader, start=2)
+        except csv.Error as error:
+            raise SeedError(
+                f"{csv_path} could not be parsed near line {reader.line_num} ({error}). "
+                "Rows before it may already be seeded; fix the file and run again."
+            ) from error
 
 
 def to_incident(row: Mapping[str, str | None]) -> IncidentCreate:
@@ -177,6 +205,16 @@ def seed(csv_path: Path) -> SeedReport:
     """
     report = SeedReport(csv_path=csv_path, db_path=get_db_path())
 
+    # Checked before the first row is touched, so an unreadable database stops
+    # the run with nothing half-done. TinyDB reads the whole file on first use.
+    try:
+        len(get_table())
+    except (OSError, ValueError) as error:
+        raise SeedError(
+            f"The database at {report.db_path} could not be read ({type(error).__name__}). "
+            "Nothing was inserted."
+        ) from error
+
     for line, row in read_rows(csv_path):
         report.total_rows += 1
 
@@ -191,7 +229,16 @@ def seed(csv_path: Path) -> SeedReport:
             )
             continue
 
-        incident = to_incident(row)
+        row_id = (row.get("incident_id") or "").strip() or "(no id)"
+
+        try:
+            incident = to_incident(row)
+        except ValidationError as error:
+            report.rejected.append(
+                RejectedRow(line=line, incident_id=row_id, issues=_model_issues(error))
+            )
+            continue
+
         key = dedupe_key(row, incident)
 
         if service.get_incident_by_source_id(key) is not None:
@@ -199,16 +246,46 @@ def seed(csv_path: Path) -> SeedReport:
             continue
 
         created_at = parse_csv_date(row.get("date") or "")
-        # Validation already rejected an unreadable date, so this cannot be None
-        # by the time the row reaches here.
-        assert created_at is not None
+        if created_at is None:
+            # Unreachable while validation rejects unreadable dates. Checked
+            # explicitly rather than asserted - `python -O` strips asserts, and
+            # the seed would then stamp a historical incident with today's date.
+            report.rejected.append(
+                RejectedRow(
+                    line=line,
+                    incident_id=row_id,
+                    issues=[ValidationIssue("invalid_date", "date", "Date is missing or invalid.")],
+                )
+            )
+            continue
 
-        service.create_incident(incident, created_at=created_at, source_incident_id=key)
+        try:
+            service.create_incident(incident, created_at=created_at, source_incident_id=key)
+        except OSError as error:
+            raise SeedError(
+                f"Could not write to the database at {report.db_path} ({error.strerror}). "
+                f"{report.inserted} row(s) were inserted before the failure; "
+                "running again is safe, as rows already seeded are skipped."
+            ) from error
         report.inserted += 1
         report.inserted_by_category[incident.category.value] += 1
         report.inserted_by_status[incident.status.value] += 1
 
     return report
+
+
+def _model_issues(error: ValidationError) -> list[ValidationIssue]:
+    """One issue per field the incident model refused, named by its CSV column.
+
+    `include_input=False` because the rejected value can be customer text.
+    `title` is derived from `description`, so both point at that column.
+    """
+    issues = []
+    for problem in error.errors(include_input=False, include_url=False):
+        model_field = str(problem["loc"][0]) if problem["loc"] else "row"
+        column = "description" if model_field in {"title", "description"} else model_field
+        issues.append(ValidationIssue(MODEL_RULE, column, f"{model_field}: {problem['msg']}."))
+    return issues
 
 
 # --- Console report ---------------------------------------------------------
@@ -224,6 +301,7 @@ _RULE_LABELS: dict[str, str] = {
     "score_out_of_range": "Satisfaction score out of range",
     "invalid_status": "Missing or invalid status",
     "invalid_date": "Missing or invalid date",
+    MODEL_RULE: "Valid in the export, rejected by the incident model",
 }
 
 
@@ -266,7 +344,7 @@ def print_report(report: SeedReport) -> None:
     counts = report.issues_by_rule
     print()
     print("INVALID RECORDS BY RULE")
-    for rule in VALIDATION_RULES:
+    for rule in (*VALIDATION_RULES, MODEL_RULE):
         if counts[rule]:
             print(_dotted(_RULE_LABELS.get(rule, rule), counts[rule]))
 
@@ -305,7 +383,17 @@ def main() -> int:
 
     print_report(report)
     # Invalid rows are a fact about the export, not a failure of the run, so
-    # they are reported without failing the exit status.
+    # they are reported without failing the exit status - unless every row was
+    # invalid. That means the file is not the export this script reads (a new
+    # date format, a different delimiter), and automation must not read it as
+    # a successful seed.
+    if report.total_rows > 0 and report.rejected_count == report.total_rows:
+        print(
+            f"error: every row in {csv_path.name} was rejected, so nothing was seeded. "
+            "Check that this is the helpdesk export in its usual format.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
