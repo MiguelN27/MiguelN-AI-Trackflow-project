@@ -29,9 +29,27 @@ build-backend = "hatchling.build"
 # /scripts tooling import one copy of the incident rules instead of two.
 packages = ["services", "scripts", "packages/shared/trackflow_shared"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "real_bcrypt_cost: run bcrypt at the production cost instead of the fast test cost",
+]
+
+# `uv run pytest --cov` measures the authentication API (AUTH-088): the auth,
+# users and profiles domains and the core modules they are built on. Pass
+# `--cov=services` to measure the whole backend instead.
+[tool.coverage.run]
+source = ["services/auth", "services/users", "services/profiles", "services/core"]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+
 [dependency-groups]
 dev = [
     "httpx2>=2.13.0",
     "httpx>=0.27",
+    "pytest-cov>=7.1.0",
     "pytest>=8.0",
+    "time-machine>=3.5.1",
 ]

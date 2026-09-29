@@ -9,3 +9,6 @@ data/suppliers.json
 .env
 .env.local
 .env.*.local~
+# Test coverage reports (pytest-cov, Jest)
+.coverage
+**/coverage/

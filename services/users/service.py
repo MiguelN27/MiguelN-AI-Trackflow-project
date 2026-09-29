@@ -5,9 +5,11 @@ Users live in TinyDB only. The `id` is a UUID string because PostgreSQL tables
 would not survive that crossing.
 """
 
+import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from pydantic import ValidationError
 from tinydb import Query
 from tinydb.table import Table
 
@@ -18,6 +20,8 @@ from services.profiles import service as profiles_service
 from services.users.models import Role, UserCreate, UserInDB, UserUpdate, normalize_email
 
 TABLE_NAME = "users"
+
+logger = logging.getLogger(__name__)
 
 
 def _table() -> Table:
@@ -68,7 +72,21 @@ def get_user_by_email(email: str) -> UserInDB | None:
 
 
 def list_users() -> list[UserInDB]:
-    return [UserInDB(**doc) for doc in _table().all()]
+    """Every stored user that still reads as one.
+
+    A row that no longer fits the model - edited by hand, or written before a
+    rule changed - is skipped and logged by id, so one bad row cannot turn the
+    whole list into a 500. Same rule as the incident list.
+    """
+    users = []
+    for doc in _table().all():
+        try:
+            users.append(UserInDB(**doc))
+        except ValidationError:
+            logger.warning(
+                "Skipping stored user %s: it no longer matches the model", doc.get("id", "?")
+            )
+    return users
 
 
 def update_user(user_id: str, payload: UserUpdate) -> UserInDB | None:
@@ -76,7 +94,11 @@ def update_user(user_id: str, payload: UserUpdate) -> UserInDB | None:
     if get_user(user_id) is None:
         return None
 
-    changes = payload.model_dump(mode="json", exclude_unset=True, exclude_none=True)
+    # `current_password` is the caller's proof of identity, checked by the
+    # router; it must never be written to the user row.
+    changes = payload.model_dump(
+        mode="json", exclude_unset=True, exclude_none=True, exclude={"current_password"}
+    )
 
     new_email = changes.get("email")
     if new_email is not None:

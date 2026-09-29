@@ -65,6 +65,21 @@ be enough to take the account over.
 A wrong current password is `400`, not `401` — the session is fine, the payload
 is not. Succeeding here also spends any outstanding reset links for that user.
 
+### When outstanding links die
+
+A reset link is a live credential sitting in the mailbox it was sent to, so
+every outstanding link for an account is spent when:
+
+- a password is set, by any route: reset, change, or `PUT /users/{id}` - a
+  pending link would otherwise undo it;
+- the account's email changes through `PUT /users/{id}` - the old mailbox is
+  no longer trusted, often the very reason for the change;
+- the account is deactivated - reactivating it must not revive links requested
+  before.
+
+An edit that changes none of these (re-saving the same address, a role change)
+leaves a link its owner may be about to use alone.
+
 ## How the reset token works
 
 The token is a JWT signed with `JWT_SECRET_KEY`, the same secret as access

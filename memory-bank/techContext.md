@@ -83,6 +83,11 @@ This repository currently contains two website implementations related to TrackF
 - JavaScript (vanilla) for `apps/website/signup.js` form behavior.
 - Python for Flask static server (`server.py`).
 - `pytest` (dev dependency group) for the backend, run with `npm run test:api`. `tests/conftest.py` gives each test its own TinyDB file by setting `DB_PATH` **and** clearing the `lru_cache` on `services.core.db.get_db` - the redirect alone is not enough, and without the cache clear one test's rows leak into the next and into `data/suppliers.json`.
+  - `tests/conftest.py` also pins every setting through an autouse fixture, so the suite needs no `.env` and never uses a live Resend key.
+  - `uv run pytest --cov` measures the authentication API and fails under 70% (`[tool.coverage.*]` in `pyproject.toml`). `time-machine` moves the clock for expiry tests.
+  - See `TESTING.md`.
+- Jest in both Next.js apps: `npm test` runs `jest --coverage` from a `jest.config.ts` that Node 24 loads natively through `next/jest`.
+  - The test files live in `tests/frontend/`. `shared/` runs against each app's copy of the duplicated auth modules, and `@identity-api-client` maps to each app's identity client.
 - The repo still ships no ruff/mypy config; both are run as throwaway tools (`uvx ruff`, `uvx mypy`) at line length 100.
 
 ## Architectural Decisions Made

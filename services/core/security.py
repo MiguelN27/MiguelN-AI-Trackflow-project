@@ -22,11 +22,30 @@ TOKEN_TYPE_ACCESS = "access"
 TOKEN_TYPE_PASSWORD_RESET = "password_reset"
 
 
+def fits_bcrypt(plain_password: str) -> bool:
+    """Whether bcrypt can take this password at all: no NUL, at most 72 bytes.
+
+    Bytes, not characters: "ñ" is two bytes in UTF-8, so a password can be 72
+    characters long and still not fit. bcrypt 5 raises on either problem
+    instead of truncating.
+    """
+    return (
+        "\x00" not in plain_password and len(plain_password.encode("utf-8")) <= MAX_PASSWORD_BYTES
+    )
+
+
 def hash_password(plain_password: str) -> str:
     return bcrypt.using(rounds=BCRYPT_ROUNDS).hash(plain_password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not fits_bcrypt(plain_password):
+        # `hash_password` could never have produced a hash from this password,
+        # so it cannot match. Handing it to bcrypt would raise, and the handler
+        # below would then blame the stored hash - a corruption warning any
+        # anonymous caller could trigger. The check costs the same whether or
+        # not the account exists.
+        return False
     try:
         return bcrypt.verify(plain_password, hashed_password)
     except (ValueError, TypeError):
@@ -68,6 +87,11 @@ def _decode(token: str, expected_type: str) -> dict[str, Any] | None:
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
+            # python-jose only checks `exp` when it is present, so a token
+            # without one would never expire. Every token issued here carries
+            # it; one that does not was minted by a regression, and must be
+            # refused loudly instead of opening a session that never ends.
+            options={"require_exp": True},
         )
     except JWTError:
         return None

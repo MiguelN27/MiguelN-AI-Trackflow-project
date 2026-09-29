@@ -52,7 +52,7 @@ one-to-one through `user_id`.
 | `POST` | `/users` | public | Register. Hashes the password, creates the linked profile in the same operation. Always role `user`. |
 | `GET` | `/users` | token | List all users. |
 | `GET` | `/users/{id}` | token | Single user. |
-| `PUT` | `/users/{id}` | token | Self or admin. `role` and `is_active` are admin-only. |
+| `PUT` | `/users/{id}` | token | Self or admin. `role` and `is_active` are admin-only. Changing your own `email` or `password` (admins included) also takes `current_password`. |
 | `DELETE` | `/users/{id}` | token | Self or admin. Removes the linked profile too. |
 | `GET` | `/profiles/me` | token | The caller's profile. |
 | `PUT` | `/profiles/me` | token | Update `name`, `phone`, `address`. Owner only by construction. |
@@ -77,7 +77,8 @@ be: they exist for people who cannot sign in.
   deactivated account.
 - `400` - the request is well-formed and the caller is who they say they are,
   but the content is wrong: an invalid, expired or already-spent password reset
-  token, or the wrong current password on `/auth/change-password`.
+  token, or a missing or wrong current password on `/auth/change-password` or
+  on `PUT /users/{id}`.
 - `409` - email already registered.
 - `422` - payload validation, including a `role` outside `admin|manager|user`.
 
@@ -103,9 +104,12 @@ fails at startup rather than at the first login.
 
 `libpass` with the bcrypt scheme, cost 12 (`from passlib.hash import bcrypt` -
 the import path is unchanged from the unmaintained `passlib`). Passwords are
-capped at 72 bytes, the point past which bcrypt silently ignores input, and are
-never stored or compared in plain text. A login against an unknown email still
-runs one bcrypt verification so a missing account is not faster to probe.
+8 characters to 72 **bytes** of UTF-8 - bytes, not characters, since an
+accented letter such as `ñ` takes two - and may not contain NUL. bcrypt 5
+refuses both rather than truncating, so the shared `Password` type rejects them
+with a `422` instead of letting the hash fail as a `500`. Passwords are never
+stored or compared in plain text. A login against an unknown email still runs
+one bcrypt verification so a missing account is not faster to probe.
 
 ## Token types
 
@@ -114,6 +118,11 @@ Every JWT carries a `typ` claim naming what it may do: `access` for a session,
 link cannot be replayed as a bearer credential and a session cannot reset a
 password. Tokens issued before this claim existed are read as access tokens, so
 adding it signed nobody out.
+
+Every token must also carry `exp`. python-jose only checks an expiry that is
+present, so the decoder requires one: a correctly signed token without it is
+refused. A change that stopped setting `exp` therefore fails loudly instead of
+issuing sessions that never end - the class of regression behind AUTH-088.
 
 ## Running it
 

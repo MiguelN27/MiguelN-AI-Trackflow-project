@@ -127,16 +127,49 @@ export function handleUnauthorized(): void {
   }
 }
 
+/** Any origin will do: all that matters is whether a path stays on it. */
+const RESOLUTION_BASE = "http://trackflow.invalid";
+
+/**
+ * A backslash or a control character: what a browser rewrites while parsing a
+ * URL. `\` is read as `/`, and tabs and newlines are dropped, so `/\evil.com`
+ * and `/<tab>/evil.com` both become `//evil.com` - another site. No path in
+ * this app contains any of them.
+ */
+function hasRewrittenCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return character === "\\" || code < 0x20 || code === 0x7f;
+  });
+}
+
 /**
  * Only same-origin absolute paths survive, so a crafted `?next=` cannot bounce
  * a freshly authenticated user to another site.
+ *
+ * Checking the first characters is not enough: the browser, not this function,
+ * decides where a string leads. So the value is resolved the way the router
+ * will resolve it, and kept only if it stays on the same origin. The sign-in
+ * page itself is refused however it is spelled, since landing there after
+ * signing in would loop.
  */
 export function sanitizeNextPath(value: string | null | undefined): string | null {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+  if (!value || !value.startsWith("/") || hasRewrittenCharacter(value)) {
     return null;
   }
 
-  return value === LOGIN_PATH || value.startsWith(`${LOGIN_PATH}?`) ? null : value;
+  let resolved: URL;
+  try {
+    resolved = new URL(value, RESOLUTION_BASE);
+  } catch {
+    return null;
+  }
+
+  if (resolved.origin !== RESOLUTION_BASE) {
+    return null;
+  }
+
+  return resolved.pathname.replace(/\/+$/, "") === LOGIN_PATH ? null : value;
 }
 
 export function buildLoginUrl(nextPath?: string | null): string {

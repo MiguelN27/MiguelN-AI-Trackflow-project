@@ -1,6 +1,51 @@
 # Development Progress
 
-Last updated: 2026-09-23
+Last updated: 2026-09-29
+
+## Update 2026-09-29 - AUTH-088: unit tests for the authentication API
+
+Goals accomplished:
+- Ran the mandatory memory-bank reading sequence before work: `context.md`, `projectbrief.md`, `techContext.md`, `progress.md`.
+- Delivered ticket AUTH-088 in the developer's four stages, on branch `feature/auth-088-unit-tests`. A refactor had broken token expiry unnoticed, so every auth endpoint now has at least one happy-path, one edge-case and one failure-mode test.
+- **Stage 1, test plan.** New root `TESTING.md` covers how to run both suites, what each covers, the fixtures and what they guarantee, and the test plan itself: every case for all 13 endpoints plus the token gate and password hashing, in priority order, each with the reason it exists. It also records the bugs found and fixed, the behaviours pinned as open questions, and the gaps unit tests cannot cover.
+- **Stage 2, pytest.** 216 tests in `tests/auth/`, one module per endpoint (`test_register.py`, `test_login.py`, `test_token.py`, ...), plus `test_current_user.py` (the gate and a route inventory) and `test_password_hashing.py`.
+  - Tests call the service and router functions directly and assert decisions, never HTTP serialisation.
+  - Token expiry is tested by moving the clock with `time-machine`, not by crafting tokens.
+  - A root `pinned_settings` fixture makes the whole suite independent of `.env`, and it can never pick up a live Resend key.
+  - `uv run pytest`: 331 passed, 7 skipped (Flask tests; Flask is not in the uv env).
+  - `uv run pytest --cov`: 88.9% of the authentication API, `services/auth` at 99-100%. `fail_under = 70` in `pyproject.toml` enforces the ticket's threshold.
+- **Stage 3, Jest.** `jest.config.ts` at the root of each Next.js app, loaded natively by Node 24, with `npm test` = `jest --coverage` and a root `npm run test:ui`.
+  - The shared tests in `tests/frontend/shared/` run against both apps' copies of the duplicated auth modules, so the copies cannot drift apart unnoticed. `tests/frontend/{website,backoffice}/` cover the clients that differ.
+  - website: 170 passed. backoffice: 175 passed. 98% of lines and 100% of functions in the auth modules.
+- **Stage 4, AI-assisted workflow.** An AI review of the endpoint logic found the bugs below. Each was reproduced against the installed libraries, pinned by a failing test, then fixed:
+  - BUG-1: `_decode` now requires `exp`. A correctly signed token without one was accepted forever, the exact class of the original incident.
+  - BUG-2: open redirect after login in both apps (`?next=/%5Cevil.com`, `/%09/evil.com`, `%2F%0A%2Fevil.com`). `sanitizeNextPath` now refuses backslashes and control characters and keeps a value only if it resolves to the same origin.
+  - BUG-3: `PUT /users/{own id}` changed password or email with the session alone. It now requires `current_password`, admins included on their own account, and any password set there spends reset links.
+  - BUG-4/BUG-5: passwords of 72 characters or fewer but over 72 bytes (for example with `ñ`), or containing NUL, crashed bcrypt 5 as a 500 on four routes. The shared `Password` type now refuses both with a 422.
+  - F-6: long or NUL passwords at login logged a fake "stored hash could not be read" warning. They now fail without calling bcrypt.
+  - F-7: one unreadable user row made `GET /users` a 500. Such rows are now skipped and logged, like incidents.
+  - BUG-6, from a second review pass: reset links survived an email change and a deactivation. `PUT /users/{id}` now spends them in both cases.
+- Proved the suite bites: seven regressions were introduced one at a time (tokens without `exp`, lifetime in hours instead of minutes, deactivated users let through, a removed `Depends`, the missing dummy bcrypt check, reusable reset links, an open `sanitizeNextPath`). All seven were caught.
+- Formatting and linting: `uvx ruff format` and `ruff check` are clean on every changed Python file, and `npm run lint -- --fix` is clean in both apps. Jest's `coverage/` is now ignored by ESLint and git, and `.coverage` by git.
+- Typechecking:
+  - `uvx mypy` reports only the two known pre-existing findings.
+  - `npm run typecheck` is clean in both apps.
+  - The frontend tests were also type-checked once against each app's modules.
+- Documentation: `docs/AUTHENTICATION.md` (the `PUT /users` rule, the byte-based password rule, `exp` required) and `docs/PASSWORD-RECOVERY.md` (a new section on when outstanding links die).
+
+Still missing / next goals:
+1. **Open questions pinned by tests, awaiting a decision** (listed in `TESTING.md`):
+   - an all-spaces password is accepted;
+   - a new password may equal the current one;
+   - any user can list and read every account;
+   - an admin can demote, deactivate or delete the last admin;
+   - an account can be deleted with the session alone;
+   - `PUT /profiles/me` stores `""` verbatim.
+2. **Rate limiting** for login, forgot-password and change-password, and **token revocation** after a password change. These are still the biggest auth gaps, and unit tests cannot cover them.
+3. A damaged user row still makes lookups of that one account answer 500. Decide whether to treat it as "no account" (which risks duplicates) or keep the 500.
+4. The Jest tests live outside both apps' `tsconfig.json`, so no command type-checks them. A `tests/frontend/tsconfig.json` would close that.
+5. The auth modules are still duplicated across the two apps. The shared tests now make any drift visible, but moving them into `packages/shared` would remove it.
+6. The root `.gitignore` has a pre-existing typo, `.env.*.local~`: files like `.env.production.local` are not actually ignored.
 
 ## Update 2026-09-23 (later) - Centralized Incident Manager, stage 4 (frontend)
 

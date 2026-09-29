@@ -1,4 +1,4 @@
-"""Test fixtures for the incident manager.
+"""Test fixtures shared by every suite.
 
 Every test runs against its own TinyDB file in a temporary directory. The
 handle is cached with `lru_cache`, so redirecting `DB_PATH` is not enough on its
@@ -9,8 +9,37 @@ incidents leak into the next and into `data/suppliers.json`.
 import pytest
 from fastapi.testclient import TestClient
 
+from services.core import config
 from services.core import db as core_db
 from services.main import app
+
+# Settings every test reads, whatever the developer's `.env` holds. Environment
+# variables outrank `.env` in pydantic-settings, so these win.
+TEST_SETTINGS = {
+    "JWT_SECRET_KEY": "test-only-secret-key-that-is-at-least-32-chars",
+    "JWT_ALGORITHM": "HS256",
+    "ACCESS_TOKEN_EXPIRE_MINUTES": "60",
+    "PASSWORD_RESET_TOKEN_EXPIRE_MINUTES": "30",
+    # Empty selects the console backend: no test can send a real email, even on
+    # a machine whose `.env` carries a live Resend key.
+    "RESEND_API_KEY": "",
+    "EMAIL_FROM": "TrackFlow <onboarding@resend.dev>",
+    "FRONTEND_BASE_URL": "http://localhost:3000",
+}
+
+
+@pytest.fixture(autouse=True)
+def pinned_settings(monkeypatch):
+    """Pin the settings, so the suite needs no `.env` and runs the same everywhere.
+
+    `get_settings` is cached, so the cache is cleared on the way in and out;
+    a test that overrides one variable clears it again itself.
+    """
+    for name, value in TEST_SETTINGS.items():
+        monkeypatch.setenv(name, value)
+    config.get_settings.cache_clear()
+    yield
+    config.get_settings.cache_clear()
 
 
 @pytest.fixture
