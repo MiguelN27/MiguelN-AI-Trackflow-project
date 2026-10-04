@@ -1,6 +1,57 @@
 # Development Progress
 
-Last updated: 2026-09-29
+Last updated: 2026-10-04
+
+## Update 2026-10-04 - Centralized inventory, Stage 6
+
+Goals accomplished:
+- Searched all requested `contexts/*.md` and root Markdown files. Found three sample products in `contexts/coding-fundamentals.md`; root supplier seed data and incident CSV seeds are unrelated and were not reused for inventory.
+- Obtained explicit approval to map the samples' Los Angeles warehouses to Monterrey, preserve the exact names/SKUs and target balances 45/8/120, and define a separate synthetic one-laptop outbound scenario. The source Pending shipment was not treated as completed history.
+- Added `scripts/seed_inventory.py` and `npm run seed:inventory -- --user-uuid <UUID>`. Actor must be an existing active TinyDB account; the developer selected the account for the live run. No user credentials or SQL identity rows were created.
+- Made seeding atomic and idempotent with stable UUIDs, explicit conflict refusal, inbound-before-outbound ordering, and the shared inventory service's transaction-scoped `record_order` locks/stock checks. Reruns preserve timestamps and do not refill stock consumed by later API movements.
+- Added 10 focused seed tests and an opt-in PostgreSQL reconciliation/idempotency case. Full backend verification: 434 passed, 11 skipped; authentication coverage 89.52%. All 4 real PostgreSQL tests passed in disposable schemas. Seed/inventory mypy, E/F/I lint, formatting, and editor diagnostics are clean after developer-approved concrete-model typing fixes.
+- Loaded Supabase with 3 products, 3 inbound receipts (45 shoes, 9 laptops, 120 perfumes), and 1 synthetic laptop outbound. Net stocks are 45/8/120. The second hosted run inserted nothing and skipped all seven records.
+- Verified stock and user UUID attribution through the running authenticated `/inventory/products` and `/inventory/orders` endpoints. Restarted the managed API to load the shared transaction helper. Updated `docs/INVENTORY.md` and technical context. Protected context files and unrelated existing work were preserved; no commit was created.
+
+Still missing / next goals:
+1. Schema migration tooling and privileged SQL access controls remain the next production-readiness work; `create_all` is not a migration mechanism.
+2. Extend seed scenarios only with explicit source/approval; the existing outbound is a synthetic demo, not a historical completed shipment.
+
+## Update 2026-10-04 - Centralized inventory, Stages 2-5
+
+Goals accomplished:
+- Verified the developer-configured `DATABASE_URL` against Supabase with `SELECT 1`, without reading or printing the excluded `.env` contents. Preserved the current configuration edits.
+- Added SQLModel Product, InboundOrder, and OutboundOrder tables: UUID primary keys, product foreign keys, positive-quantity constraints, warehouse validation, unique `(sku, warehouse)`, UTC timestamps, and TinyDB `user_uuid` references without SQL identity replication.
+- Initialized the three hosted inventory tables at startup with `SQLModel.metadata.create_all`; enabled RLS with no public policies to prevent Supabase REST clients bypassing FastAPI authentication. Existing TinyDB identity, suppliers, and incidents remain unchanged.
+- Added standalone Pydantic schemas with strict positive integer quantities within PostgreSQL's integer range, rejected system fields, and computed `current_stock` responses.
+- Mounted the six requested `/inventory` routes, all authenticated per the developer's decision. Product and order listings support warehouse filters; order responses include direction, product data, and the authenticated TinyDB UUID.
+- Added separately aggregated inbound-minus-outbound stock queries, zero-stock product creation, and Product-row locking for every movement. Insufficient stock returns descriptive 400 without insertion; missing products return 404 and duplicate warehouse SKUs return 409.
+- Verification: 424 backend tests passed, 10 skipped; authentication coverage 89.52% clears the 70% gate. The 3 opt-in real PostgreSQL tests passed in disposable schemas and cleaned up afterward. A competing-withdrawal test verified an actual row-lock wait and that only one withdrawal persisted.
+- New inventory and touched integration modules pass mypy after developer-approved fixes to SQLModel runtime table attribute and SQLAlchemy query typing. The previously accepted Settings constructor warnings remain documented. Formatting, E/F/I lint, and editor diagnostics are clean.
+- Updated `docs/INVENTORY.md` and the technical context. Started the API at `http://127.0.0.1:8000`; verified live startup, route registration, protected reads, and Swagger. No commit was created.
+
+Still missing / next goals:
+1. Stage 6 remains deferred until the developer supplies the seed context/minima, explicitly reconfirmed during this work. No invented demo data or seed script was added.
+2. `create_all` initializes missing tables, not migrations. Add an explicit migration mechanism before later schema changes or production rollout.
+3. Restrict privileged direct SQL access: stock safety assumes movement writes use the locked inventory service. Do not add public Supabase write policies.
+4. Rotate the password previously shared in chat if it has not already been rotated. No credentials were committed or repeated in implementation output.
+
+## Update 2026-10-04 - Centralized inventory, Stage 1
+
+Goals accomplished:
+- Added required, redacted `DATABASE_URL` settings with PostgreSQL/driver/SSL validation and sanitized errors.
+- Added `services/inventory/database.py`: reuse of the existing TinyDB handle, a cached SQLModel/psycopg2 engine, and a yield-based request session dependency. No global SQL session or replicated identity tables.
+- FastAPI startup initializes the shared TinyDB handle and performs a read-only PostgreSQL `SELECT 1`; shutdown and failed startup dispose the SQL engine.
+- Added test isolation that pins a non-live URL and prohibits psycopg2 connections, plus 24 focused configuration, connection, session, and lifecycle tests.
+- Verification: 24 focused tests passed; full backend suite 355 passed, 7 skipped. Touched-file formatting, E/F/I lint, and editor diagnostics passed.
+- Mypy reports two missing arguments at `Settings()`: the known `jwt_secret_key` finding and the analogous new `database_url` finding. The developer declined the Pydantic mypy plugin and chose to leave these documented.
+- Documented setup and limitations in `docs/INVENTORY.md`. Existing dependency edits and other user changes were preserved. No commit was created.
+
+Still missing / next goals:
+1. The developer will configure `DATABASE_URL` directly: `.env` is excluded from Copilot access. Rotate the password shared in chat. Live Supabase connectivity has not been verified.
+2. Stages 2-5: SQLModel Product/InboundOrder/OutboundOrder tables and startup schema creation, separate Pydantic schemas, authenticated `/inventory` routes, and warehouse-scoped computed stock with transactional locking.
+3. Stage 6: seed minima await the developer's additional context. Use Monterrey/Zaragoza from `contexts/context.md`; every inventory GET is authenticated per the confirmed decision.
+4. No hosted schema or business data was created or changed during Stage 1.
 
 ## Update 2026-09-29 - AUTH-088: unit tests for the authentication API
 

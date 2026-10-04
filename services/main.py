@@ -13,14 +13,23 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from services.auth.router import router as auth_router
 from services.core.config import get_settings
-from services.core.errors import IncidentNotFound, ValidationFailed
+from services.core.errors import (
+    IncidentNotFound,
+    ProductAlreadyExists,
+    ProductNotFound,
+    ValidationFailed,
+)
 from services.core.http_errors import (
     incident_not_found_handler,
     make_validation_error_handler,
+    product_already_exists_handler,
+    product_not_found_handler,
     unhandled_exception_handler,
     validation_failed_handler,
 )
 from services.incidents.router import router as incidents_router
+from services.inventory import database as inventory_database
+from services.inventory.routers.inventory import router as inventory_router
 from services.profiles.router import router as profiles_router
 from services.suppliers.router import router as suppliers_router
 from services.users.router import router as users_router
@@ -34,7 +43,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     it, instead of surfacing as a 500 on whichever request first needs it.
     """
     get_settings()
-    yield
+    try:
+        inventory_database.get_identity_db()
+        inventory_database.check_connection()
+        inventory_database.initialize_schema()
+        yield
+    finally:
+        inventory_database.dispose_engine()
 
 
 app = FastAPI(
@@ -66,6 +81,7 @@ app.include_router(users_router)
 app.include_router(profiles_router)
 app.include_router(suppliers_router)
 app.include_router(incidents_router)
+app.include_router(inventory_router)
 
 # Error translation.
 #
@@ -84,4 +100,6 @@ app.add_exception_handler(
 )
 app.add_exception_handler(ValidationFailed, validation_failed_handler)
 app.add_exception_handler(IncidentNotFound, incident_not_found_handler)
+app.add_exception_handler(ProductNotFound, product_not_found_handler)
+app.add_exception_handler(ProductAlreadyExists, product_already_exists_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)

@@ -11,6 +11,7 @@ from fastapi.routing import APIRoute
 
 from services.auth import router as auth_router
 from services.auth.dependencies import get_current_user
+from services.inventory.routers import inventory as inventory_router
 from services.profiles import router as profiles_router
 from services.suppliers import router as suppliers_router
 from services.users import router as users_router
@@ -36,6 +37,7 @@ GUARDED_DOMAINS = (
     users_router.router,
     profiles_router.router,
     suppliers_router.router,
+    inventory_router.router,
 )
 
 

@@ -22,7 +22,12 @@ from fastapi import Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from services.core.errors import IncidentNotFound, ValidationFailed
+from services.core.errors import (
+    IncidentNotFound,
+    ProductAlreadyExists,
+    ProductNotFound,
+    ValidationFailed,
+)
 
 logger = logging.getLogger("trackflow.errors")
 
@@ -202,6 +207,22 @@ def incident_not_found_handler(request: Request, exc: Exception) -> JSONResponse
         status.HTTP_404_NOT_FOUND,
         "id",
         f"No incident exists with id '{exc.incident_id}'.",
+    )
+
+
+def product_not_found_handler(request: Request, exc: Exception) -> JSONResponse:
+    if not isinstance(exc, ProductNotFound):
+        return unhandled_exception_handler(request, exc)
+    return _problem(status.HTTP_404_NOT_FOUND, "product_id", "Product not found.")
+
+
+def product_already_exists_handler(request: Request, exc: Exception) -> JSONResponse:
+    if not isinstance(exc, ProductAlreadyExists):
+        return unhandled_exception_handler(request, exc)
+    return _problem(
+        status.HTTP_409_CONFLICT,
+        "sku",
+        "A product with this SKU already exists in this warehouse.",
     )
 
 

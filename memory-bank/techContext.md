@@ -26,7 +26,7 @@ This repository currently contains two website implementations related to TrackF
 
 ### Backend
 
-- FastAPI service mounted from `services/main.py`, the composition root. It owns CORS, the app-wide exception handlers, and mounts one router per domain: `auth`, `users`, `profiles`, `suppliers`, `incidents`. Run with `npm run api` (`uvicorn services.main:app --reload --port 8000`).
+- FastAPI service mounted from `services/main.py`, the composition root. It owns CORS, the app-wide exception handlers, and mounts one router per domain: `auth`, `users`, `profiles`, `suppliers`, `incidents`, `inventory`. Run with `npm run api` (`uvicorn services.main:app --reload --port 8000`).
 - Domain modules follow the layering in `docs/ARCHITECTURE_PROPOSAL.md`: `models.py` (Pydantic contracts), `service.py` (business rules and persistence), `router.py` (HTTP only).
 - `services/core/` holds shared technical concerns and no business rules: `config.py` (pydantic-settings), `db.py` (TinyDB handle), `email.py` (transactional email transport), `errors.py` (domain errors), `http_errors.py` (exception -> response translation), `security.py` (bcrypt + JWT).
 - `packages/shared/trackflow_shared/` is a Python package mapped into the wheel from `pyproject.toml` next to `services` and `scripts`. It carries rules that both the API and the `/scripts` tooling must agree on and that neither owns: the incident enumerations and lifecycle (`incidents.py`) and the helpdesk-CSV validation plus CSV -> model maps (`incidents_csv.py`). It imports no framework.
@@ -55,6 +55,12 @@ This repository currently contains two website implementations related to TrackF
 - `incidents` keys on a UUID4 `id` like `users` and `profiles`. Rows carry an internal `source_incident_id` - the `incident_id` of the helpdesk CSV row they were seeded from - which is excluded from `IncidentResponse` and is `None` on anything created through the API. It is what makes `scripts/seed_incidents.py` idempotent.
 - `User` and `Profile` are TinyDB-only and are never mirrored into Supabase/SQLModel. Their `id` is a UUID4 string, not a TinyDB `doc_id`, because future PostgreSQL tables reference it as `user_uuid`.
 - Suppliers still key on the TinyDB `doc_id` integer, unchanged from the original implementation.
+- Inventory is in Supabase PostgreSQL via the private `DATABASE_URL` setting. `services/inventory/database.py` owns a lazy cached SQLModel/psycopg2 engine and a per-request `get_db` session generator; its identity accessor reuses the existing TinyDB handle. No global SQL session.
+- `services/inventory/models.py` holds Product, InboundOrder, and OutboundOrder SQLModel tables; standalone Pydantic contracts are in `schemas.py`, business rules in `service.py`, and the HTTP router in `routers/inventory.py`. Warehouse values are Monterrey/Zaragoza from `contexts/context.md`; the developer explicitly selected that source over the older TypeScript exercise.
+- Product stock is never stored: separate inbound/outbound aggregates calculate it per warehouse-scoped Product UUID. `(sku, warehouse)` is unique. All movement writers lock the Product row with `SELECT FOR UPDATE` and validate/insert/commit within READ COMMITTED transactions. Orders use the authenticated TinyDB account UUID without a SQL user foreign key.
+- Lifespan verifies SQL connectivity and initializes missing inventory tables with `SQLModel.metadata.create_all`, enabling RLS with no public policies, then disposes the engine on shutdown/failure. This is initialization, not schema migration. The Supabase transaction pooler on port 6543 uses SSL, pre-ping and bounded pooling.
+- Offline tests forbid psycopg2 connections and mock SQL startup; PostgreSQL integration tests require explicit `INVENTORY_TEST_DATABASE_URL`, create isolated `inventory_test_*` schemas with schema translation, and clean them up. Actual row-lock contention, constraint enforcement, SQL-backed API behavior, and seed idempotency were verified.
+- `scripts/seed_inventory.py` uses the three sample products in `contexts/coding-fundamentals.md`, with approved Los Angeles-to-Monterrey mapping and a separately approved synthetic laptop outbound. Three opening receipts (45/9/120) minus one laptop outbound yield 45/8/120 stock. `npm run seed:inventory -- --user-uuid <active TinyDB UUID>` runs atomically with stable seed IDs, shared `record_order` locking, conflict refusal, and no refill on repeat. Hosted seed and unchanged second run were verified on 2026-10-04.
 
 ### APIs / Integrations
 
@@ -62,6 +68,7 @@ This repository currently contains two website implementations related to TrackF
 - Endpoints exposed by the in-repo FastAPI service:
   - Public: `POST /users`, `POST /auth/login`, `POST /auth/token`, `POST /auth/forgot-password`, `POST /auth/reset-password`
   - Token-protected: `GET /users`, `GET /users/{id}`, `PUT /users/{id}`, `DELETE /users/{id}`, `GET /auth/me`, `POST /auth/change-password`, `GET /profiles/me`, `PUT /profiles/me`, and all six `/suppliers` routes
+  - Token-protected inventory: `GET /inventory/products`, `POST /inventory/products`, `GET /inventory/products/{id}`, `POST /inventory/products/inbound`, `POST /inventory/products/outbound`, `GET /inventory/orders`. Both GET and write authentication were explicitly confirmed. No new role restrictions.
   - Unauthenticated at this stage: `POST /api/incidents`, `GET /api/incidents` (filters `status`, `origin`, `branch`, `category`), `GET /api/incidents/summary`, `GET /api/incidents/{id}`, `PATCH /api/incidents/{id}/status`. Anyone in the company reports incidents, and no incident route exposes the commercially sensitive data that makes `/suppliers` token-only. Revisit when the panel lands.
 - `uis/backoffice` consumes the `/suppliers` routes with `Authorization: Bearer <token>` on every call.
 - Both Next.js apps consume `POST /users`, `POST /auth/login`, `GET /auth/me` and `PUT /profiles/me` for their sign-in, registration and profile views.

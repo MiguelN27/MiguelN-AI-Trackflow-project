@@ -52,3 +52,11 @@ class IncidentNotFound(DomainError):
     def __init__(self, incident_id: str) -> None:
         super().__init__(f"Incident {incident_id} not found")
         self.incident_id = incident_id
+
+
+class ProductNotFound(DomainError):
+    """No inventory product exists with the requested UUID."""
+
+
+class ProductAlreadyExists(DomainError):
+    """A SKU already exists in the requested warehouse."""

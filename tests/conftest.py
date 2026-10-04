@@ -11,12 +11,14 @@ from fastapi.testclient import TestClient
 
 from services.core import config
 from services.core import db as core_db
+from services.inventory import database as inventory_database
 from services.main import app
 
 # Settings every test reads, whatever the developer's `.env` holds. Environment
 # variables outrank `.env` in pydantic-settings, so these win.
 TEST_SETTINGS = {
     "JWT_SECRET_KEY": "test-only-secret-key-that-is-at-least-32-chars",
+    "DATABASE_URL": "postgresql://test:test@127.0.0.1:1/trackflow_test",
     "JWT_ALGORITHM": "HS256",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "60",
     "PASSWORD_RESET_TOKEN_EXPIRE_MINUTES": "30",
@@ -40,6 +42,25 @@ def pinned_settings(monkeypatch):
     config.get_settings.cache_clear()
     yield
     config.get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def isolated_postgres(monkeypatch):
+    import psycopg2
+
+    engine_factory = inventory_database.get_engine
+    dispose = inventory_database.dispose_engine
+
+    def forbid_connection(*args, **kwargs):
+        raise AssertionError("Unit tests must not connect to PostgreSQL")
+
+    dispose()
+    monkeypatch.setattr(psycopg2, "connect", forbid_connection)
+    monkeypatch.setattr(inventory_database, "check_connection", lambda: None)
+    monkeypatch.setattr(inventory_database, "initialize_schema", lambda: None)
+    yield
+    monkeypatch.setattr(inventory_database, "get_engine", engine_factory)
+    dispose()
 
 
 @pytest.fixture
