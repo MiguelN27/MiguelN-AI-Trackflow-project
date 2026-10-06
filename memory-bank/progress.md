@@ -1,6 +1,22 @@
 # Development Progress
 
-Last updated: 2026-10-04
+Last updated: 2026-10-06
+
+## Update 2026-10-06 - Backoffice inventory interface
+
+Goals accomplished:
+- Added the centralized, typed `uis/backoffice/lib/inventory.ts` facade for all six authenticated endpoints. Reused the stored bearer token and existing 401 session handling; inventory components contain no direct fetch calls. Malformed successful responses now produce visible errors rather than empty lists.
+- Built four literal `/backoffice/inventory/...` views under the existing protected layout: Products, Inbound order, Outbound order, and read-only Orders history. Existing login, supplier, incident, and account URLs are unchanged. Navigation wraps on narrow screens and selects the longest matching route.
+- Products display Name, SKU, Warehouse, Current stock, written/color stock status and product-preselected inbound/outbound links. Display-only thresholds are commented: 0 empty, 1-9 low, 10+ healthy. Monterrey/Zaragoza and the approved entities are preserved.
+- Both forms use named product options and strict positive integer quantities, block duplicate submissions, preserve failed values, and clear successful forms with confirmation. Outbound loads fresh selected-product stock before enabling Quantity, ignores obsolete successes/failures, blocks above-stock submissions, and keeps server 400 quantity text inline during stock refresh.
+- History shows embedded product names, SKU/Warehouse, quantity, labeled order direction, timezone-labeled creation dates and full user_uuid without edit/delete actions or extra identity/product requests. Responsive rows expose every field on mobile without horizontal scrolling.
+- Inventory preserves readable API-authored 400/422/500 messages and safely handles HTML, unreadable/malformed bodies and offline failures. Other features' shared error policies and the backend remain unchanged. The developer approved live `/inventory/products/inbound|outbound` paths instead of nonexistent `/inventory/orders/...` aliases.
+- Verification: 38 focused facade/helper tests, all 213 backoffice Jest tests, and 84 repeatable Playwright browser checks passed. Lint with auto-fix, typecheck, production build and touched-file diagnostics passed. Reviewed desktop/mobile screenshots. Browser tests intercept every identity/inventory request; no operational stock writes were performed.
+- Documented routes, API alignment, stock thresholds, setup and repeatable verification in `docs/INVENTORY.md`. Preserved unrelated image changes and protected context files. No commit created.
+
+Still missing / next goals:
+1. Verify live end-to-end movement writes against an explicitly approved isolated inventory environment; browser acceptance currently uses API test responses.
+2. Backend production-readiness work (migrations, privileged SQL access restrictions, and retry/idempotency design) remains outside this frontend task. Ambiguous write failures must not be automatically retried.
 
 ## Update 2026-10-04 - Centralized inventory, Stage 6
 

@@ -156,6 +156,97 @@ New inventory code and touched integration modules pass mypy. The two previously
 documented `Settings()` constructor warnings (`jwt_secret_key`, `database_url`)
 remain outside that check per the developer's decision not to enable Pydantic's plugin.
 
+## Backoffice Interface
+
+The internal Next.js application at `uis/backoffice` provides four views:
+
+| Route | Purpose |
+| --- | --- |
+| `/backoffice/inventory/products` | Name, SKU, Warehouse, Current stock, and per-product order links |
+| `/backoffice/inventory/orders/inbound` | Register a received delivery |
+| `/backoffice/inventory/orders/outbound` | Register consumption or an exit after displaying available stock |
+| `/backoffice/inventory/orders` | Read-only history with product, quantity, direction, creation date, and User UUID |
+
+These are literal application routes, not a global Next.js base path. Existing
+`/login`, supplier, incident, and account routes remain unchanged. Every inventory
+page inherits the existing protected layout, `AuthProvider`, and `AuthGuard`.
+Anonymous visitors return to their original path and query after sign-in;
+missing or rejected tokens redirect to `/login?next=...`.
+
+`uis/backoffice/lib/inventory.ts` centralizes all six inventory API calls through
+the existing `requestAuthenticatedApi`. The bearer token comes from the existing
+`trackflow.access_token` storage. Components never call `fetch` directly. The
+movement forms use the live **`/inventory/products/inbound`** and
+**`/inventory/products/outbound`** endpoints, not `/inventory/orders/inbound`
+or `/inventory/orders/outbound`. No backend aliases were added.
+
+The interface uses the approved fields above and the Monterrey/Zaragoza vocabulary
+from `contexts/context.md`. Products are selected by name, with SKU and Warehouse
+to distinguish identical names. Each product row links to either form using
+`?product_id=<UUID>`. Successful submissions clear the form and show confirmation;
+failed submissions preserve values. Quantities must be whole numbers from 1 to
+2,147,483,647. Only `product_id` and `quantity` are sent; the API assigns identity
+and timestamps. Pending submissions disable controls and block duplicate writes.
+
+Stock indicators include a written label as well as color. Their display-only
+thresholds, documented beside `stockLevel`, are **0: Out of stock**, **1-9: Low
+stock**, **10 or more: Healthy stock**. These are not per-product reorder rules.
+Outbound selection fetches fresh stock from `GET /inventory/products/{id}` and
+keeps Quantity disabled while availability is unknown. Late responses for prior
+selections are ignored. Above-stock quantities produce an inline warning and
+disable submission; exact depletion is allowed. A server 400 stays beside Quantity
+while stock refreshes, since another operative may have consumed stock meanwhile.
+
+Readable API-authored 4xx and 5xx messages appear on screen, including nested
+`detail.message`, string `detail`, and FastAPI 422 field errors. HTML, tracebacks,
+unreadable bodies, and connection failures get readable inventory-specific text.
+The shared error policy for incidents and identity is unchanged. Malformed success
+bodies are errors, never empty inventories. Movement POSTs are not automatically
+retried: check history after an ambiguous server/network failure before repeating
+a write. History has no edit/delete actions, uses embedded product data without
+extra lookups, and displays creation dates in the reader's timezone. Mobile rows
+show all fields without requiring horizontal scrolling.
+
+### Run and Verify
+
+Set the backoffice's `NEXT_PUBLIC_API_URL` to the FastAPI origin, never to Supabase
+or a database connection string. Run `npm run api` from the repository root, and
+`npm --prefix uis/backoffice run dev` to serve the UI on port 3001. Start at
+`http://localhost:3001/backoffice/inventory/products` and sign in with an existing
+account.
+
+```sh
+npm --prefix uis/backoffice run lint -- --fix
+npm --prefix uis/backoffice run typecheck
+npm --prefix uis/backoffice test -- --runInBand
+npm --prefix uis/backoffice run build
+```
+
+The focused API/helper tests are `tests/frontend/backoffice/inventory.test.ts`.
+The browser acceptance runner is `tests/frontend/backoffice/inventory.browser.cjs`.
+It intercepts all identity/inventory requests and performs no live stock writes.
+Playwright can be installed outside the repository to avoid application dependency
+changes:
+
+```sh
+npm install --prefix /tmp/trackflow-inventory-browser --no-package-lock --no-save playwright
+/tmp/trackflow-inventory-browser/node_modules/.bin/playwright install chromium
+NODE_PATH=/tmp/trackflow-inventory-browser/node_modules \
+  node tests/frontend/backoffice/inventory.browser.cjs
+```
+
+The browser runner defaults to `http://localhost:3001`; override with
+`BACKOFFICE_URL` if necessary. Screenshots default to
+`/tmp/trackflow-inventory-screenshots` (`INVENTORY_SCREENSHOTS` overrides this).
+On 2026-10-06, 38 focused tests, all 213 backoffice Jest tests, and 84 browser
+checks passed. Lint, typecheck, and production build passed. Browser coverage
+includes redirects on every route, missing/expired/rejected sessions, bearer
+headers, both movement workflows, duplicate submission, success resets,
+400/422/500 errors, stock refresh and reversed response completion, empty data,
+malformed/HTML/offline failures, and desktop/mobile layouts. Browser requests use
+test responses; live end-to-end movement writes remain an isolated-environment
+verification step, not a reason to change operational stock.
+
 ## Stage 6: Context-Based Demo Seed
 
 The inventory source is `contexts/coding-fundamentals.md`, **Sample Products**.

@@ -12,6 +12,10 @@ const NAV_LINKS = [
   // form is the destination they arrive wanting.
   { href: "/incidents/new", label: "Report incident" },
   { href: "/suppliers", label: "Suppliers" },
+  { href: "/backoffice/inventory/products", label: "Products" },
+  { href: "/backoffice/inventory/orders", label: "Orders" },
+  { href: "/backoffice/inventory/orders/inbound", label: "Inbound order" },
+  { href: "/backoffice/inventory/orders/outbound", label: "Outbound order" },
   { href: "/account/profile", label: "Profile" },
 ] as const;
 
@@ -71,7 +75,7 @@ export function BackofficeNavShell({ actions }: BackofficeNavShellProps) {
         </Link>
 
         <div className="flex flex-wrap items-center gap-3">
-          <ul className="flex items-center gap-1">
+          <ul className="flex flex-wrap items-center gap-1">
             {NAV_LINKS.map((link) => {
               const isActive = link.href === currentHref;
 

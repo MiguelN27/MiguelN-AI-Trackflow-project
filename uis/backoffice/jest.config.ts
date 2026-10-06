@@ -25,6 +25,7 @@ const config: Config = {
     "lib/auth-storage.ts",
     "lib/api-client.ts",
     "lib/friendly-error.ts",
+    "lib/inventory.ts",
     "services/auth-service.ts",
   ],
 };

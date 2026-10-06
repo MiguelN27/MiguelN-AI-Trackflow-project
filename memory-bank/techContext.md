@@ -12,6 +12,7 @@ This repository currently contains two website implementations related to TrackF
 - `uis/backoffice`
   - The internal console: supplier directory and the centralized incident manager (`/incidents`, `/incidents/new`), both in the `(protected)` route group. Same Next.js 16.2.7 / React 19 / Tailwind v4 stack as `uis/website`.
   - The incident screens are where the data-viz rules apply: `components/incidents/IncidentSummaryPanel.tsx` picks its form before its colour, and the status tokens in `app/globals.css` carry their measured contrast and separation figures in a comment. See `docs/INCIDENTS.md`.
+  - Inventory has four protected, literal `/backoffice/inventory/...` routes: `products`, `orders/inbound`, `orders/outbound`, and read-only `orders`. `lib/inventory.ts` owns every inventory call using the existing authenticated transport; live movement endpoints remain `/inventory/products/inbound` and `/inventory/products/outbound`. The shared form fetches selected outbound stock, ignores stale responses, and preserves API quantity errors during refresh. See `docs/INVENTORY.md`.
 - `uis/website`
   - Next.js `16.2.7` (App Router structure under `app/`)
   - React `19.2.4`
@@ -71,6 +72,7 @@ This repository currently contains two website implementations related to TrackF
   - Token-protected inventory: `GET /inventory/products`, `POST /inventory/products`, `GET /inventory/products/{id}`, `POST /inventory/products/inbound`, `POST /inventory/products/outbound`, `GET /inventory/orders`. Both GET and write authentication were explicitly confirmed. No new role restrictions.
   - Unauthenticated at this stage: `POST /api/incidents`, `GET /api/incidents` (filters `status`, `origin`, `branch`, `category`), `GET /api/incidents/summary`, `GET /api/incidents/{id}`, `PATCH /api/incidents/{id}/status`. Anyone in the company reports incidents, and no incident route exposes the commercially sensitive data that makes `/suppliers` token-only. Revisit when the panel lands.
 - `uis/backoffice` consumes the `/suppliers` routes with `Authorization: Bearer <token>` on every call.
+- Inventory calls in `uis/backoffice` use the same token and 401 handling. Its own error presentation preserves readable API-authored 4xx/5xx messages without changing `friendly-error.ts` for other features. Stock labels use display-only thresholds 0 / 1-9 / 10+; no schema or reorder rules were added.
 - Both Next.js apps consume `POST /users`, `POST /auth/login`, `GET /auth/me` and `PUT /profiles/me` for their sign-in, registration and profile views.
 - Endpoints consumed by `uis/website` from a separate external API:
   - `GET /records`
