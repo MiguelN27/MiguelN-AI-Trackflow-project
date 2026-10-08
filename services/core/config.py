@@ -1,7 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic import Field, SecretStr, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -19,6 +20,7 @@ class Settings(BaseSettings):
     )
 
     jwt_secret_key: str = Field(min_length=32)
+    app_env: Literal["development", "production"] = "production"
     database_url: SecretStr
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = Field(default=60, gt=0)
@@ -38,19 +40,29 @@ class Settings(BaseSettings):
 
     @field_validator("database_url")
     @classmethod
-    def validate_database_url(cls, value: SecretStr) -> SecretStr:
+    def validate_database_url(cls, value: SecretStr, info: ValidationInfo) -> SecretStr:
         try:
             url = make_url(value.get_secret_value())
+            sslmode = url.query.get("sslmode", "require")
             valid = (
                 url.drivername in {"postgresql", "postgresql+psycopg2"}
                 and bool(url.host and url.username and url.password and url.database)
                 and (url.port is None or 0 < url.port <= 65535)
-                and url.query.get("sslmode", "require") in {"require", "verify-ca", "verify-full"}
+                and (
+                    sslmode in {"require", "verify-ca", "verify-full"}
+                    or (
+                        sslmode == "disable"
+                        and info.data.get("app_env") == "development"
+                    )
+                )
             )
         except (ArgumentError, ValueError):
             valid = False
         if not valid:
-            raise ValueError("Must be a PostgreSQL connection URL with credentials and SSL enabled")
+            raise ValueError(
+                "Must be a PostgreSQL connection URL with credentials and SSL enabled "
+                "outside development"
+            )
         return value
 
     @field_validator("frontend_base_url")

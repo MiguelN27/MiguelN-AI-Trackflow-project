@@ -1,0 +1,87 @@
+services:
+  ui:
+    build:
+      context: ./uis
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      NEXT_PUBLIC_RECORDS_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL in the root .env}
+      NEXT_PUBLIC_AUTH_API_URL: /backend
+    volumes:
+      - ./uis/website:/workspace/website
+      - ./uis/backoffice:/workspace/backoffice
+      - website_node_modules:/workspace/website/node_modules
+      - backoffice_node_modules:/workspace/backoffice/node_modules
+      - website_next:/workspace/website/.next
+      - backoffice_next:/workspace/backoffice/.next
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - trackflow
+
+  api:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: ${APP_ENV:?Set APP_ENV in the root .env}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in the root .env}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:?Set COMPOSE_DATABASE_URL in the root .env}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-TrackFlow <onboarding@resend.dev>}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
+      DB_PATH: /app/data/suppliers.json
+    volumes:
+      - .:/app
+      - api_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=2)
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    networks:
+      - trackflow
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in the root .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in the root .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - trackflow
+
+networks:
+  trackflow:
+    name: trackflow-development
+
+volumes:
+  api_data:
+  postgres_data:
+  website_node_modules:
+  backoffice_node_modules:
+  website_next:
+  backoffice_next:

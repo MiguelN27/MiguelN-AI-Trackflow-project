@@ -18,6 +18,7 @@ from services.main import app
 # variables outrank `.env` in pydantic-settings, so these win.
 TEST_SETTINGS = {
     "JWT_SECRET_KEY": "test-only-secret-key-that-is-at-least-32-chars",
+    "APP_ENV": "production",
     "DATABASE_URL": "postgresql://test:test@127.0.0.1:1/trackflow_test",
     "JWT_ALGORITHM": "HS256",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "60",

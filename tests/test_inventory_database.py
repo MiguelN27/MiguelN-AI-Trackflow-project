@@ -52,6 +52,19 @@ def test_invalid_url_has_safe_error(monkeypatch, value):
     assert raised.value.__suppress_context__
 
 
+def test_ssl_disabled_url_is_only_allowed_in_development(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://user:secret@db:5432/trackflow?sslmode=disable",
+    )
+    config.get_settings.cache_clear()
+
+    settings = config.get_settings()
+
+    assert settings.database_url.get_secret_value().endswith("sslmode=disable")
+
+
 def test_missing_url_is_required(monkeypatch):
     monkeypatch.delenv("DATABASE_URL")
     with pytest.raises(config.ValidationError) as raised:

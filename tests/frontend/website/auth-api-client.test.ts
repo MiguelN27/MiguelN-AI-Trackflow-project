@@ -80,6 +80,12 @@ describe("buildAuthApiUrl", () => {
   it("ignores trailing slashes on the configured origin", () => {
     expect(clientLoadedWith({ url: "http://api.test//", nodeEnv: "production" }).getAuthApiBaseUrl()).toBe(API);
   });
+
+  it("supports the same-origin backend proxy path", () => {
+    expect(clientLoadedWith({ url: "/backend", nodeEnv: "production" }).buildAuthApiUrl("/auth/login")).toBe(
+      "/backend/auth/login",
+    );
+  });
 });
 
 describe("sendRequest", () => {

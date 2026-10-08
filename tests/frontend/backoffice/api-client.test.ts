@@ -67,6 +67,10 @@ describe("buildApiUrl", () => {
     expect(clientConfiguredWith("http://api.test///").buildApiUrl("/users")).toBe(`${API}/users`);
   });
 
+  it("supports the same-origin backend proxy path", () => {
+    expect(clientConfiguredWith("/backend").buildApiUrl("/users")).toBe("/backend/users");
+  });
+
   it("refuses to build a URL when no API is configured", () => {
     expect(() => clientConfiguredWith(undefined).buildApiUrl("/auth/login")).toThrow(
       "NEXT_PUBLIC_API_URL is not configured",
