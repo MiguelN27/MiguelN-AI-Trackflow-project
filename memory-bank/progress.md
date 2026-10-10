@@ -13,11 +13,11 @@ Goals accomplished:
 - Both apps' lint/auto-fix and typechecks passed; website's 171 tests and backoffice's 214 tests passed for the nav correction.
 - Extracted the repeated status/stage selects into a local `CandidateFilter` with screen-reader labels. Browser verification confirmed both filters remain query-driven; Lighthouse `select-name` now passes with zero failures, Accessibility rose from 92 to 96, and Performance remains 100. Website lint, typecheck and all 171 tests passed.
 - Corrected the remaining candidate-page contrast failures (blue eyebrow and orange motto) with local text colors. The authenticated candidate page now has Lighthouse Accessibility 100, zero contrast failures, and Performance 100 (FCP 211 ms, LCP 729 ms in the validation run); website lint, typecheck, and all 171 tests pass.
+- Added the existing TrackFlow favicon to the backoffice root app route. Lighthouse on authenticated inventory products now reports Best Practices 100 (from 96), no console errors, and 100 across all four categories. Backoffice lint, typecheck, and all 214 tests pass.
 
 Still missing / next goals:
-1. Provide the missing backoffice favicon and resolve its Best Practices console error.
-2. Rerun the complete baseline matrix after corrections and document the measured comparison in `REPORT.md`, with matching screenshots under `audit/after/`.
-3. Verify both production builds, lint, typecheck, both Jest suites, and desktop/mobile rendering. Commit only after the repository's pre-commit gates are complete.
+1. Rerun the complete baseline matrix after corrections and document the measured comparison in `REPORT.md`, with matching screenshots under `audit/after/`.
+2. Verify both production builds, lint, typecheck, both Jest suites, and desktop/mobile rendering. Commit only after the repository's pre-commit gates are complete.
 
 ## Update 2026-10-06 - Backoffice inventory interface
 
