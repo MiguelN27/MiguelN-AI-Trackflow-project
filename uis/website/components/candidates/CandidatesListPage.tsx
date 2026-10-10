@@ -288,7 +288,7 @@ function CandidatesListContent() {
     <main className="px-4 py-8 sm:px-6 sm:py-10">
       <div className="mx-auto w-full max-w-6xl space-y-6">
         <section className="overflow-hidden rounded-3xl border border-[color:var(--border-soft)] bg-[color:var(--surface)]/90 p-6 shadow-[0_24px_60px_-36px_rgba(37,99,235,0.45)] sm:p-8">
-          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[color:var(--border-soft)] bg-[color:var(--flow-blue)]/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[color:var(--flow-blue)]">
+          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[color:var(--border-soft)] bg-[color:var(--flow-blue)]/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#1f56c8]">
             TrackFlow Tech
           </div>
           <h1 className="font-brand-display text-3xl font-bold leading-tight text-[color:var(--text-strong)] sm:text-4xl">
@@ -309,7 +309,7 @@ function CandidatesListContent() {
             </article>
             <article className="rounded-2xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] p-4">
               <p className="text-xs uppercase tracking-[0.14em] text-[color:var(--text-muted)]">Motto</p>
-              <p className="mt-2 text-sm font-semibold text-[color:var(--flow-accent)]">Faster routes, smarter deliveries</p>
+              <p className="mt-2 text-sm font-semibold text-[#b55316]">Faster routes, smarter deliveries</p>
             </article>
           </div>
         </section>

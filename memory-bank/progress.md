@@ -12,9 +12,10 @@ Goals accomplished:
 - Removed redundant `aria-label` overrides from the visible TrackFlow brand links in both frontends. One equivalent Lighthouse rerun per affected route reports no label-content/name mismatch; the homepage remains Accessibility 100, and authenticated pages were verified against the synthetic API.
 - Both apps' lint/auto-fix and typechecks passed; website's 171 tests and backoffice's 214 tests passed for the nav correction.
 - Extracted the repeated status/stage selects into a local `CandidateFilter` with screen-reader labels. Browser verification confirmed both filters remain query-driven; Lighthouse `select-name` now passes with zero failures, Accessibility rose from 92 to 96, and Performance remains 100. Website lint, typecheck and all 171 tests passed.
+- Corrected the remaining candidate-page contrast failures (blue eyebrow and orange motto) with local text colors. The authenticated candidate page now has Lighthouse Accessibility 100, zero contrast failures, and Performance 100 (FCP 211 ms, LCP 729 ms in the validation run); website lint, typecheck, and all 171 tests pass.
 
 Still missing / next goals:
-1. Resolve the remaining candidate-page contrast failures (blue eyebrow 4.47:1, orange motto 2.23:1) and provide the missing backoffice favicon.
+1. Provide the missing backoffice favicon and resolve its Best Practices console error.
 2. Rerun the complete baseline matrix after corrections and document the measured comparison in `REPORT.md`, with matching screenshots under `audit/after/`.
 3. Verify both production builds, lint, typecheck, both Jest suites, and desktop/mobile rendering. Commit only after the repository's pre-commit gates are complete.
 
