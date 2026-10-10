@@ -1,6 +1,19 @@
 # Development Progress
 
-Last updated: 2026-10-06
+Last updated: 2026-10-10
+
+## Update 2026-10-10 - Frontend performance audit (in progress)
+
+Goals accomplished:
+- Captured three-run Lighthouse 12.8.2 baselines in Chrome 154 for the corporate homepage (desktop/mobile), authenticated candidate pipeline, and authenticated inventory products view. Protected pages used synthetic local data only. Baseline score tables, methods, findings, and duplication candidates are in `AUDIT.md`; raw HTML/JSON and report screenshots are under `audit/before/`.
+- Installed and reviewed the `core-web-vitals` and `performance` skills for GitHub Copilot under `.agents/skills/`. CrUX is unavailable for localhost; Lighthouse CLI is the documented lab fallback. Cloudflare `web-perf` was not installed because Cloudflare deployment and its required DevTools MCP are not established.
+- Fixed the corporate homepage's measured text contrast failures with a darker muted-blue token and local blue/orange text corrections. Three equivalent desktop Lighthouse reruns now report Accessibility 100 (from 96), zero contrast failures, and Performance 100; LCP remains 545-553 ms.
+- Website lint/auto-fix, typecheck, and Jest passed for this correction: 171 tests.
+
+Still missing / next goals:
+1. Correct the measured accessible-name mismatch in both navs, label the two candidate filters with a narrow reusable control, and provide the missing backoffice favicon.
+2. Rerun the complete baseline matrix after corrections and document the measured comparison in `REPORT.md`, with matching screenshots under `audit/after/`.
+3. Verify both production builds, lint, typecheck, both Jest suites, and desktop/mobile rendering. Commit only after the repository's pre-commit gates are complete.
 
 ## Update 2026-10-06 - Backoffice inventory interface
 
