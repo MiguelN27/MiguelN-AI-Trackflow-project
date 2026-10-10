@@ -25,6 +25,34 @@ type CandidateListItem = {
   stage: string;
 };
 
+type CandidateFilterProps = {
+  label: string;
+  placeholder: string;
+  options: string[];
+  value: string;
+  onChange: (value: string) => void;
+};
+
+function CandidateFilter({ label, placeholder, options, value, onChange }: CandidateFilterProps) {
+  return (
+    <label className="block">
+      <span className="sr-only">{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded-xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none ring-[color:var(--flow-blue)] transition focus:ring-2"
+      >
+        <option value="">{placeholder}</option>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export default function CandidatesListPage() {
   return (
     <Suspense
@@ -318,31 +346,21 @@ function CandidatesListContent() {
             className="rounded-xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none ring-[color:var(--flow-blue)] transition focus:ring-2"
           />
 
-          <select
+          <CandidateFilter
+            label="Filter candidates by status"
+            placeholder="All statuses"
+            options={statusOptions}
             value={searchParams.get("status") ?? ""}
-            onChange={(event) => updateQueryFilter("status", event.target.value)}
-            className="rounded-xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none ring-[color:var(--flow-blue)] transition focus:ring-2"
-          >
-            <option value="">All statuses</option>
-            {statusOptions.map((status) => (
-              <option key={status} value={status}>
-                {status}
-              </option>
-            ))}
-          </select>
+            onChange={(value) => updateQueryFilter("status", value)}
+          />
 
-          <select
+          <CandidateFilter
+            label="Filter candidates by stage"
+            placeholder="All stages"
+            options={stageOptions}
             value={searchParams.get("stage") ?? ""}
-            onChange={(event) => updateQueryFilter("stage", event.target.value)}
-            className="rounded-xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none ring-[color:var(--flow-blue)] transition focus:ring-2"
-          >
-            <option value="">All stages</option>
-            {stageOptions.map((stage) => (
-              <option key={stage} value={stage}>
-                {stage}
-              </option>
-            ))}
-          </select>
+            onChange={(value) => updateQueryFilter("stage", value)}
+          />
         </section>
 
         {listStatus === "loading" ? (
