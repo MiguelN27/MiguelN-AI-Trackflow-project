@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-10
 
-## Update 2026-10-10 - Frontend performance audit (in progress)
+## Update 2026-10-10 - Frontend performance audit
 
 Goals accomplished:
 - Captured three-run Lighthouse 12.8.2 baselines in Chrome 154 for the corporate homepage (desktop/mobile), authenticated candidate pipeline, and authenticated inventory products view. Protected pages used synthetic local data only. Baseline score tables, methods, findings, and duplication candidates are in `AUDIT.md`; raw HTML/JSON and report screenshots are under `audit/before/`.
@@ -14,10 +14,14 @@ Goals accomplished:
 - Extracted the repeated status/stage selects into a local `CandidateFilter` with screen-reader labels. Browser verification confirmed both filters remain query-driven; Lighthouse `select-name` now passes with zero failures, Accessibility rose from 92 to 96, and Performance remains 100. Website lint, typecheck and all 171 tests passed.
 - Corrected the remaining candidate-page contrast failures (blue eyebrow and orange motto) with local text colors. The authenticated candidate page now has Lighthouse Accessibility 100, zero contrast failures, and Performance 100 (FCP 211 ms, LCP 729 ms in the validation run); website lint, typecheck, and all 171 tests pass.
 - Added the existing TrackFlow favicon to the backoffice root app route. Lighthouse on authenticated inventory products now reports Best Practices 100 (from 96), no console errors, and 100 across all four categories. Backoffice lint, typecheck, and all 214 tests pass.
+- Repeated the complete three-run Lighthouse matrix after fixes using the same production URLs, browser and presets. Final scores are 100 in all four categories for every measured target. Median loading metrics are documented in `REPORT.md`; no field improvement is claimed because CrUX is unavailable for localhost.
+- Added `REPORT.md`, updated `AUDIT.md`, and captured four before/after Lighthouse report screenshots with complete HTML/JSON triplicates under `audit/before/` and `audit/after/`. Synthetic authenticated data was used; no production records or credentials were included.
+- Final verification: both production builds passed, both apps' auto-fix lint and typechecks passed, website Jest 171/171 and backoffice Jest 214/214 passed, and browser checks confirmed the candidate labels/filter behavior and protected-page fixture state.
+- Committed the five focused corrections: `ee5eeaf`, `9bc92ef`, `3fa8dd8`, `298c604`, `6acc68b`. Final audit documentation and evidence are being committed separately.
 
 Still missing / next goals:
-1. Rerun the complete baseline matrix after corrections and document the measured comparison in `REPORT.md`, with matching screenshots under `audit/after/`.
-2. Verify both production builds, lint, typecheck, both Jest suites, and desktop/mobile rendering. Commit only after the repository's pre-commit gates are complete.
+1. Collect real-user field Core Web Vitals after deployment; localhost has no eligible CrUX data, so these results are controlled lab evidence only.
+2. Consider cross-app `StateMessage` and authentication-provider deduplication separately; they were documented but deferred because they require broader shared-package boundaries and are not performance bottlenecks.
 
 ## Update 2026-10-06 - Backoffice inventory interface
 
