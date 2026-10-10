@@ -67,7 +67,7 @@ export function BackofficeNavShell({ actions }: BackofficeNavShellProps) {
         aria-label="Backoffice"
         className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-3 md:px-10"
       >
-        <Link href="/" className="flex flex-col" aria-label="TrackFlow backoffice dashboard">
+        <Link href="/" className="flex flex-col">
           <span className="font-mono text-[0.65rem] uppercase tracking-[0.22em] text-[color:var(--brand-primary)]">
             TrackFlow
           </span>

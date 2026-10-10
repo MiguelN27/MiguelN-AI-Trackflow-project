@@ -9,6 +9,8 @@ Goals accomplished:
 - Installed and reviewed the `core-web-vitals` and `performance` skills for GitHub Copilot under `.agents/skills/`. CrUX is unavailable for localhost; Lighthouse CLI is the documented lab fallback. Cloudflare `web-perf` was not installed because Cloudflare deployment and its required DevTools MCP are not established.
 - Fixed the corporate homepage's measured text contrast failures with a darker muted-blue token and local blue/orange text corrections. Three equivalent desktop Lighthouse reruns now report Accessibility 100 (from 96), zero contrast failures, and Performance 100; LCP remains 545-553 ms.
 - Website lint/auto-fix, typecheck, and Jest passed for this correction: 171 tests.
+- Removed redundant `aria-label` overrides from the visible TrackFlow brand links in both frontends. One equivalent Lighthouse rerun per affected route reports no label-content/name mismatch; the homepage remains Accessibility 100, and authenticated pages were verified against the synthetic API.
+- Both apps' lint/auto-fix and typechecks passed; website's 171 tests and backoffice's 214 tests passed for the nav correction.
 
 Still missing / next goals:
 1. Correct the measured accessible-name mismatch in both navs, label the two candidate filters with a narrow reusable control, and provide the missing backoffice favicon.

@@ -18,7 +18,7 @@ export function TrackFlowNav({ subtitle = "Faster routes, smarter deliveries" }:
         aria-label="Primary"
         className="mx-auto flex w-full max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6"
       >
-        <Link href="/" className="flex items-center gap-3" aria-label="TrackFlow corporate home">
+        <Link href="/" className="flex items-center gap-3">
           <Image
             src="/trackflow-logo.png"
             alt="TrackFlow company logo"
