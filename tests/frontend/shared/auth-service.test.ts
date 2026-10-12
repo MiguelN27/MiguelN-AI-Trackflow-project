@@ -115,10 +115,14 @@ describe("fetchCurrentUser", () => {
   it("asks with the stored session and reads the account", async () => {
     storeToken(SESSION);
     const requests = scriptFetch(
-      jsonResponse(200, { id: "u1", email: "ana@trackflow.com", role: "user", is_active: true, profile: null }),
+      jsonResponse(200, { email: "ana@trackflow.com", role: "user", profile: null }),
     );
 
-    await expect(fetchCurrentUser()).resolves.toMatchObject({ id: "u1", email: "ana@trackflow.com" });
+    await expect(fetchCurrentUser()).resolves.toEqual({
+      email: "ana@trackflow.com",
+      role: "user",
+      profile: null,
+    });
     expect(requests[0].headers.Authorization).toBe(`Bearer ${SESSION}`);
   });
 
@@ -143,7 +147,7 @@ describe("updateMyProfile", () => {
   it("sends the edited fields, with cleared ones as null", async () => {
     storeToken(SESSION);
     const requests = scriptFetch(
-      jsonResponse(200, { id: "p1", user_id: "u1", name: "Ana", phone: null, address: null }),
+      jsonResponse(200, { id: "p1", name: "Ana", phone: null, address: null }),
     );
 
     await expect(updateMyProfile({ name: " Ana ", phone: "", address: "" })).resolves.toMatchObject({ name: "Ana" });

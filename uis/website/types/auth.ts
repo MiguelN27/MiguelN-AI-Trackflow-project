@@ -3,7 +3,6 @@ export type UserRole = "admin" | "manager" | "user";
 /** Display name and contact data. Lives on `Profile`, never on `User`. */
 export type Profile = {
   id: string;
-  user_id: string;
   name: string | null;
   phone: string | null;
   address: string | null;
@@ -11,10 +10,8 @@ export type Profile = {
 
 /** The `GET /auth/me` shape: credentials from `User`, contact data from `Profile`. */
 export type AuthenticatedUser = {
-  id: string;
   email: string;
   role: UserRole;
-  is_active: boolean;
   profile: Profile | null;
 };
 

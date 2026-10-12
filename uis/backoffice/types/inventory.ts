@@ -8,17 +8,28 @@ export type ProductSummary = {
 };
 
 export type Product = ProductSummary & { current_stock: number };
+export type ProductAvailability = Pick<Product, "id" | "current_stock">;
 export type ProductCreate = Omit<ProductSummary, "id">;
 export type OrderDirection = "inbound" | "outbound";
 export type OrderCreate = { product_id: string; quantity: number };
 
-type OrderFields = OrderCreate & {
+type OrderHistoryFields = {
   id: string;
+  product_id: string;
+  quantity: number;
   created_at: string;
   user_uuid: string;
-  product: ProductSummary;
+  product_name: string;
+  product_sku: string;
+  warehouse: Warehouse;
 };
 
-export type InboundOrder = OrderFields & { direction: "inbound" };
-export type OutboundOrder = OrderFields & { direction: "outbound" };
-export type InventoryOrder = InboundOrder | OutboundOrder;
+type MovementConfirmationFields = {
+  quantity: number;
+  product_name: string;
+  warehouse: Warehouse;
+};
+
+export type InboundOrder = MovementConfirmationFields & { direction: "inbound" };
+export type OutboundOrder = MovementConfirmationFields & { direction: "outbound" };
+export type InventoryOrder = OrderHistoryFields & { direction: OrderDirection };

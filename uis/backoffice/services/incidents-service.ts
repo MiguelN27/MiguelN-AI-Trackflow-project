@@ -13,10 +13,16 @@
  */
 
 import { parseResponseJson, requestApi } from "@/lib/api-client";
-import { normalizeIncident, normalizeIncidents, normalizeIncidentSummary } from "@/lib/incident";
+import {
+  normalizeIncident,
+  normalizeIncidentCreated,
+  normalizeIncidents,
+  normalizeIncidentSummary,
+} from "@/lib/incident";
 import type {
   Incident,
   IncidentCreatePayload,
+  IncidentCreated,
   IncidentFilters,
   IncidentStatus,
   IncidentSummary,
@@ -54,14 +60,14 @@ export async function fetchIncidentSummary(): Promise<IncidentSummary> {
   return normalizeIncidentSummary(await parseResponseJson(response));
 }
 
-export async function createIncident(payload: IncidentCreatePayload): Promise<Incident> {
+export async function createIncident(payload: IncidentCreatePayload): Promise<IncidentCreated> {
   const response = await requestApi("/api/incidents", {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
   });
 
-  return normalizeIncident(await parseResponseJson(response));
+  return normalizeIncidentCreated(await parseResponseJson(response));
 }
 
 export async function updateIncidentStatus(id: string, status: IncidentStatus): Promise<Incident> {

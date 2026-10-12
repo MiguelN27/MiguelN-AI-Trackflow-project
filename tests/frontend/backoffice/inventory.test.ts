@@ -8,18 +8,20 @@ import { installBrowser, removeBrowser } from "../shared/support/browser";
 import { API, jsonResponse, scriptFetch, textResponse } from "../shared/support/http";
 
 const product = { id: "p1", name: "Laptop", sku: "LAPTOP", warehouse: "Zaragoza", current_stock: 8 };
+const availability = { id: "p1", current_stock: 8 };
 const order = {
   id: "o1", product_id: "p1", quantity: 2, user_uuid: "u1", created_at: "2026-10-06T07:00:00Z",
-  product: { id: "p1", name: "Laptop", sku: "LAPTOP", warehouse: "Zaragoza" }, direction: "inbound",
+  product_name: "Laptop", product_sku: "LAPTOP", warehouse: "Zaragoza", direction: "inbound",
 };
+const confirmation = { quantity: 2, product_name: "Laptop", warehouse: "Zaragoza", direction: "inbound" };
 
 beforeEach(() => { installBrowser(); storeToken("test-session"); });
 afterEach(() => { clearToken(); removeBrowser(); });
 
 it("centralizes all six endpoints and sends bearer authorization on every call", async () => {
   const requests = scriptFetch(
-    jsonResponse(200, [product]), jsonResponse(200, product), jsonResponse(201, product),
-    jsonResponse(201, order), jsonResponse(201, { ...order, direction: "outbound" }), jsonResponse(200, [order]),
+    jsonResponse(200, [product]), jsonResponse(200, availability), jsonResponse(201, product),
+    jsonResponse(201, confirmation), jsonResponse(201, { ...confirmation, direction: "outbound" }), jsonResponse(200, [order]),
   );
   await getProducts({ warehouse: "Zaragoza", sku: "LAPTOP" });
   await getProduct("p1");
@@ -38,7 +40,7 @@ it("centralizes all six endpoints and sends bearer authorization on every call",
 });
 
 it("encodes product path segments", async () => {
-  const requests = scriptFetch(jsonResponse(200, product));
+  const requests = scriptFetch(jsonResponse(200, availability));
   await getProduct("part/one");
   expect(requests[0].url).toBe(`${API}/inventory/products/part%2Fone`);
 });
@@ -67,7 +69,7 @@ it("rejects malformed order history", async () => {
 });
 
 it("rejects a movement response with the wrong direction", async () => {
-  scriptFetch(jsonResponse(201, { ...order, direction: "outbound" }));
+  scriptFetch(jsonResponse(201, { ...confirmation, direction: "outbound" }));
   await expect(createInboundOrder({ product_id: "p1", quantity: 2 })).rejects.toThrow("unreadable response");
 });
 

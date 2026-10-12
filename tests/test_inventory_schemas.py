@@ -13,9 +13,13 @@ def test_schema_classes_are_not_orm_models():
     for schema in (
         schemas.ProductCreate,
         schemas.ProductResponse,
+        schemas.ProductAvailability,
         schemas.InboundOrderCreate,
         schemas.InboundOrderResponse,
         schemas.OutboundOrderCreate,
+        schemas.InboundOrderConfirmation,
+        schemas.OutboundOrderConfirmation,
+        schemas.OrderHistoryItem,
         schemas.OutboundOrderResponse,
     ):
         assert not issubclass(schema, SQLModel)
@@ -81,3 +85,24 @@ def test_order_response_includes_product_user_and_utc_timestamp():
     assert response.user_uuid == user_uuid
     assert response.created_at.tzinfo is timezone.utc
     assert response.product.warehouse == "Zaragoza"
+
+
+def test_movement_confirmation_contains_only_fields_the_form_uses():
+    response = schemas.InboundOrderConfirmation(
+        quantity=2,
+        product_name="Shoes",
+        warehouse="Zaragoza",
+    )
+    assert response.model_dump() == {
+        "quantity": 2,
+        "product_name": "Shoes",
+        "warehouse": Warehouse.ZARAGOZA,
+        "direction": "inbound",
+    }
+    with pytest.raises(ValidationError):
+        schemas.InboundOrderConfirmation(
+            quantity=2,
+            product_name="Shoes",
+            warehouse="Zaragoza",
+            user_uuid=uuid4(),
+        )

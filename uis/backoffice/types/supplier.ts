@@ -49,6 +49,11 @@ export type Supplier = {
   updated_at: string;
 };
 
+export type SupplierListItem = Pick<
+  Supplier,
+  "id" | "name" | "country" | "categories" | "rate_per_shipment" | "currency" | "status" | "service_zone"
+>;
+
 export type SupplierCreatePayload = {
   name: string;
   country: SupplierCountry;

@@ -18,6 +18,7 @@ import {
   type Incident,
   type IncidentBranch,
   type IncidentCategory,
+  type IncidentCreated,
   type IncidentCreatePayload,
   type IncidentFieldErrors,
   type IncidentFilters,
@@ -258,6 +259,29 @@ export function normalizeIncident(payload: unknown): Incident {
     branch,
     created_at: text(record.created_at, ""),
     updated_at: text(record.updated_at, ""),
+  };
+}
+
+export function normalizeIncidentCreated(payload: unknown): IncidentCreated {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Unexpected incident confirmation received from the API");
+  }
+
+  const record = payload as Record<string, unknown>;
+  if (
+    typeof record.id !== "string" || !record.id.trim()
+    || typeof record.title !== "string" || !record.title.trim()
+    || typeof record.status !== "string" || !isIncidentStatus(record.status)
+    || typeof record.branch !== "string" || !isIncidentBranch(record.branch)
+  ) {
+    throw new Error("Unexpected incident confirmation received from the API");
+  }
+
+  return {
+    id: record.id,
+    title: record.title,
+    status: record.status,
+    branch: record.branch,
   };
 }
 

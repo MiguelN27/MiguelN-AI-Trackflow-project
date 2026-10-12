@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -33,6 +33,11 @@ class ProductResponse(ProductSummary):
     current_stock: int = Field(ge=0)
 
 
+class ProductAvailability(InventorySchema):
+    id: UUID
+    current_stock: int = Field(ge=0)
+
+
 class InboundOrderCreate(InventorySchema):
     product_id: UUID
     quantity: Quantity
@@ -55,8 +60,8 @@ class OrderFields(InventorySchema):
     @classmethod
     def as_utc(cls, value: datetime) -> datetime:
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 class InboundOrderResponse(OrderFields):
@@ -71,3 +76,36 @@ OrderResponse = Annotated[
     InboundOrderResponse | OutboundOrderResponse,
     Field(discriminator="direction"),
 ]
+
+
+class MovementConfirmation(InventorySchema):
+    quantity: Quantity
+    product_name: ProductName
+    warehouse: Warehouse
+
+
+class InboundOrderConfirmation(MovementConfirmation):
+    direction: Literal["inbound"] = "inbound"
+
+
+class OutboundOrderConfirmation(MovementConfirmation):
+    direction: Literal["outbound"] = "outbound"
+
+
+class OrderHistoryItem(InventorySchema):
+    id: UUID
+    product_id: UUID
+    quantity: Quantity
+    created_at: datetime
+    user_uuid: UUID
+    product_name: ProductName
+    product_sku: ProductSKU
+    warehouse: Warehouse
+    direction: Literal["inbound", "outbound"]
+
+    @field_validator("created_at")
+    @classmethod
+    def as_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)

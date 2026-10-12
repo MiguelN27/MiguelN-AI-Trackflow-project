@@ -69,6 +69,17 @@ class SupplierResponse(SupplierInDB):
     id: int
 
 
+class SupplierListItem(BaseModel):
+    id: int
+    name: str
+    country: Country
+    categories: list[Category]
+    rate_per_shipment: float
+    currency: Currency
+    status: SupplierStatus
+    service_zone: str | None = None
+
+
 class RateUpdate(BaseModel):
     rate_per_shipment: float = Field(gt=0)
 

@@ -24,6 +24,7 @@ from services.core.security import (
     verify_password,
 )
 from services.profiles import service as profiles_service
+from services.profiles.models import ProfilePublicResponse
 from services.users import service as users_service
 from services.users.models import UserInDB
 
@@ -97,12 +98,15 @@ def login_for_access_token(
 @router.get("/me", response_model=AuthenticatedUserResponse)
 def read_current_user(current_user: CurrentUser) -> AuthenticatedUserResponse:
     """Return the authenticated user's credentials plus the linked profile."""
+    profile = profiles_service.get_profile_by_user(current_user.id)
     return AuthenticatedUserResponse(
-        id=current_user.id,
         email=current_user.email,
         role=current_user.role,
-        is_active=current_user.is_active,
-        profile=profiles_service.get_profile_by_user(current_user.id),
+        profile=(
+            ProfilePublicResponse.model_validate(profile.model_dump())
+            if profile is not None
+            else None
+        ),
     )
 
 

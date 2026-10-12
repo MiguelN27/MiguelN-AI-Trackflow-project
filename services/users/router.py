@@ -155,7 +155,9 @@ def update_user(user_id: str, payload: UserUpdate, current_user: CurrentUser) ->
     return _to_response(updated)
 
 
-@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{user_id}", response_model=None, status_code=status.HTTP_204_NO_CONTENT
+)
 def delete_user(user_id: str, current_user: CurrentUser) -> Response:
     """Delete a user and its linked profile. Self or admin only."""
     _require_self_or_admin(current_user, user_id)

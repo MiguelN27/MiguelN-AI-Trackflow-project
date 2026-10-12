@@ -93,7 +93,10 @@ def test_empty_inventory_and_zero_start(inventory_api):
     assert client.get("/inventory/orders", headers=headers).json() == []
     created = product(client, headers)
     assert created["current_stock"] == 0
-    assert client.get(f"/inventory/products/{created['id']}", headers=headers).json() == created
+    assert client.get(f"/inventory/products/{created['id']}", headers=headers).json() == {
+        "id": created["id"],
+        "current_stock": 0,
+    }
     with Session(engine) as session:
         assert session.exec(select(InboundOrder)).all() == []
         assert session.exec(select(OutboundOrder)).all() == []
@@ -105,9 +108,12 @@ def test_stock_is_net_history_not_join_multiplication(inventory_api):
     for direction, quantity in [("inbound", 10), ("inbound", 5), ("outbound", 2), ("outbound", 3)]:
         response = movement(client, headers, direction, created["id"], quantity)
         assert response.status_code == 201, response.text
-        assert response.json()["user_uuid"] == user_uuid
-        assert response.json()["direction"] == direction
-        assert response.json()["created_at"].endswith("Z")
+        assert response.json() == {
+            "quantity": quantity,
+            "product_name": "Shoes",
+            "warehouse": "Monterrey",
+            "direction": direction,
+        }
     assert client.get("/inventory/products", headers=headers).json()[0]["current_stock"] == 10
     assert (
         client.get(f"/inventory/products/{created['id']}", headers=headers).json()["current_stock"]
@@ -117,7 +123,11 @@ def test_stock_is_net_history_not_join_multiplication(inventory_api):
     assert len(orders) == 4
     assert {row["direction"] for row in orders} == {"inbound", "outbound"}
     assert all(
-        row["user_uuid"] == user_uuid and row["product"]["sku"] == "SHOE-42" for row in orders
+        row["user_uuid"] == user_uuid
+        and row["product_id"] == created["id"]
+        and row["product_sku"] == "SHOE-42"
+        and row["product_name"] == "Shoes"
+        for row in orders
     )
     assert [row["created_at"] for row in orders] == sorted(
         (row["created_at"] for row in orders), reverse=True
@@ -240,4 +250,10 @@ def test_openapi_exposes_pydantic_contracts_not_tables(inventory_api):
     contracts = specification["components"]["schemas"]
     assert "current_stock" in contracts["ProductResponse"]["properties"]
     assert "current_stock" not in contracts["ProductCreate"]["properties"]
+    assert set(contracts["ProductAvailability"]["properties"]) == {"id", "current_stock"}
+    assert set(contracts["InboundOrderConfirmation"]["properties"]) == {
+        "quantity", "product_name", "warehouse", "direction"
+    }
+    assert "product" not in contracts["OrderHistoryItem"]["properties"]
+    assert "user_uuid" in contracts["OrderHistoryItem"]["properties"]
     assert "Product" not in contracts

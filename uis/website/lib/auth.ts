@@ -253,7 +253,6 @@ export function normalizeProfile(payload: unknown): Profile {
 
   return {
     id: typeof record.id === "string" ? record.id : "",
-    user_id: typeof record.user_id === "string" ? record.user_id : "",
     name: readNullableString(record, "name"),
     phone: readNullableString(record, "phone"),
     address: readNullableString(record, "address"),
@@ -271,10 +270,8 @@ export function normalizeAuthenticatedUser(payload: unknown): AuthenticatedUser 
     : "user";
 
   return {
-    id: typeof record.id === "string" ? record.id : "",
     email: typeof record.email === "string" ? record.email : "",
     role,
-    is_active: record.is_active !== false,
     profile: record.profile ? normalizeProfile(record.profile) : null,
   };
 }

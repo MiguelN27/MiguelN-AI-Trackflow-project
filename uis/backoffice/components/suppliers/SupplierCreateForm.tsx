@@ -17,14 +17,14 @@ import {
   SUPPLIER_CATEGORIES,
   SUPPLIER_COUNTRIES,
   SUPPLIER_STATUSES,
-  type Supplier,
+  type SupplierListItem,
   type SupplierCategory,
   type SupplierFormValues,
 } from "@/types/supplier";
 import { FormEvent, useState } from "react";
 
 type SupplierCreateFormProps = {
-  onCreated: (supplier: Supplier) => void;
+  onCreated: (supplier: SupplierListItem) => void;
   onCancel: () => void;
 };
 

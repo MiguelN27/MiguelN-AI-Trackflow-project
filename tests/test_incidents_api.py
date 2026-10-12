@@ -5,27 +5,30 @@ import pytest
 from tests.conftest import VALID_INCIDENT
 
 
-def create(client, **overrides):
+def create_response(client, **overrides):
     payload = {**VALID_INCIDENT, **overrides}
     response = client.post("/api/incidents", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
 
 
+def create(client, **overrides):
+    created = create_response(client, **overrides)
+    return client.get(f"/api/incidents/{created['id']}").json()
+
+
 # --- POST -------------------------------------------------------------------
 
 
-def test_create_returns_201_with_generated_id_and_timestamps(client):
-    body = create(client)
+def test_create_returns_only_confirmation_fields(client):
+    body = create_response(client)
 
-    assert body["id"]
+    assert set(body) == {"id", "title", "status", "branch"}
     assert body["status"] == "open", "a new incident starts unassigned"
-    assert body["created_at"] == body["updated_at"], "never modified yet"
-    assert "source_incident_id" not in body, "seed bookkeeping is not part of the contract"
 
 
 def test_create_accepts_an_explicit_status(client):
-    assert create(client, status="in_progress")["status"] == "in_progress"
+    assert create_response(client, status="in_progress")["status"] == "in_progress"
 
 
 @pytest.mark.parametrize("missing_field", ["title", "description", "category", "origin", "branch"])
@@ -76,10 +79,11 @@ def test_create_rejects_a_title_longer_than_the_column(client):
 
 
 def test_create_ignores_a_client_supplied_id_and_timestamp(client):
-    body = create(client, id="pick-me", created_at="1999-01-01T00:00:00Z")
+    body = create_response(client, id="pick-me", created_at="1999-01-01T00:00:00Z")
 
     assert body["id"] != "pick-me"
-    assert not body["created_at"].startswith("1999")
+    detail = client.get(f"/api/incidents/{body['id']}").json()
+    assert not detail["created_at"].startswith("1999")
 
 
 # --- GET list ---------------------------------------------------------------

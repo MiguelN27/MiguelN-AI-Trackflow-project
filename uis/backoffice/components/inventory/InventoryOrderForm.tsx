@@ -98,7 +98,7 @@ export function InventoryOrderForm({ direction }: { direction: OrderDirection })
       setQuantity("");
       setStock(null);
       setFieldErrors({});
-      setConfirmation(`${label} order registered: ${created.quantity.toLocaleString()} units of ${created.product.name} (${created.product.warehouse}).`);
+      setConfirmation(`${label} order registered: ${created.quantity.toLocaleString()} units of ${created.product_name} (${created.warehouse}).`);
     } catch (failure) {
       const described = describeInventoryError(failure);
       if (outbound && failure instanceof ApiError && failure.status === 400) {

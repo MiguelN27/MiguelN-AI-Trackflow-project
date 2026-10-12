@@ -9,7 +9,7 @@ import {
 } from "@/lib/api-client";
 import type {
   InboundOrder, InventoryOrder, OrderCreate, OutboundOrder,
-  Product, ProductCreate, ProductSummary, Warehouse,
+  Product, ProductAvailability, ProductCreate, ProductSummary, Warehouse,
 } from "@/types/inventory";
 
 export const INVENTORY_PATH = "/backoffice/inventory";
@@ -36,13 +36,29 @@ function isProduct(value: unknown): value is Product {
     && Number.isSafeInteger(value.current_stock) && value.current_stock >= 0;
 }
 
+function isProductAvailability(value: unknown): value is ProductAvailability {
+  return record(value) && nonempty(value.id)
+    && typeof value.current_stock === "number"
+    && Number.isSafeInteger(value.current_stock) && value.current_stock >= 0;
+}
+
 function isOrder(value: unknown): value is InventoryOrder {
   return record(value) && nonempty(value.id) && nonempty(value.product_id)
     && nonempty(value.user_uuid) && nonempty(value.created_at)
     && Number.isFinite(Date.parse(value.created_at))
     && typeof value.quantity === "number" && Number.isInteger(value.quantity)
     && value.quantity > 0 && value.quantity <= MAX_QUANTITY
-    && isProductSummary(value.product) && value.product.id === value.product_id
+    && nonempty(value.product_name) && nonempty(value.product_sku)
+    && (value.warehouse === "Monterrey" || value.warehouse === "Zaragoza")
+    && (value.direction === "inbound" || value.direction === "outbound");
+}
+
+function isMovementConfirmation(value: unknown): value is InboundOrder | OutboundOrder {
+  return record(value)
+    && typeof value.quantity === "number" && Number.isInteger(value.quantity)
+    && value.quantity > 0 && value.quantity <= MAX_QUANTITY
+    && nonempty(value.product_name)
+    && (value.warehouse === "Monterrey" || value.warehouse === "Zaragoza")
     && (value.direction === "inbound" || value.direction === "outbound");
 }
 
@@ -74,8 +90,8 @@ export function getProducts(filters: { warehouse?: Warehouse; sku?: string } = {
     (value): value is Product[] => Array.isArray(value) && value.every(isProduct));
 }
 
-export function getProduct(id: string): Promise<Product> {
-  return inventoryRequest(`/inventory/products/${encodeURIComponent(id)}`, isProduct);
+export function getProduct(id: string): Promise<ProductAvailability> {
+  return inventoryRequest(`/inventory/products/${encodeURIComponent(id)}`, isProductAvailability);
 }
 
 export function createProduct(payload: ProductCreate): Promise<Product> {
@@ -84,12 +100,12 @@ export function createProduct(payload: ProductCreate): Promise<Product> {
 
 export function createInboundOrder(payload: OrderCreate): Promise<InboundOrder> {
   return inventoryRequest("/inventory/products/inbound",
-    (value): value is InboundOrder => isOrder(value) && value.direction === "inbound", post(payload));
+    (value): value is InboundOrder => isMovementConfirmation(value) && value.direction === "inbound", post(payload));
 }
 
 export function createOutboundOrder(payload: OrderCreate): Promise<OutboundOrder> {
   return inventoryRequest("/inventory/products/outbound",
-    (value): value is OutboundOrder => isOrder(value) && value.direction === "outbound", post(payload));
+    (value): value is OutboundOrder => isMovementConfirmation(value) && value.direction === "outbound", post(payload));
 }
 
 export function getOrders(filters: { warehouse?: Warehouse; product_id?: string } = {}): Promise<InventoryOrder[]> {

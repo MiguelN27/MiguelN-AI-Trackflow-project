@@ -14,6 +14,7 @@ from services.suppliers.models import (
     StatusUpdate,
     SupplierCreate,
     SupplierInDB,
+    SupplierListItem,
     SupplierResponse,
 )
 
@@ -42,18 +43,19 @@ def get_document_or_404(supplier_id: int) -> Document:
     return doc
 
 
-@router.post("", response_model=SupplierResponse, status_code=status.HTTP_201_CREATED)
-def create_supplier(payload: SupplierCreate) -> SupplierResponse:
+@router.post("", response_model=SupplierListItem, status_code=status.HTTP_201_CREATED)
+def create_supplier(payload: SupplierCreate) -> SupplierListItem:
     record = SupplierInDB(**payload.model_dump(), updated_at=datetime.now(timezone.utc))
     doc_id = get_table().insert(record.model_dump(mode="json"))
-    return SupplierResponse(id=doc_id, **record.model_dump())
+    supplier = SupplierResponse(id=doc_id, **record.model_dump())
+    return SupplierListItem.model_validate(supplier.model_dump())
 
 
-@router.get("", response_model=list[SupplierResponse])
+@router.get("", response_model=list[SupplierListItem])
 def list_suppliers(
     country: Country | None = Query(default=None),
     category: Category | None = Query(default=None),
-) -> list[SupplierResponse]:
+) -> list[SupplierListItem]:
     docs = get_table().all()
     if country is not None:
         docs = [doc for doc in docs if doc.get("country") == country.value]
@@ -62,10 +64,11 @@ def list_suppliers(
 
     # A stored row that no longer fits the model is skipped and logged rather
     # than failing the whole directory with a 500.
-    suppliers = []
+    suppliers: list[SupplierListItem] = []
     for doc in docs:
         try:
-            suppliers.append(to_response(doc))
+            supplier = to_response(doc)
+            suppliers.append(SupplierListItem.model_validate(supplier.model_dump()))
         except ValidationError:
             logger.warning(
                 "Skipping stored supplier %s: it no longer matches the model", doc.doc_id
@@ -98,7 +101,9 @@ def update_status(supplier_id: int, payload: StatusUpdate) -> SupplierResponse:
     return to_response(get_document_or_404(supplier_id))
 
 
-@router.delete("/{supplier_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{supplier_id}", response_model=None, status_code=status.HTTP_204_NO_CONTENT
+)
 def delete_supplier(supplier_id: int) -> Response:
     get_document_or_404(supplier_id)
     get_table().remove(doc_ids=[supplier_id])

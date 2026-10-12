@@ -52,7 +52,7 @@ export function OrdersPage() {
             <tbody className="block divide-y divide-slate-100 sm:table-row-group">
               {orders.map((order) => (
                 <tr key={`${order.direction}-${order.id}`} className="grid grid-cols-2 gap-3 p-4 sm:table-row sm:p-0">
-                  <th scope="row" className="col-span-2 min-w-0 break-words font-semibold sm:px-3 sm:py-4">{order.product.name}<span className="mt-1 block break-all font-mono text-xs font-normal text-slate-600">{order.product.sku}</span><span className="mt-1 block font-normal text-slate-600">{order.product.warehouse}</span></th>
+                  <th scope="row" className="col-span-2 min-w-0 break-words font-semibold sm:px-3 sm:py-4">{order.product_name}<span className="mt-1 block break-all font-mono text-xs font-normal text-slate-600">{order.product_sku}</span><span className="mt-1 block font-normal text-slate-600">{order.warehouse}</span></th>
                   <td className="min-w-0 tabular-nums sm:px-3 sm:py-4"><span className="mb-1 block text-xs text-slate-600 sm:hidden">Quantity</span>{order.quantity.toLocaleString()}</td>
                   <td className="min-w-0 sm:px-3 sm:py-4"><span className="mb-1 block text-xs text-slate-600 sm:hidden">Order type</span><span className={`inline-block rounded border px-2 py-1 text-xs font-semibold ${order.direction === "inbound" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-blue-200 bg-blue-50 text-blue-800"}`}>{order.direction === "inbound" ? "Inbound" : "Outbound"}</span></td>
                   <td className="col-span-2 min-w-0 sm:px-3 sm:py-4"><span className="mb-1 block text-xs text-slate-600 sm:hidden">Creation date</span><time dateTime={order.created_at}>{formatDate(order.created_at)}</time></td>

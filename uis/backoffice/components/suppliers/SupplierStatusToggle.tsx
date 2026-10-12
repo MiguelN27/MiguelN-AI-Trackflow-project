@@ -3,11 +3,11 @@
 import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import { formatStatusLabel } from "@/lib/supplier";
 import { updateSupplierStatus } from "@/services/suppliers-service";
-import type { Supplier, SupplierStatus } from "@/types/supplier";
+import type { Supplier, SupplierListItem, SupplierStatus } from "@/types/supplier";
 import { useState } from "react";
 
 type SupplierStatusToggleProps = {
-  supplier: Supplier;
+  supplier: SupplierListItem;
   onUpdated: (supplier: Supplier) => void;
 };
 

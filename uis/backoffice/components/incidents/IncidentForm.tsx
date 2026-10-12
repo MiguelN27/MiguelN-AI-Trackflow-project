@@ -26,7 +26,7 @@ import {
   INCIDENT_ORIGINS,
   INCIDENT_STATUSES,
   TITLE_MAX_LENGTH,
-  type Incident,
+  type IncidentCreated,
   type IncidentFieldErrors,
   type IncidentFormField,
   type IncidentFormValues,
@@ -36,7 +36,7 @@ import { useState, type FormEvent } from "react";
 
 type IncidentFormProps = {
   /** Called after a successful insert, with the row the API returned. */
-  onCreated?: (incident: Incident) => void;
+  onCreated?: (incident: IncidentCreated) => void;
 };
 
 /** The API's `field` values are the form's own field names, so no alias map is needed. */
@@ -58,7 +58,7 @@ export function IncidentForm({ onCreated }: IncidentFormProps) {
   const [values, setValues] = useState<IncidentFormValues>(emptyIncidentFormValues());
   const [fieldErrors, setFieldErrors] = useState<IncidentFieldErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
-  const [confirmation, setConfirmation] = useState<Incident | null>(null);
+  const [confirmation, setConfirmation] = useState<IncidentCreated | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // The reminder the CONTEXT asks for: a report filed *from* a facility needs

@@ -9,6 +9,7 @@ import {
   type SupplierCreatePayload,
   type SupplierCurrency,
   type SupplierFormValues,
+  type SupplierListItem,
   type SupplierStatus,
 } from "@/types/supplier";
 
@@ -178,10 +179,28 @@ export function normalizeSupplier(payload: unknown): Supplier {
   };
 }
 
-export function normalizeSuppliers(payload: unknown): Supplier[] {
+export function normalizeSupplierListItem(payload: unknown): SupplierListItem {
+  const supplier = normalizeSupplier(payload);
+  return supplierListItemFromSupplier(supplier);
+}
+
+export function supplierListItemFromSupplier(supplier: Supplier): SupplierListItem {
+  return {
+    id: supplier.id,
+    name: supplier.name,
+    country: supplier.country,
+    categories: supplier.categories,
+    rate_per_shipment: supplier.rate_per_shipment,
+    currency: supplier.currency,
+    status: supplier.status,
+    service_zone: supplier.service_zone,
+  };
+}
+
+export function normalizeSuppliers(payload: unknown): SupplierListItem[] {
   if (!Array.isArray(payload)) {
     return [];
   }
 
-  return payload.map(normalizeSupplier);
+  return payload.map(normalizeSupplierListItem);
 }

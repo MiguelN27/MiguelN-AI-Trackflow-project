@@ -22,13 +22,10 @@ def test_returns_the_account_and_its_profile(make_user, access_token_for):
 
     account = me(access_token_for(user))
 
-    assert (account.id, account.email, account.role, account.is_active) == (
-        user.id,
-        "ana@trackflow.com",
-        Role.USER,
-        True,
-    )
+    assert (account.email, account.role) == ("ana@trackflow.com", Role.USER)
+    assert set(account.model_dump()) == {"email", "role", "profile"}
     assert (account.profile.name, account.profile.phone) == ("Ana Ruiz", "+52 81 5555 0000")
+    assert "user_id" not in account.profile.model_dump()
 
 
 def test_an_account_without_a_profile_row_is_answered_with_no_profile(make_user, access_token_for):

@@ -12,6 +12,7 @@ import {
   formatCategoryLabel,
   isSupplierCategory,
   isSupplierCountry,
+  supplierListItemFromSupplier,
 } from "@/lib/supplier";
 import { fetchSuppliers } from "@/services/suppliers-service";
 import type { AsyncStatus } from "@/types/async-state";
@@ -21,6 +22,7 @@ import {
   type Supplier,
   type SupplierCategory,
   type SupplierCountry,
+  type SupplierListItem,
 } from "@/types/supplier";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -47,7 +49,7 @@ export default function SuppliersListPage() {
 }
 
 function SuppliersListContent() {
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierListItem[]>([]);
   const [listStatus, setListStatus] = useState<AsyncStatus>("loading");
   const [listError, setListError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -115,7 +117,7 @@ function SuppliersListContent() {
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
 
-  function matchesActiveFilters(supplier: Supplier): boolean {
+  function matchesActiveFilters(supplier: SupplierListItem): boolean {
     const matchesCountry = !countryFilter || supplier.country === countryFilter;
     const matchesCategory = !categoryFilter || supplier.categories.includes(categoryFilter);
 
@@ -124,12 +126,13 @@ function SuppliersListContent() {
 
   /** Swaps the single row the API just returned instead of refetching the whole list. */
   function handleSupplierUpdated(updated: Supplier): void {
+    const listItem = supplierListItemFromSupplier(updated);
     setSuppliers((currentSuppliers) =>
-      currentSuppliers.map((supplier) => (supplier.id === updated.id ? updated : supplier)),
+      currentSuppliers.map((supplier) => (supplier.id === updated.id ? listItem : supplier)),
     );
   }
 
-  function handleSupplierCreated(created: Supplier): void {
+  function handleSupplierCreated(created: SupplierListItem): void {
     if (!matchesActiveFilters(created)) {
       return;
     }

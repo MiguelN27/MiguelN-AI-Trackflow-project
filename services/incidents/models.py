@@ -21,6 +21,7 @@ __all__ = [
     "IncidentBranch",
     "IncidentCategory",
     "IncidentCreate",
+    "IncidentCreatedResponse",
     "IncidentInDB",
     "IncidentOrigin",
     "IncidentResponse",
@@ -87,6 +88,15 @@ class IncidentResponse(IncidentBase):
     status: IncidentStatus
     created_at: datetime
     updated_at: datetime
+
+
+class IncidentCreatedResponse(BaseModel):
+    """Confirmation fields shown after a report is filed."""
+
+    id: str
+    title: str
+    status: IncidentStatus
+    branch: IncidentBranch
 
 
 class IncidentStatusUpdate(BaseModel):

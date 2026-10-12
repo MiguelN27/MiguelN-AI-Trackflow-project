@@ -1,9 +1,10 @@
 import { parseResponseJson, requestAuthenticatedApi } from "@/lib/api-client";
-import { normalizeSupplier, normalizeSuppliers } from "@/lib/supplier";
+import { normalizeSupplier, normalizeSupplierListItem, normalizeSuppliers } from "@/lib/supplier";
 import type {
   Supplier,
   SupplierCreatePayload,
   SupplierFilters,
+  SupplierListItem,
   SupplierStatus,
 } from "@/types/supplier";
 
@@ -23,7 +24,7 @@ function buildSuppliersQuery(filters?: Partial<SupplierFilters>): string {
   return query ? `?${query}` : "";
 }
 
-export async function fetchSuppliers(filters?: Partial<SupplierFilters>): Promise<Supplier[]> {
+export async function fetchSuppliers(filters?: Partial<SupplierFilters>): Promise<SupplierListItem[]> {
   const response = await requestAuthenticatedApi(`/suppliers${buildSuppliersQuery(filters)}`);
 
   return normalizeSuppliers(await parseResponseJson(response));
@@ -35,14 +36,14 @@ export async function fetchSupplierById(id: string): Promise<Supplier> {
   return normalizeSupplier(await parseResponseJson(response));
 }
 
-export async function createSupplier(payload: SupplierCreatePayload): Promise<Supplier> {
+export async function createSupplier(payload: SupplierCreatePayload): Promise<SupplierListItem> {
   const response = await requestAuthenticatedApi("/suppliers", {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
   });
 
-  return normalizeSupplier(await parseResponseJson(response));
+  return normalizeSupplierListItem(await parseResponseJson(response));
 }
 
 export async function updateSupplierRate(id: number, ratePerShipment: number): Promise<Supplier> {

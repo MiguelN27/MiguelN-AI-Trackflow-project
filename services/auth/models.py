@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from services.profiles.models import ProfileResponse
+from services.profiles.models import ProfilePublicResponse
 from services.users.models import Password, Role, normalize_email
 
 
@@ -23,13 +23,11 @@ class TokenResponse(BaseModel):
 
 
 class AuthenticatedUserResponse(BaseModel):
-    """`GET /auth/me`: credentials from `User`, contact data from `Profile`."""
+    """`GET /auth/me`: session display fields and the linked public profile."""
 
-    id: str
     email: EmailStr
     role: Role
-    is_active: bool
-    profile: ProfileResponse | None = None
+    profile: ProfilePublicResponse | None = None
 
 
 class ForgotPasswordRequest(BaseModel):

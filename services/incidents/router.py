@@ -18,6 +18,7 @@ from services.incidents.models import (
     IncidentBranch,
     IncidentCategory,
     IncidentCreate,
+    IncidentCreatedResponse,
     IncidentInDB,
     IncidentOrigin,
     IncidentResponse,
@@ -34,15 +35,23 @@ def to_response(incident: IncidentInDB) -> IncidentResponse:
     return IncidentResponse(**incident.model_dump(exclude={"source_incident_id"}))
 
 
-@router.post("", response_model=IncidentResponse, status_code=status.HTTP_201_CREATED)
-def create_incident(payload: IncidentCreate) -> IncidentResponse:
+@router.post(
+    "", response_model=IncidentCreatedResponse, status_code=status.HTTP_201_CREATED
+)
+def create_incident(payload: IncidentCreate) -> IncidentCreatedResponse:
     """Register a new incident.
 
     A missing or out-of-range field never reaches this function: the payload
     fails to validate and the handler in `services.main` answers 400 naming the
     field.
     """
-    return to_response(service.create_incident(payload))
+    incident = service.create_incident(payload)
+    return IncidentCreatedResponse(
+        id=incident.id,
+        title=incident.title,
+        status=incident.status,
+        branch=incident.branch,
+    )
 
 
 @router.get("", response_model=list[IncidentResponse])

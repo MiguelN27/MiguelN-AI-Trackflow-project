@@ -29,7 +29,8 @@ def test_a_body_naming_another_profile_still_edits_only_the_callers(make_user, a
         access_token_for(ana), name="Hijacked", user_id=ben.id, id=bens_profile.id
     )
 
-    assert updated.user_id == ana.id
+    assert "user_id" not in updated.model_dump()
+    assert profiles_service.get_profile_by_user(ana.id).user_id == ana.id
     assert profiles_service.get_profile_by_user(ben.id).name == "Ben"
     assert profiles_service.get_profile_by_user(ana.id).name == "Hijacked"
 

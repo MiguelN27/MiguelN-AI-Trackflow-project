@@ -75,6 +75,8 @@ export type Incident = {
   updated_at: string;
 };
 
+export type IncidentCreated = Pick<Incident, "id" | "title" | "status" | "branch">;
+
 export type IncidentCreatePayload = {
   title: string;
   description: string;

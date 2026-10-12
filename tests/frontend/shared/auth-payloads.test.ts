@@ -61,16 +61,20 @@ describe("buildProfilePayload", () => {
 });
 
 describe("normalizeProfile", () => {
-  it("reads a well-formed profile", () => {
+  it("reads the public profile projection and ignores the internal user id", () => {
     const profile = { id: "p1", user_id: "u1", name: "Ana", phone: null, address: "Monterrey" };
 
-    expect(normalizeProfile(profile)).toEqual(profile);
+    expect(normalizeProfile(profile)).toEqual({
+      id: "p1",
+      name: "Ana",
+      phone: null,
+      address: "Monterrey",
+    });
   });
 
   it("reads blank or mistyped fields as absent", () => {
     expect(normalizeProfile({ id: 7, name: "   ", phone: 5, address: "" })).toEqual({
       id: "",
-      user_id: "",
       name: null,
       phone: null,
       address: null,
@@ -85,19 +89,17 @@ describe("normalizeProfile", () => {
 describe("normalizeAuthenticatedUser", () => {
   it("reads the account and its profile", () => {
     const user = normalizeAuthenticatedUser({
-      id: "u1",
+      id: "internal-user-id",
       email: "ana@trackflow.com",
       role: "manager",
-      is_active: true,
-      profile: { id: "p1", user_id: "u1", name: "Ana", phone: null, address: null },
+      is_active: false,
+      profile: { id: "p1", name: "Ana", phone: null, address: null },
     });
 
     expect(user).toEqual({
-      id: "u1",
       email: "ana@trackflow.com",
       role: "manager",
-      is_active: true,
-      profile: { id: "p1", user_id: "u1", name: "Ana", phone: null, address: null },
+      profile: { id: "p1", name: "Ana", phone: null, address: null },
     });
   });
 
@@ -107,11 +109,6 @@ describe("normalizeAuthenticatedUser", () => {
 
   it("reads a missing profile as none", () => {
     expect(normalizeAuthenticatedUser({ id: "u1", profile: null }).profile).toBeNull();
-  });
-
-  it("reads a missing is_active as active (pinned: only an explicit false deactivates)", () => {
-    expect(normalizeAuthenticatedUser({ id: "u1" }).is_active).toBe(true);
-    expect(normalizeAuthenticatedUser({ id: "u1", is_active: false }).is_active).toBe(false);
   });
 
   it("refuses a payload that is not an object", () => {

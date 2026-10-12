@@ -18,6 +18,10 @@ class ProfileInDB(ProfileBase):
     user_id: str
 
 
-# A profile carries no secrets, so the stored shape is also the wire shape.
-# `User` needs a separate response model because it holds the password hash.
-ProfileResponse = ProfileInDB
+class ProfileResponse(ProfileBase):
+    id: str
+    user_id: str
+
+
+class ProfilePublicResponse(ProfileBase):
+    id: str

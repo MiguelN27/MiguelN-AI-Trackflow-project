@@ -3,11 +3,11 @@
 import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import { parseRateInput } from "@/lib/supplier";
 import { updateSupplierRate } from "@/services/suppliers-service";
-import type { Supplier } from "@/types/supplier";
+import type { Supplier, SupplierListItem } from "@/types/supplier";
 import { FormEvent, useState } from "react";
 
 type SupplierRateEditorProps = {
-  supplier: Supplier;
+  supplier: SupplierListItem;
   onUpdated: (supplier: Supplier) => void;
 };
 
