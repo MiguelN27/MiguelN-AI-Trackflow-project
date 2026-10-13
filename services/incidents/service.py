@@ -24,6 +24,7 @@ from services.incidents.models import (
     IncidentStatus,
     IncidentSummary,
 )
+from services.incidents.read_cache import clear_read_cache
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,8 @@ def _all_incidents() -> list[IncidentInDB]:
             incidents.append(IncidentInDB(**doc))
         except ValidationError:
             logger.warning(
-                "Skipping stored incident %s: it no longer matches the model", doc.get("id", "?")
+                "Skipping stored incident %s: it no longer matches the model",
+                doc.get("id", "?"),
             )
     return incidents
 
@@ -78,6 +80,7 @@ def create_incident(
         source_incident_id=source_incident_id,
     )
     _table().insert(record.model_dump(mode="json"))
+    clear_read_cache()
     return record
 
 
@@ -136,13 +139,16 @@ def update_status(incident_id: str, new_status: IncidentStatus) -> IncidentInDB:
         raise IncidentNotFound(incident_id)
 
     if not can_transition(incident.status, new_status):
-        raise ValidationFailed("status", explain_invalid_transition(incident.status, new_status))
+        raise ValidationFailed(
+            "status", explain_invalid_transition(incident.status, new_status)
+        )
 
     updated_at = _now()
     _table().update(
         {"status": new_status.value, "updated_at": updated_at.isoformat()},
         Query().id == incident_id,
     )
+    clear_read_cache()
     return incident.model_copy(update={"status": new_status, "updated_at": updated_at})
 
 

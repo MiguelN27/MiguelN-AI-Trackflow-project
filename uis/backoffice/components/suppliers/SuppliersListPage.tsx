@@ -1,7 +1,6 @@
 "use client";
 
 import { StateMessage } from "@/components/common/StateMessage";
-import { SupplierCreateForm } from "@/components/suppliers/SupplierCreateForm";
 import { SupplierRateEditor } from "@/components/suppliers/SupplierRateEditor";
 import { SupplierStatusBadge } from "@/components/suppliers/SupplierStatusBadge";
 import { SupplierStatusToggle } from "@/components/suppliers/SupplierStatusToggle";
@@ -15,6 +14,7 @@ import {
   supplierListItemFromSupplier,
 } from "@/lib/supplier";
 import { fetchSuppliers } from "@/services/suppliers-service";
+import dynamic from "next/dynamic";
 import type { AsyncStatus } from "@/types/async-state";
 import {
   SUPPLIER_CATEGORIES,
@@ -27,6 +27,17 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+
+const SupplierCreateForm = dynamic(
+  () => import("@/components/suppliers/SupplierCreateForm").then((module) => module.SupplierCreateForm),
+  {
+    loading: () => (
+      <div role="status" className="py-4 text-sm text-slate-500">
+        Loading supplier form...
+      </div>
+    ),
+  },
+);
 
 const apiBaseUrl = getApiBaseUrl();
 const suppliersEndpointLabel = apiBaseUrl ? `${apiBaseUrl}/suppliers` : "NEXT_PUBLIC_API_URL/suppliers";

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from services.core import config
 from services.core import db as core_db
+from services.incidents.read_cache import clear_read_cache
 from services.inventory import database as inventory_database
 from services.main import app
 
@@ -69,7 +70,9 @@ def db_path(tmp_path, monkeypatch):
     path = tmp_path / "incidents.json"
     monkeypatch.setenv("DB_PATH", str(path))
     core_db.get_db.cache_clear()
+    clear_read_cache()
     yield path
+    clear_read_cache()
     core_db.get_db.cache_clear()
 
 

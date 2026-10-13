@@ -10,7 +10,8 @@ Failures leave this module as exceptions - `IncidentNotFound` from here,
 decides what they become on the wire.
 """
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Response, status
+from pydantic import TypeAdapter
 
 from services.core.errors import IncidentNotFound
 from services.incidents import service
@@ -26,8 +27,10 @@ from services.incidents.models import (
     IncidentStatusUpdate,
     IncidentSummary,
 )
+from services.incidents.read_cache import incident_read_cache
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
+_INCIDENT_RESPONSE_LIST = TypeAdapter(list[IncidentResponse])
 
 
 def to_response(incident: IncidentInDB) -> IncidentResponse:
@@ -60,18 +63,42 @@ def list_incidents(
     origin: IncidentOrigin | None = Query(default=None),
     branch: IncidentBranch | None = Query(default=None),
     category: IncidentCategory | None = Query(default=None),
-) -> list[IncidentResponse]:
+) -> Response:
     """List incidents, optionally filtered. Filters combine with AND."""
+    cache_key = (
+        "list",
+        None if status is None else status.value,
+        None if origin is None else origin.value,
+        None if branch is None else branch.value,
+        None if category is None else category.value,
+    )
+    cached_payload = incident_read_cache.get(cache_key)
+    if cached_payload is not None:
+        return Response(content=cached_payload, media_type="application/json")
+
+    cache_generation = incident_read_cache.generation
     incidents = service.list_incidents(
         status=status, origin=origin, branch=branch, category=category
     )
-    return [to_response(incident) for incident in incidents]
+    payload = _INCIDENT_RESPONSE_LIST.dump_json(
+        [to_response(incident) for incident in incidents]
+    )
+    incident_read_cache.set(cache_key, payload, expected_generation=cache_generation)
+    return Response(content=payload, media_type="application/json")
 
 
 @router.get("/summary", response_model=IncidentSummary)
-def get_summary() -> IncidentSummary:
+def get_summary() -> Response:
     """Aggregated metrics by status, category, origin and branch."""
-    return service.summarize()
+    cache_key = ("summary",)
+    cached_payload = incident_read_cache.get(cache_key)
+    if cached_payload is not None:
+        return Response(content=cached_payload, media_type="application/json")
+
+    cache_generation = incident_read_cache.generation
+    payload = service.summarize().model_dump_json().encode("utf-8")
+    incident_read_cache.set(cache_key, payload, expected_generation=cache_generation)
+    return Response(content=payload, media_type="application/json")
 
 
 @router.get("/{incident_id}", response_model=IncidentResponse)
@@ -84,7 +111,9 @@ def get_incident(incident_id: str) -> IncidentResponse:
 
 
 @router.patch("/{incident_id}/status", response_model=IncidentResponse)
-def update_incident_status(incident_id: str, payload: IncidentStatusUpdate) -> IncidentResponse:
+def update_incident_status(
+    incident_id: str, payload: IncidentStatusUpdate
+) -> IncidentResponse:
     """Advance an incident along its lifecycle.
 
     `open` leads to `in_progress` or `discarded`; `in_progress` leads to

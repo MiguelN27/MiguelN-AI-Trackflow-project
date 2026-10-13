@@ -4,10 +4,12 @@ Mounts every domain router behind one FastAPI app. Authentication is stateless
 JWT only: no sessions, no auth cookies.
 """
 
+import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -33,6 +35,8 @@ from services.inventory.routers.inventory import router as inventory_router
 from services.profiles.router import router as profiles_router
 from services.suppliers.router import router as suppliers_router
 from services.users.router import router as users_router
+
+logger = logging.getLogger("api.timing")
 
 
 @asynccontextmanager
@@ -63,6 +67,29 @@ app = FastAPI(
     ),
     version="0.3.0",
 )
+
+
+@app.middleware("http")
+async def timing_middleware(request: Request, call_next):
+    start = time.perf_counter()
+    status_code = 500
+
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", "<unmatched>")
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.info(
+            "%s %s -> %s | %.1fms",
+            request.method,
+            route_path,
+            status_code,
+            duration_ms,
+        )
+
 
 app.add_middleware(
     CORSMiddleware,

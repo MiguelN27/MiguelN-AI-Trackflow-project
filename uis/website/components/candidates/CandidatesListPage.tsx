@@ -12,9 +12,21 @@ import {
 import { createCandidate, fetchCandidates } from "@/services/candidates-service";
 import type { AsyncStatus } from "@/types/async-state";
 import type { CandidateFormValues, CandidateRecord } from "@/types/candidate";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+
+const CandidateCreateModal = dynamic(
+  () => import("@/components/candidates/CandidateCreateModal").then((module) => module.CandidateCreateModal),
+  {
+    loading: () => (
+      <div role="status" className="fixed inset-0 z-50 grid place-items-center bg-black/20">
+        <span className="rounded-lg bg-white px-4 py-3 text-sm">Loading candidate form...</span>
+      </div>
+    ),
+  },
+);
 
 type CandidateListItem = {
   id: string;
@@ -276,9 +288,8 @@ function CandidatesListContent() {
       return;
     }
 
-    // The record exists from here on. The form is cleared and the success shown
-    // before the list reloads, so a refresh that fails can never read as a
-    // failed create and invite a duplicate submit.
+    // The record exists from here on. The form is cleared and success is shown
+    // before the list reloads, so a failed refresh cannot invite duplicate submission.
     setCandidateFormValues(emptyCandidateFormValues());
     setCreateCandidateSuccess("Candidate created successfully.");
     await refreshCandidates({ silent: true });
@@ -316,52 +327,50 @@ function CandidatesListContent() {
 
         <div className="rounded-3xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] p-6 shadow-[0_16px_38px_-28px_rgba(37,99,235,0.35)] sm:p-8">
           <header className="mb-6 border-b border-[color:var(--border-soft)] pb-5">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2 className="font-brand-display text-2xl font-semibold text-[color:var(--text-strong)]">Candidate Pipeline</h2>
-              <p className="mt-2 text-sm text-[color:var(--text-muted)]">{totalLabel}</p>
-              <p className="mt-1 text-sm text-[color:var(--text-muted)]">{pageLabel}</p>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="font-brand-display text-2xl font-semibold text-[color:var(--text-strong)]">Candidate Pipeline</h2>
+                <p className="mt-2 text-sm text-[color:var(--text-muted)]">{totalLabel}</p>
+                <p className="mt-1 text-sm text-[color:var(--text-muted)]">{pageLabel}</p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setCreateCandidateError(null);
+                  setCreateCandidateSuccess(null);
+                  setIsCreateModalOpen(true);
+                }}
+                className="rounded-xl bg-[color:var(--flow-blue)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[color:var(--flow-soft-blue)]"
+              >
+                Register candidate
+              </button>
             </div>
+          </header>
 
-            <button
-              type="button"
-              onClick={() => {
-                setCreateCandidateError(null);
-                setCreateCandidateSuccess(null);
-                setIsCreateModalOpen(true);
-              }}
-              className="rounded-xl bg-[color:var(--flow-blue)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[color:var(--flow-soft-blue)]"
-            >
-              Register candidate
-            </button>
-          </div>
-        </header>
-
-        <section className="mb-6 grid gap-3 sm:grid-cols-3">
-          <input
-            type="search"
-            value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="Search by full name or email"
-            className="rounded-xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none ring-[color:var(--flow-blue)] transition focus:ring-2"
-          />
-
-          <CandidateFilter
-            label="Filter candidates by status"
-            placeholder="All statuses"
-            options={statusOptions}
-            value={searchParams.get("status") ?? ""}
-            onChange={(value) => updateQueryFilter("status", value)}
-          />
-
-          <CandidateFilter
-            label="Filter candidates by stage"
-            placeholder="All stages"
-            options={stageOptions}
-            value={searchParams.get("stage") ?? ""}
-            onChange={(value) => updateQueryFilter("stage", value)}
-          />
-        </section>
+          <section className="mb-6 grid gap-3 sm:grid-cols-3">
+            <input
+              type="search"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search by full name or email"
+              className="rounded-xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--text-strong)] outline-none ring-[color:var(--flow-blue)] transition focus:ring-2"
+            />
+            <CandidateFilter
+              label="Filter candidates by status"
+              placeholder="All statuses"
+              options={statusOptions}
+              value={searchParams.get("status") ?? ""}
+              onChange={(value) => updateQueryFilter("status", value)}
+            />
+            <CandidateFilter
+              label="Filter candidates by stage"
+              placeholder="All stages"
+              options={stageOptions}
+              value={searchParams.get("stage") ?? ""}
+              onChange={(value) => updateQueryFilter("stage", value)}
+            />
+          </section>
 
         {listStatus === "loading" ? (
           <StateMessage tone="info">Loading candidates...</StateMessage>
@@ -427,133 +436,24 @@ function CandidatesListContent() {
       </div>
 
       {isCreateModalOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--flow-blue)]/35 px-4 py-6">
-          <div className="w-full max-w-2xl rounded-3xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] p-6 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="font-brand-display text-xl font-semibold text-[color:var(--text-strong)]">Register new candidate</h2>
-                <p className="mt-1 text-sm text-[color:var(--text-muted)]">
-                  Create a candidate record with the required profile and pipeline fields.
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setIsCreateModalOpen(false)}
-                className="rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-sm text-[color:var(--text-muted)] transition hover:bg-[color:var(--flow-blue)]/5"
-              >
-                Close
-              </button>
-            </div>
-
-            <form className="mt-5 grid gap-4 sm:grid-cols-2" onSubmit={handleCreateCandidate}>
-              <label className="block text-sm text-[color:var(--text-muted)] sm:col-span-2">
-                <span className="mb-1 block font-medium">Full name</span>
-                <input
-                  value={candidateFormValues.fullName}
-                  onChange={(event) => {
-                    setCreateCandidateError(null);
-                    setCreateCandidateSuccess(null);
-                    setCandidateFormValues((currentValues) => ({ ...currentValues, fullName: event.target.value }));
-                  }}
-                  className="w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
-                  placeholder="Candidate full name"
-                />
-              </label>
-
-              <label className="block text-sm text-[color:var(--text-muted)]">
-                <span className="mb-1 block font-medium">Email</span>
-                <input
-                  type="email"
-                  value={candidateFormValues.email}
-                  onChange={(event) => {
-                    setCreateCandidateError(null);
-                    setCreateCandidateSuccess(null);
-                    setCandidateFormValues((currentValues) => ({ ...currentValues, email: event.target.value }));
-                  }}
-                  className="w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
-                  placeholder="candidate@example.com"
-                />
-              </label>
-
-              <label className="block text-sm text-[color:var(--text-muted)]">
-                <span className="mb-1 block font-medium">Position</span>
-                <input
-                  value={candidateFormValues.position}
-                  onChange={(event) => {
-                    setCreateCandidateError(null);
-                    setCreateCandidateSuccess(null);
-                    setCandidateFormValues((currentValues) => ({ ...currentValues, position: event.target.value }));
-                  }}
-                  className="w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
-                  placeholder="Applied position"
-                />
-              </label>
-
-              <label className="block text-sm text-[color:var(--text-muted)]">
-                <span className="mb-1 block font-medium">Status</span>
-                <input
-                  value={candidateFormValues.status}
-                  onChange={(event) => {
-                    setCreateCandidateError(null);
-                    setCreateCandidateSuccess(null);
-                    setCandidateFormValues((currentValues) => ({ ...currentValues, status: event.target.value }));
-                  }}
-                  className="w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
-                  placeholder="Current status"
-                />
-              </label>
-
-              <label className="block text-sm text-[color:var(--text-muted)]">
-                <span className="mb-1 block font-medium">Stage</span>
-                <input
-                  value={candidateFormValues.stage}
-                  onChange={(event) => {
-                    setCreateCandidateError(null);
-                    setCreateCandidateSuccess(null);
-                    setCandidateFormValues((currentValues) => ({ ...currentValues, stage: event.target.value }));
-                  }}
-                  className="w-full rounded-xl border border-[color:var(--border-soft)] px-3 py-2 text-[color:var(--text-strong)] outline-none transition focus:border-[color:var(--flow-blue)]"
-                  placeholder="Pipeline stage"
-                />
-              </label>
-
-              <div className="flex items-center gap-3 sm:col-span-2">
-                <button
-                  type="submit"
-                  disabled={isCreatingCandidate}
-                  className="rounded-xl bg-[color:var(--flow-blue)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[color:var(--flow-soft-blue)] disabled:cursor-not-allowed disabled:bg-[color:var(--flow-soft-blue)]/70"
-                >
-                  {isCreatingCandidate ? "Creating..." : "Create candidate"}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCandidateFormValues(emptyCandidateFormValues());
-                    setCreateCandidateError(null);
-                    setCreateCandidateSuccess(null);
-                  }}
-                  className="rounded-xl border border-[color:var(--border-soft)] px-4 py-2 text-sm font-medium text-[color:var(--text-muted)] transition hover:bg-[color:var(--flow-blue)]/5"
-                >
-                  Reset
-                </button>
-              </div>
-            </form>
-
-            {createCandidateError ? (
-              <StateMessage tone="error" className="mt-4">
-                {createCandidateError}
-              </StateMessage>
-            ) : null}
-
-            {createCandidateSuccess ? (
-              <StateMessage tone="success" className="mt-4">
-                {createCandidateSuccess}
-              </StateMessage>
-            ) : null}
-          </div>
-        </div>
+        <CandidateCreateModal
+          candidateFormValues={candidateFormValues}
+          isCreatingCandidate={isCreatingCandidate}
+          createCandidateError={createCandidateError}
+          createCandidateSuccess={createCandidateSuccess}
+          onClose={() => setIsCreateModalOpen(false)}
+          onSubmit={handleCreateCandidate}
+          onFieldChange={(field, value) => {
+            setCreateCandidateError(null);
+            setCreateCandidateSuccess(null);
+            setCandidateFormValues((currentValues) => ({ ...currentValues, [field]: value }));
+          }}
+          onReset={() => {
+            setCandidateFormValues(emptyCandidateFormValues());
+            setCreateCandidateError(null);
+            setCreateCandidateSuccess(null);
+          }}
+        />
       ) : null}
     </main>
   );
