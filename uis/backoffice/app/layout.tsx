@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Manrope } from "next/font/google";
 import "./globals.css";
+import { TelemetryTracker } from "@/components/telemetry/TelemetryTracker";
 
 const manrope = Manrope({
   variable: "--font-manrope",
@@ -29,7 +30,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${manrope.variable} ${ibmPlexMono.variable}`}>
-      <body className="min-h-screen text-[color:var(--foreground)]">{children}</body>
+      <body className="min-h-screen text-[color:var(--foreground)]">
+        <TelemetryTracker />
+        {children}
+      </body>
     </html>
   );
 }

@@ -6,6 +6,7 @@ import { useState, type FormEvent } from "react";
 import { AuthCard } from "@/components/auth/AuthCard";
 import { AuthField } from "@/components/auth/AuthField";
 import { StateMessage } from "@/components/common/StateMessage";
+import { useFlowTelemetry } from "@/hooks/useFlowTelemetry";
 import {
   emptyResetPasswordFormValues,
   toFieldErrors,
@@ -48,8 +49,10 @@ export default function ResetPasswordPage() {
   const [errors, setErrors] = useState<FieldErrors<ResetPasswordField>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [rejectionMessage, setRejectionMessage] = useState<string | null>(null);
+  const flow = useFlowTelemetry("password_reset", "reset_password");
 
   function updateValues(patch: Partial<ResetPasswordFormValues>): void {
+    flow.fieldsEdited(patch);
     setErrors({});
     setValues((currentValues) => ({ ...currentValues, ...patch }));
   }
@@ -63,19 +66,23 @@ export default function ResetPasswordPage() {
 
     const validationErrors = validateResetPasswordForm(values);
     if (validationErrors) {
+      flow.validationFailedFields(validationErrors);
       setErrors(validationErrors);
       return;
     }
 
     setIsSubmitting(true);
     setErrors({});
+    flow.submitAttempted();
     let isLeaving = false;
 
     try {
       await resetPassword(token, values.newPassword);
+      flow.completed();
       isLeaving = true;
       router.replace(LOGIN_AFTER_RESET_PATH);
     } catch (resetError) {
+      flow.submitFailed();
       if (resetError instanceof InvalidResetTokenError) {
         // The token is spent or expired. Resubmitting cannot help, so the form
         // is replaced with a way to start over rather than left to be retried.

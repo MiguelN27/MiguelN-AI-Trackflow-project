@@ -2,6 +2,7 @@
 
 import { StateMessage } from "@/components/common/StateMessage";
 import { IncidentField, controlClassName } from "@/components/incidents/IncidentField";
+import { useFlowTelemetry } from "@/hooks/useFlowTelemetry";
 import { INCIDENT_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
   buildIncidentPayload,
@@ -60,12 +61,14 @@ export function IncidentForm({ onCreated }: IncidentFormProps) {
   const [formError, setFormError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<IncidentCreated | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const flow = useFlowTelemetry("incident_report", "incident_new");
 
   // The reminder the CONTEXT asks for: a report filed *from* a facility needs
   // to name that facility, not fall back to Central.
   const emphasiseBranch = values.origin === "branch";
 
   function updateValues(patch: Partial<IncidentFormValues>): void {
+    flow.fieldsEdited(patch);
     setValues((current) => ({ ...current, ...patch }));
 
     // Clear only the messages for the fields being edited. Leaving the others
@@ -93,6 +96,7 @@ export function IncidentForm({ onCreated }: IncidentFormProps) {
 
     const validation = validateIncidentForm(values);
     if (hasFieldErrors(validation)) {
+      flow.validationFailedFields(validation);
       setFieldErrors(validation);
       setFormError("Please fix the highlighted fields and submit again.");
       setConfirmation(null);
@@ -103,14 +107,17 @@ export function IncidentForm({ onCreated }: IncidentFormProps) {
     setFieldErrors({});
     setFormError(null);
     setConfirmation(null);
+    flow.submitAttempted();
 
     try {
       const created = await createIncident(buildIncidentPayload(values));
+      flow.completed();
 
       setValues(emptyIncidentFormValues());
       setConfirmation(created);
       onCreated?.(created);
     } catch (submitError) {
+      flow.submitFailed();
       const described = describeError(
         submitError,
         "Please fix the highlighted fields and submit again.",

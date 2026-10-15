@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # Where the reset link points. The token is appended as `?token=<jwt>`.
     frontend_base_url: str = "http://localhost:3000"
 
+    # Where telemetry batches are forwarded once a real sink exists; unused by the stub.
+    telemetry_endpoint: str | None = None
+
     @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, value: SecretStr, info: ValidationInfo) -> SecretStr:

@@ -1,6 +1,62 @@
 # Development Progress
 
-Last updated: 2026-10-10
+Last updated: 2026-10-15
+
+## Update 2026-10-15 - Backoffice telemetry capture
+
+Goals accomplished:
+- Added `inventory_discrepancy_detected` to `docs/telemetry/telemetry-plan.md` and `event-schemas.json` after CTO feedback: the twelfth mandatory event, 44 in the catalogue. It is a stream event whose capture point (a reconciliation workflow or WMS connector) does not exist yet; it records a count mismatch as evidence and never changes stock (`717bf1a`).
+- Added the public stub ingest endpoint `POST /telemetry/events` in `services/telemetry/`. It validates the envelope with extra fields forbidden, caps a batch at 100 events and 256 KiB, parses the raw body so `navigator.sendBeacon`'s `text/plain` avoids a CORS preflight, and only logs counts per event type; nothing is stored. Public on purpose, because the plan accepts anonymous pre-login events. `telemetry_endpoint` setting added for a future sink and unused by the stub.
+- Added `uis/backoffice/services/telemetry-service.ts`. `track()` is the only entry point. Events are queued and flushed in batches (every 10 s or at 20 queued, at most 100 per request and 500 queued), retried up to 3 times with exponential backoff, and sent by beacon on `visibilitychange`/`pagehide`. Drops are counted and reported as `telemetry_dropped` in the next batch. The session id lives in `sessionStorage`; `userId` is the pseudonymous account UUID from the token. An empty `NEXT_PUBLIC_TELEMETRY_ENDPOINT` disables capture, which keeps every Jest test inert.
+- `TelemetryTracker` (root layout) captures `section_viewed`/`section_left`, `page_load_measured`, and uncaught errors and rejections. `useFlowTelemetry` reports one `flow_started` and exactly one `flow_completed` or `flow_abandoned` per form, counting field names and never values. Wired into registration, password reset/change, incident report/status, supplier create/status and inventory orders. `api-client` sends `X-Client-App`, `X-Session-Id` and `X-Request-Id` (the API's CORS already allows any header) and records `api_error_recorded` and `session_expired`. The frontend emits 28 event types plus `telemetry_dropped`.
+- Aligned the plan and schemas with what the frontend can know: `order_id`, `transaction_ms` and `triggering_order_id` became optional (backend-only); `error_class` gained `uncaught_exception` and `unhandled_rejection`; incident `category`, `origin`, `branch` and status fields are now enums instead of free strings.
+- `uis/backoffice/.gitignore` now ignores `next-env.d.ts` and `*.tsbuildinfo`, matching `uis/website`; both were untracked in a separate commit because builds and dev runs regenerate them.
+- Verification: ruff format (line length 100) and check on the changed Python files, backoffice ESLint auto-fix and typecheck all clean. Backend 460 passed, 11 skipped (the opt-in PostgreSQL tests), including the new `tests/test_telemetry_api.py`; backoffice Jest 262/262, including the new `telemetry-service` and `telemetry-events` suites.
+
+Still missing / next goals:
+1. The plan's open questions (section 4) still need the Friday review: confirm the mandatory metrics, pick a sink, set retention, and get the Zaragoza data-protection contact's view on `userId`. The ingest endpoint stays a logging stub until the sink is chosen.
+2. Backend-emitted mandatory events are not instrumented: `login_failed`, `direct_stock_edit_rejected`, `api_latency_recorded`, `inventory_discrepancy_detected` (which needs a reconciliation endpoint first), and the backend-only `transaction_ms`.
+3. The ingest endpoint validates only the envelope; per-event `properties` are not checked against `event-schemas.json` yet.
+4. Alert rules on stream events (plan section 5, step 3) and `uis/website` instrumentation are not started.
+
+## Update 2026-10-14 - Telemetry plan
+
+Goals accomplished:
+- Wrote `docs/telemetry/telemetry-plan.md` answering the management RFI, with `docs/telemetry/event-schemas.json` (JSON Schema draft-07, schema version 1.0.0) as its companion (`52c7231`). Design only, no instrumentation code.
+- Catalogued 43 events across seven categories (inventory, authentication, navigation, performance, errors, operations, pipeline): 11 mandatory and 32 further opportunities, 13 streamed and 30 batched, each with a hypothesis and decision.
+- Designed the standard envelope and its privacy rules (pseudonymous `userId`, route templates instead of raw paths, no free text), plus the stream-versus-batch delivery strategy, throttling, and risks/exclusions.
+- Derived the mandatory floor from the tech lead's message, `contexts/context.md` and `contexts/coding-fundamentals.md`, since no explicit "mandatory metrics" list exists in the repository; every derived item is marked for correction.
+
+Still missing / next goals:
+1. Confirm the mandatory metrics, the sink, retention and `userId` handling at the Friday review (plan section 4).
+2. Implement in the plan's suggested order: envelope and emitter, mandatory events, alert rules, then navigation events and the ingest endpoint.
+
+## Update 2026-10-13 - Incident read caching
+
+Goals accomplished:
+- Added request timing middleware in `services/main.py` (logger `api.timing`: method, route template, status, elapsed ms; no query values, IDs or credentials) and a repeatable scratch-database benchmark: `scripts/seed_performance_data.py` and `scripts/benchmark_caching.py` (`d23c001`). The seeder refuses the default DB path and any existing file.
+- Added `services/incidents/read_cache.py`, a process-local cache for `GET /api/incidents` and `/api/incidents/summary`: 15-second TTL, at most eight entries and 8 MiB of JSON payload. Create and status changes invalidate it, and a generation guard stops an in-flight older read from repopulating stale data.
+- At 5,000 synthetic incidents, warm medians fell from 53.494 ms to 0.661 ms (list) and from 30.504 ms to 0.483 ms (summary). At the representative 95-row scale both were already under 1.5 ms. Supplier, identity and inventory reads are deliberately not cached; the full per-endpoint assessment is in `CACHING_REPORT.md`.
+- Extracted the candidate registration modal in `uis/website` and loaded it and the backoffice supplier registration form with `next/dynamic`.
+- Verification (from `CACHING_REPORT.md`): backend 452 passed, 11 skipped; website Jest 170 and backoffice Jest 216 passed; both typechecks, lints and production builds passed.
+
+Still missing / next goals:
+1. The cache is per-process: in a multi-worker deployment, another worker's entries can stay stale for up to 15 seconds. Add shared invalidation before promising cross-worker read-after-write consistency. If incident routes become user-scoped, the cache key must include the access scope.
+2. Production request frequency and cache-hit rate are unmeasured; the benchmark is an in-process lab measurement.
+3. Browser Network confirmation of the lazy-loaded chunks, bundle-byte deltas and React Profiler evidence were not captured.
+
+## Update 2026-10-12 - Serialization audit
+
+Goals accomplished:
+- Audited all 30 business endpoints and the four generated docs routes against their in-repo callers in `docs/serialization-audit.md` (`37dc92f`). No endpoint returned a raw ORM object or untyped dictionary.
+- Narrowed responses to what each consumer uses: `/auth/me` and `PUT /profiles/me` omit the account id, active flag and profile `user_id`; supplier create/list use `SupplierListItem`; incident creation returns only its confirmation fields; inventory availability is id plus stock, movements return flat confirmations, and order history is a flat projection. User and supplier deletion now declare a bodyless 204.
+- Updated the backoffice projections, guards and tests to the new shapes. No authorization or database behaviour changed.
+- Verification (from the audit): backend 438 passed, 11 skipped, coverage 89.60%; backoffice Jest 216 and website Jest 170 passed; both typechecks passed; OpenAPI schemas checked programmatically.
+
+Still missing / next goals:
+1. Narrowing user administration responses, the `/profiles/me` foreign key, and routes with no in-repo caller waits on API-owner confirmation of external consumers.
+2. Supplier rate/status mutations still return the full supplier, because the detail view replaces its state with it; decide that contract separately.
+3. Swagger and ReDoc were not exercised in a browser.
 
 ## Update 2026-10-10 - Frontend performance audit
 

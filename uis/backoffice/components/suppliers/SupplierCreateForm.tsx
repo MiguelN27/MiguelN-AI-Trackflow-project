@@ -1,6 +1,7 @@
 "use client";
 
 import { StateMessage } from "@/components/common/StateMessage";
+import { useFlowTelemetry } from "@/hooks/useFlowTelemetry";
 import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
   buildSupplierPayload,
@@ -55,16 +56,19 @@ export function SupplierCreateForm({ onCreated, onCancel }: SupplierCreateFormPr
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const flow = useFlowTelemetry("supplier_creation", "suppliers_list");
 
   const derivedCurrency = currencyForCountry(values.country);
 
   function updateValues(patch: Partial<SupplierFormValues>): void {
+    flow.fieldsEdited(patch);
     setError(null);
     setSuccess(null);
     setValues((currentValues) => ({ ...currentValues, ...patch }));
   }
 
   function toggleCategory(category: SupplierCategory): void {
+    flow.fieldEdited("categories");
     setError(null);
     setSuccess(null);
     setValues((currentValues) => ({
@@ -80,6 +84,8 @@ export function SupplierCreateForm({ onCreated, onCancel }: SupplierCreateFormPr
 
     const validationError = validateSupplierForm(values);
     if (validationError) {
+      flow.validationFailed("form", "other");
+      flow.submitFailed();
       setError(validationError);
       setSuccess(null);
       return;
@@ -88,13 +94,16 @@ export function SupplierCreateForm({ onCreated, onCancel }: SupplierCreateFormPr
     setIsSubmitting(true);
     setError(null);
     setSuccess(null);
+    flow.submitAttempted();
 
     try {
       const created = await createSupplier(buildSupplierPayload(values));
+      flow.completed();
       setValues(emptySupplierFormValues());
       setSuccess(`${created.name} was added to the directory.`);
       onCreated(created);
     } catch (createError) {
+      flow.submitFailed();
       setError(describeCreateError(createError));
     } finally {
       setIsSubmitting(false);

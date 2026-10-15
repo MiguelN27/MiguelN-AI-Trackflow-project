@@ -6,6 +6,7 @@ import { useState, type FormEvent } from "react";
 import { AuthCard } from "@/components/auth/AuthCard";
 import { AuthField } from "@/components/auth/AuthField";
 import { StateMessage } from "@/components/common/StateMessage";
+import { useFlowTelemetry } from "@/hooks/useFlowTelemetry";
 import { ApiError } from "@/lib/api-client";
 import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import {
@@ -26,8 +27,10 @@ export default function RegisterPage() {
   const [values, setValues] = useState<RegisterFormValues>(emptyRegisterFormValues());
   const [errors, setErrors] = useState<FieldErrors<RegisterField>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const flow = useFlowTelemetry("registration", "register");
 
   function updateValues(patch: Partial<RegisterFormValues>): void {
+    flow.fieldsEdited(patch);
     setErrors({});
     setValues((currentValues) => ({ ...currentValues, ...patch }));
   }
@@ -37,16 +40,19 @@ export default function RegisterPage() {
 
     const validationErrors = validateRegisterForm(values);
     if (validationErrors) {
+      flow.validationFailedFields(validationErrors);
       setErrors(validationErrors);
       return;
     }
 
     setIsSubmitting(true);
     setErrors({});
+    flow.submitAttempted();
     let isLeaving = false;
 
     try {
       await register(values);
+      flow.completed();
       isLeaving = true;
       router.replace(DEFAULT_AUTHENTICATED_PATH);
     } catch (registerError) {
@@ -54,11 +60,13 @@ export default function RegisterPage() {
         // The account exists; only the automatic sign-in failed. The login page
         // says so, so the user does not try to register a second time.
         console.error(registerError);
+        flow.completed();
         isLeaving = true;
         router.replace(buildLoginAfterRegisterUrl(DEFAULT_AUTHENTICATED_PATH));
         return;
       }
 
+      flow.submitFailed();
       if (registerError instanceof ApiError && registerError.status === 409) {
         // `POST /users` reports a taken email as a plain-string 409 detail.
         setErrors({

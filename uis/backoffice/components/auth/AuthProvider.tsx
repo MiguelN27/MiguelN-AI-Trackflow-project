@@ -15,6 +15,7 @@ import { UnauthorizedError } from "@/lib/api-client";
 import { buildLoginUrl, LOGIN_PATH, readToken, UNAUTHORIZED_EVENT } from "@/lib/auth-storage";
 import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import { fetchCurrentUser, logout } from "@/services/auth-service";
+import { setTelemetryUser, userIdFromToken } from "@/services/telemetry-service";
 import type { AuthenticatedUser, Profile, SessionStatus } from "@/types/auth";
 
 type SessionContextValue = {
@@ -66,6 +67,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     router.replace(buildLoginUrl(currentPathWithQuery()));
   }, [router]);
+
+  useEffect(() => {
+    setTelemetryUser(status === "authenticated" ? userIdFromToken(readToken()) : null);
+  }, [status]);
 
   useEffect(() => {
     // A protected call rejected the token while the user was on the page.

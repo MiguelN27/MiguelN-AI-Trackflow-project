@@ -6,3 +6,5 @@
 // real API.
 process.env.NEXT_PUBLIC_API_URL = "http://api.test";
 process.env.NEXT_PUBLIC_AUTH_API_URL = "http://api.test";
+// Empty keeps the telemetry singleton inert in every test that imports the API client.
+process.env.NEXT_PUBLIC_TELEMETRY_ENDPOINT = "";

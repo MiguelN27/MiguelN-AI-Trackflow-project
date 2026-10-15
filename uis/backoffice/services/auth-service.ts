@@ -6,6 +6,7 @@ import {
 } from "@/lib/api-client";
 import { clearToken, storeToken } from "@/lib/auth-storage";
 import { GENERAL_ERROR_COPY, describeError } from "@/lib/friendly-error";
+import { CLIENT_APP, tokenAgeSeconds, track } from "@/services/telemetry-service";
 import {
   buildProfilePayload,
   buildRegistrationPayload,
@@ -38,6 +39,7 @@ export async function login(values: LoginFormValues): Promise<string> {
 
   const token = extractAccessToken(await parseResponseJson(response));
   storeToken(token);
+  track("login_succeeded", { login_route: "/auth/login", client_app: CLIENT_APP });
 
   return token;
 }
@@ -64,6 +66,7 @@ export async function register(values: RegisterFormValues): Promise<string> {
     headers: JSON_HEADERS,
     body: JSON.stringify(buildRegistrationPayload(values)),
   });
+  track("user_registered", { client_app: CLIENT_APP });
 
   try {
     return await login({ email: values.email, password: values.password });
@@ -84,6 +87,7 @@ export async function updateMyProfile(values: ProfileFormValues): Promise<Profil
     headers: JSON_HEADERS,
     body: JSON.stringify(buildProfilePayload(values)),
   });
+  track("profile_updated", { fields_changed: Object.keys(buildProfilePayload(values)).slice(0, 20) });
 
   return normalizeProfile(await parseResponseJson(response));
 }
@@ -117,6 +121,7 @@ export async function requestPasswordReset(values: ForgotPasswordFormValues): Pr
     headers: JSON_HEADERS,
     body: JSON.stringify({ email: values.email.trim().toLowerCase() }),
   });
+  track("password_reset_requested", { client_app: CLIENT_APP });
 }
 
 /**
@@ -134,6 +139,8 @@ export async function resetPassword(token: string, newPassword: string): Promise
     });
   } catch (error) {
     if (error instanceof ApiError && error.status === 400) {
+      // The API does not say why; `unknown` is the only reason the client can claim.
+      track("password_reset_rejected", { reason: "unknown" });
       throw new InvalidResetTokenError(
         describeError(error, "This password reset link is invalid or has expired.", GENERAL_ERROR_COPY).message,
       );
@@ -142,6 +149,10 @@ export async function resetPassword(token: string, newPassword: string): Promise
     throw error;
   }
 
+  const linkAge = tokenAgeSeconds(token);
+  if (linkAge !== null) {
+    track("password_reset_completed", { link_age_seconds: linkAge });
+  }
   clearToken();
 }
 
@@ -159,8 +170,10 @@ export async function changePassword(values: ChangePasswordFormValues): Promise<
         new_password: values.newPassword,
       }),
     });
+    track("password_changed", { route: "/auth/change-password", client_app: CLIENT_APP });
   } catch (error) {
     if (error instanceof ApiError && error.status === 400) {
+      track("password_change_rejected", { reason: "incorrect_current_password" });
       throw new IncorrectCurrentPasswordError(
         describeError(error, "Your current password is incorrect.", GENERAL_ERROR_COPY).message,
       );

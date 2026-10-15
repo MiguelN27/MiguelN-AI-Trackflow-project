@@ -13,6 +13,7 @@
  */
 
 import { parseResponseJson, requestApi } from "@/lib/api-client";
+import { track } from "@/services/telemetry-service";
 import {
   normalizeIncident,
   normalizeIncidentCreated,
@@ -50,8 +51,14 @@ function buildIncidentsQuery(filters?: Partial<IncidentFilters>): string {
 
 export async function fetchIncidents(filters?: Partial<IncidentFilters>): Promise<Incident[]> {
   const response = await requestApi(`/api/incidents${buildIncidentsQuery(filters)}`);
+  const incidents = normalizeIncidents(await parseResponseJson(response));
 
-  return normalizeIncidents(await parseResponseJson(response));
+  const filterKeys = (Object.keys(filters ?? {}) as Array<keyof IncidentFilters>).filter((key) => Boolean(filters?.[key]));
+  if (filterKeys.length > 0) {
+    track("list_filter_applied", { view: "incidents_list", filter_keys: filterKeys, result_count: incidents.length });
+  }
+
+  return incidents;
 }
 
 export async function fetchIncidentSummary(): Promise<IncidentSummary> {
@@ -67,7 +74,15 @@ export async function createIncident(payload: IncidentCreatePayload): Promise<In
     body: JSON.stringify(payload),
   });
 
-  return normalizeIncidentCreated(await parseResponseJson(response));
+  const created = normalizeIncidentCreated(await parseResponseJson(response));
+  track("incident_created", {
+    incident_id: created.id,
+    category: payload.category,
+    origin: payload.origin,
+    branch: payload.branch,
+  });
+
+  return created;
 }
 
 export async function updateIncidentStatus(id: string, status: IncidentStatus): Promise<Incident> {

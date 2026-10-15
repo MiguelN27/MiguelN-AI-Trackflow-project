@@ -1,4 +1,5 @@
 import { parseResponseJson, requestAuthenticatedApi } from "@/lib/api-client";
+import { track } from "@/services/telemetry-service";
 import { normalizeSupplier, normalizeSupplierListItem, normalizeSuppliers } from "@/lib/supplier";
 import type {
   Supplier,
@@ -26,8 +27,15 @@ function buildSuppliersQuery(filters?: Partial<SupplierFilters>): string {
 
 export async function fetchSuppliers(filters?: Partial<SupplierFilters>): Promise<SupplierListItem[]> {
   const response = await requestAuthenticatedApi(`/suppliers${buildSuppliersQuery(filters)}`);
+  const suppliers = normalizeSuppliers(await parseResponseJson(response));
 
-  return normalizeSuppliers(await parseResponseJson(response));
+  // The schema has no `country` filter key, so it is reported as `other`.
+  const filterKeys = [filters?.country ? "other" : null, filters?.category ? "category" : null].filter(Boolean);
+  if (filterKeys.length > 0) {
+    track("list_filter_applied", { view: "suppliers_list", filter_keys: filterKeys, result_count: suppliers.length });
+  }
+
+  return suppliers;
 }
 
 export async function fetchSupplierById(id: string): Promise<Supplier> {
@@ -43,7 +51,10 @@ export async function createSupplier(payload: SupplierCreatePayload): Promise<Su
     body: JSON.stringify(payload),
   });
 
-  return normalizeSupplierListItem(await parseResponseJson(response));
+  const created = normalizeSupplierListItem(await parseResponseJson(response));
+  track("supplier_created", { supplier_id: created.id });
+
+  return created;
 }
 
 export async function updateSupplierRate(id: number, ratePerShipment: number): Promise<Supplier> {

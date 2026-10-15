@@ -5,6 +5,7 @@ import { useState, type FormEvent } from "react";
 import { AuthCard } from "@/components/auth/AuthCard";
 import { AuthField } from "@/components/auth/AuthField";
 import { StateMessage } from "@/components/common/StateMessage";
+import { useFlowTelemetry } from "@/hooks/useFlowTelemetry";
 import {
   emptyForgotPasswordFormValues,
   toFieldErrors,
@@ -30,8 +31,10 @@ export default function ForgotPasswordPage() {
   const [errors, setErrors] = useState<FieldErrors<ForgotPasswordField>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSent, setIsSent] = useState(false);
+  const flow = useFlowTelemetry("password_reset", "forgot_password");
 
   function updateValues(patch: Partial<ForgotPasswordFormValues>): void {
+    flow.fieldsEdited(patch);
     setErrors({});
     setValues((currentValues) => ({ ...currentValues, ...patch }));
   }
@@ -45,19 +48,23 @@ export default function ForgotPasswordPage() {
 
     const validationErrors = validateForgotPasswordForm(values);
     if (validationErrors) {
+      flow.validationFailedFields(validationErrors);
       setErrors(validationErrors);
       return;
     }
 
     setIsSubmitting(true);
     setErrors({});
+    flow.submitAttempted();
 
     try {
       await requestPasswordReset(values);
+      flow.completed();
       // Locked from here on, so an impatient second click cannot queue a
       // second email. A reload is the way to ask for another link.
       setIsSent(true);
     } catch (requestError) {
+      flow.submitFailed();
       // Only a malformed payload or an unreachable API can land here: the route
       // does not fail for an unknown address. Re-enabling the form is therefore
       // safe - it says nothing about whether the address exists.

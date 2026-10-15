@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect } from "react";
 import { StateMessage } from "@/components/common/StateMessage";
+import { trackUiError } from "@/lib/telemetry-errors";
 import "./globals.css";
 
 type GlobalErrorProps = {
@@ -17,6 +18,7 @@ type GlobalErrorProps = {
 export default function GlobalError({ error, unstable_retry }: GlobalErrorProps) {
   useEffect(() => {
     console.error(error);
+    trackUiError("render_crash");
   }, [error]);
 
   return (

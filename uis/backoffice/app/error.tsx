@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect } from "react";
 import { StateMessage } from "@/components/common/StateMessage";
+import { trackUiError } from "@/lib/telemetry-errors";
 
 type ErrorPageProps = {
   error: Error & { digest?: string };
@@ -17,6 +18,7 @@ type ErrorPageProps = {
 export default function ErrorPage({ error, unstable_retry }: ErrorPageProps) {
   useEffect(() => {
     console.error(error);
+    trackUiError("render_crash");
   }, [error]);
 
   return (

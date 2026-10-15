@@ -237,13 +237,13 @@ Property tables list the permitted keys. Full constraints (enum values, ranges, 
 
 | Property | Type | Required | Description |
 |---|---|---|---|
-| `order_id` | string (uuid) | yes | Inbound order UUID. |
+| `order_id` | string (uuid) | no | Inbound order UUID; absent when emitted by the frontend, whose confirmation has no id. |
 | `product_id` | string (uuid) | yes | Product UUID. |
 | `sku` | string | yes | Product SKU (business identifier, not personal data). |
 | `warehouse` | enum: `Monterrey`, `Zaragoza` | yes | Warehouse of the product. |
 | `quantity` | integer (>= 1) | yes | Units received. |
 | `stock_after` | integer (>= 0) | yes | Computed stock after the movement. |
-| `transaction_ms` | number (>= 0) | yes | Lock + insert + commit duration. |
+| `transaction_ms` | number (>= 0) | no | Lock + insert + commit duration; backend only. |
 | `actor_role` | string | no | Role of the authenticated user. |
 
 #### `outbound_order_created`
@@ -254,7 +254,7 @@ Property tables list the permitted keys. Full constraints (enum values, ranges, 
 
 | Property | Type | Required | Description |
 |---|---|---|---|
-| `order_id` | string (uuid) | yes | Outbound order UUID. |
+| `order_id` | string (uuid) | no | Outbound order UUID; absent when emitted by the frontend. |
 | `product_id` | string (uuid) | yes | Product UUID. |
 | `sku` | string | yes | Product SKU (business identifier, not personal data). |
 | `warehouse` | enum: `Monterrey`, `Zaragoza` | yes | Warehouse of the product. |
@@ -262,7 +262,7 @@ Property tables list the permitted keys. Full constraints (enum values, ranges, 
 | `stock_before` | integer (>= 0) | yes | Stock before the movement. |
 | `stock_after` | integer (>= 0) | yes | Stock after the movement. |
 | `drained_to_zero` | boolean | yes | True when this order emptied the product. |
-| `transaction_ms` | number (>= 0) | yes | Lock + validate + insert + commit duration. |
+| `transaction_ms` | number (>= 0) | no | Lock + validate + insert + commit duration; backend only. |
 | `actor_role` | string | no | Role of the authenticated user. |
 
 #### `order_validation_failed`
@@ -334,7 +334,7 @@ Emit only when `variance_units` is non-zero, once per product per reconciliation
 | `threshold_band` | enum: `out_of_stock`, `low` | yes | Band entered. |
 | `threshold_max_units` | integer (>= 0) | yes | Upper bound of the band (0 or 9, the documented display thresholds). |
 | `previous_band` | enum: `healthy`, `low` | yes | Band before the movement. |
-| `triggering_order_id` | string (uuid) | yes | Outbound order that caused the crossing. |
+| `triggering_order_id` | string (uuid) | no | Outbound order that caused the crossing; absent when emitted by the frontend. |
 
 #### `stock_availability_checked`
 
@@ -586,7 +586,7 @@ Emit only when `variance_units` is non-zero, once per product per reconciliation
 
 | Property | Type | Required | Description |
 |---|---|---|---|
-| `error_class` | enum: `network`, `client_error_4xx`, `server_error_5xx`, `unreadable_response`, `render_crash` | yes | Kind of failure shown. |
+| `error_class` | enum: `network`, `client_error_4xx`, `server_error_5xx`, `unreadable_response`, `render_crash`, `uncaught_exception`, `unhandled_rejection` | yes | Kind of failure shown. |
 | `route_template` | string | yes | Route pattern such as `/inventory/products/{id}`, never the raw path. |
 | `http_status` | integer (>= 100), nullable | yes | Status if any. |
 | `fingerprint` | string | yes | Stable hash of error class + route; never the message text. |
@@ -694,9 +694,9 @@ Emit only when `variance_units` is non-zero, once per product per reconciliation
 | Property | Type | Required | Description |
 |---|---|---|---|
 | `incident_id` | string (uuid) | yes | Incident UUID. |
-| `category` | string | yes | Incident category (enumerated). |
-| `origin` | string | yes | Incident origin (enumerated). |
-| `branch` | string | yes | Branch (enumerated). |
+| `category` | enum: `lost_parcel`, `delivery_failure`, `inventory_discrepancy`, `carrier_issue`, `returns_issue`, `warehouse_incident`, `system_failure`, `client_complaint`, `other` | yes | Incident category. |
+| `origin` | enum: `customer`, `branch`, `internal` | yes | Incident origin. |
+| `branch` | enum: `central`, `la_warehouse`, `la_office`, `zaragoza_warehouse`, `zaragoza_office` | yes | Facility the incident belongs to. |
 
 #### `incident_status_changed`
 
@@ -707,8 +707,8 @@ Emit only when `variance_units` is non-zero, once per product per reconciliation
 | Property | Type | Required | Description |
 |---|---|---|---|
 | `incident_id` | string (uuid) | yes | Incident UUID. |
-| `from_status` | string | yes | Previous status. |
-| `to_status` | string | yes | New status. |
+| `from_status` | enum: `open`, `in_progress` | yes | Previous status. |
+| `to_status` | enum: `in_progress`, `resolved`, `discarded` | yes | New status. |
 | `age_hours` | number (>= 0) | yes | Hours since creation. |
 
 #### `supplier_created`

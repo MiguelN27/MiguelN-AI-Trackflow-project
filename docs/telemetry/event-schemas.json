@@ -233,13 +233,11 @@
               "properties": {
                 "type": "object",
                 "required": [
-                  "order_id",
                   "product_id",
                   "sku",
                   "warehouse",
                   "quantity",
-                  "stock_after",
-                  "transaction_ms"
+                  "stock_after"
                 ],
                 "additionalProperties": false,
                 "properties": {
@@ -319,15 +317,13 @@
               "properties": {
                 "type": "object",
                 "required": [
-                  "order_id",
                   "product_id",
                   "sku",
                   "warehouse",
                   "quantity",
                   "stock_before",
                   "stock_after",
-                  "drained_to_zero",
-                  "transaction_ms"
+                  "drained_to_zero"
                 ],
                 "additionalProperties": false,
                 "properties": {
@@ -761,8 +757,7 @@
                   "stock_level_after",
                   "threshold_band",
                   "threshold_max_units",
-                  "previous_band",
-                  "triggering_order_id"
+                  "previous_band"
                 ],
                 "additionalProperties": false,
                 "properties": {
@@ -2186,7 +2181,9 @@
                       "client_error_4xx",
                       "server_error_5xx",
                       "unreadable_response",
-                      "render_crash"
+                      "render_crash",
+                      "uncaught_exception",
+                      "unhandled_rejection"
                     ]
                   },
                   "route_template": {
@@ -2790,18 +2787,38 @@
                   },
                   "category": {
                     "type": "string",
-                    "description": "Incident category (enumerated).",
-                    "maxLength": 64
+                    "description": "Incident category.",
+                    "enum": [
+                      "lost_parcel",
+                      "delivery_failure",
+                      "inventory_discrepancy",
+                      "carrier_issue",
+                      "returns_issue",
+                      "warehouse_incident",
+                      "system_failure",
+                      "client_complaint",
+                      "other"
+                    ]
                   },
                   "origin": {
                     "type": "string",
-                    "description": "Incident origin (enumerated).",
-                    "maxLength": 64
+                    "description": "Incident origin.",
+                    "enum": [
+                      "customer",
+                      "branch",
+                      "internal"
+                    ]
                   },
                   "branch": {
                     "type": "string",
-                    "description": "Branch (enumerated).",
-                    "maxLength": 64
+                    "description": "Facility the incident belongs to.",
+                    "enum": [
+                      "central",
+                      "la_warehouse",
+                      "la_office",
+                      "zaragoza_warehouse",
+                      "zaragoza_office"
+                    ]
                   }
                 }
               }
@@ -2850,12 +2867,19 @@
                   "from_status": {
                     "type": "string",
                     "description": "Previous status.",
-                    "maxLength": 32
+                    "enum": [
+                      "open",
+                      "in_progress"
+                    ]
                   },
                   "to_status": {
                     "type": "string",
                     "description": "New status.",
-                    "maxLength": 32
+                    "enum": [
+                      "in_progress",
+                      "resolved",
+                      "discarded"
+                    ]
                   },
                   "age_hours": {
                     "type": "number",

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { AuthField } from "@/components/auth/AuthField";
 import { StateMessage } from "@/components/common/StateMessage";
+import { useFlowTelemetry } from "@/hooks/useFlowTelemetry";
 import {
   emptyChangePasswordFormValues,
   toFieldErrors,
@@ -37,8 +38,10 @@ export default function ChangePasswordPage() {
   const [errors, setErrors] = useState<FieldErrors<ChangePasswordField>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const flow = useFlowTelemetry("password_change", "account_change_password");
 
   function updateValues(patch: Partial<ChangePasswordFormValues>): void {
+    flow.fieldsEdited(patch);
     setErrors({});
     setSuccessMessage(null);
     setValues((currentValues) => ({ ...currentValues, ...patch }));
@@ -49,6 +52,7 @@ export default function ChangePasswordPage() {
 
     const validationErrors = validateChangePasswordForm(values);
     if (validationErrors) {
+      flow.validationFailedFields(validationErrors);
       setErrors(validationErrors);
       setSuccessMessage(null);
       return;
@@ -57,13 +61,16 @@ export default function ChangePasswordPage() {
     setIsSaving(true);
     setErrors({});
     setSuccessMessage(null);
+    flow.submitAttempted();
 
     try {
       await changePassword(values);
+      flow.completed();
       // Cleared on success so the new password is not left sitting in the DOM.
       setValues(emptyChangePasswordFormValues());
       setSuccessMessage("Your password has been updated.");
     } catch (changeError) {
+      flow.submitFailed();
       if (changeError instanceof IncorrectCurrentPasswordError) {
         setErrors({ currentPassword: changeError.message });
       } else {

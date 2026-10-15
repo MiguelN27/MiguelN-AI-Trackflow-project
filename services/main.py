@@ -34,6 +34,7 @@ from services.inventory import database as inventory_database
 from services.inventory.routers.inventory import router as inventory_router
 from services.profiles.router import router as profiles_router
 from services.suppliers.router import router as suppliers_router
+from services.telemetry.router import router as telemetry_router
 from services.users.router import router as users_router
 
 logger = logging.getLogger("api.timing")
@@ -109,6 +110,7 @@ app.include_router(profiles_router)
 app.include_router(suppliers_router)
 app.include_router(incidents_router)
 app.include_router(inventory_router)
+app.include_router(telemetry_router)
 
 # Error translation.
 #

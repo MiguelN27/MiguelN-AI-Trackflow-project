@@ -5,13 +5,16 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { StateMessage } from "@/components/common/StateMessage";
 import { InventoryPageShell, inventoryButtonClass, inventoryControlClass } from "@/components/inventory/InventoryPageShell";
 import { useLocationSearch } from "@/hooks/useLocationSearch";
+import { useFlowTelemetry } from "@/hooks/useFlowTelemetry";
 import { ApiError } from "@/lib/api-client";
 import { createInboundOrder, createOutboundOrder, describeInventoryError, getProduct, getProducts, INVENTORY_PATH, MAX_QUANTITY, quantityError } from "@/lib/inventory";
+import { trackOrderCreated, trackOrderRejected, trackServerRejection, trackStockAvailability } from "@/lib/inventory-telemetry";
 import type { OrderDirection, Product } from "@/types/inventory";
 
 export function InventoryOrderForm({ direction }: { direction: OrderDirection }) {
   const outbound = direction === "outbound";
   const label = outbound ? "Outbound" : "Inbound";
+  const flow = useFlowTelemetry(outbound ? "outbound_order" : "inbound_order", outbound ? "inventory_outbound_order" : "inventory_inbound_order");
   const search = useLocationSearch();
   const initialProduct = new URLSearchParams(search ?? "").get("product_id") ?? "";
   const [products, setProducts] = useState<Product[] | null>(null);
@@ -31,13 +34,22 @@ export function InventoryOrderForm({ direction }: { direction: OrderDirection })
   const available = currentStock?.value;
   const exceedsStock = outbound && available !== undefined && Number(quantity) > available;
   const quantityMessage = fieldErrors.quantity || (exceedsStock ? `Only ${available?.toLocaleString()} units are available. Reduce the quantity.` : null);
+  const productsRef = useRef<Product[] | null>(null);
+
+  useEffect(() => {
+    productsRef.current = products;
+  }, [products]);
 
   useEffect(() => {
     if (!outbound || !productId) return;
     let active = true;
-    getProduct(productId).then((product) => {
-      if (active) setStock({ productId, attempt: stockAttempt, value: product.current_stock });
+    const startedAt = performance.now();
+    const product = productsRef.current?.find(({ id }) => id === productId) ?? null;
+    getProduct(productId).then((fetched) => {
+      trackStockAvailability("outbound_form", product, fetched.current_stock, startedAt);
+      if (active) setStock({ productId, attempt: stockAttempt, value: fetched.current_stock });
     }).catch((failure: unknown) => {
+      trackStockAvailability("outbound_form", product, null, startedAt);
       if (active) setStock({ productId, attempt: stockAttempt, error: describeInventoryError(failure).message });
     });
     return () => { active = false; };
@@ -66,6 +78,7 @@ export function InventoryOrderForm({ direction }: { direction: OrderDirection })
 
   function selectProduct(value: string) {
     selectionTouched.current = true;
+    flow.fieldEdited("product_id");
     setProductId(value);
     setQuantity("");
     setStock(null);
@@ -86,13 +99,31 @@ export function InventoryOrderForm({ direction }: { direction: OrderDirection })
     setFieldErrors(errors);
     setFormError(null);
     setConfirmation(null);
-    if (Object.keys(errors).length) return;
+    if (Object.keys(errors).length) {
+      const selected = products?.find(({ id }) => id === productId) ?? null;
+      const requested = Number(quantity);
+      if (errors.product_id) {
+        trackOrderRejected(direction, null, "malformed_payload", "product_id", null, null);
+        flow.validationFailed("product_id", "required");
+      }
+      if (errors.quantity) {
+        const reason = exceedsStock ? "insufficient_stock" : "invalid_quantity";
+        trackOrderRejected(direction, selected, reason, "quantity", Number.isFinite(requested) ? requested : null, available ?? null);
+        flow.validationFailed("quantity", exceedsStock ? "exceeds_available_stock" : invalidQuantity && !quantity.trim() ? "required" : "out_of_range");
+      }
+      flow.submitFailed();
+      return;
+    }
 
     submitting.current = true;
     setIsSubmitting(true);
+    flow.submitAttempted();
+    const selected = products?.find(({ id }) => id === productId) ?? null;
     try {
       const createOrder = outbound ? createOutboundOrder : createInboundOrder;
       const created = await createOrder({ product_id: productId, quantity: Number(quantity) });
+      if (selected) trackOrderCreated(direction, selected, Number(quantity), available);
+      flow.completed();
       selectionTouched.current = true;
       setProductId("");
       setQuantity("");
@@ -100,6 +131,8 @@ export function InventoryOrderForm({ direction }: { direction: OrderDirection })
       setFieldErrors({});
       setConfirmation(`${label} order registered: ${created.quantity.toLocaleString()} units of ${created.product_name} (${created.warehouse}).`);
     } catch (failure) {
+      flow.submitFailed();
+      trackServerRejection(direction, failure, selected, Number(quantity), available ?? null);
       const described = describeInventoryError(failure);
       if (outbound && failure instanceof ApiError && failure.status === 400) {
         described.fieldErrors.quantity = described.fieldErrors.quantity || described.message;
@@ -146,6 +179,7 @@ export function InventoryOrderForm({ direction }: { direction: OrderDirection })
           <div>
             <label htmlFor="quantity" className="mb-2 block text-sm font-semibold">Quantity</label>
             <input id="quantity" type="number" inputMode="numeric" min={1} max={MAX_QUANTITY} step={1} required value={quantity} disabled={isSubmitting || !products?.length || (outbound && available === undefined)} onChange={(event) => {
+              flow.fieldEdited("quantity");
               setQuantity(event.target.value);
               setFieldErrors((current) => ({ ...current, quantity: "" }));
               setFormError(null);

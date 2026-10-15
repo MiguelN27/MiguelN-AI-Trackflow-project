@@ -1,4 +1,6 @@
 import { handleUnauthorized, readToken } from "@/lib/auth-storage";
+import { apiErrorClass, httpMethod, routeTemplate, statusClass } from "@/lib/telemetry-routes";
+import { CLIENT_APP, getTelemetrySessionId, newTelemetryRequestId, track } from "@/services/telemetry-service";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, "") ?? "";
 
@@ -198,17 +200,46 @@ async function readErrorPayload(response: Response): Promise<unknown> {
   }
 }
 
-function withJsonHeaders(init?: RequestInit, token?: string | null): HeadersInit {
+function withJsonHeaders(init: RequestInit | undefined, token: string | null | undefined, requestId: string): HeadersInit {
   return {
     Accept: "application/json",
+    "X-Client-App": CLIENT_APP,
+    "X-Session-Id": getTelemetrySessionId(),
+    "X-Request-Id": requestId,
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(init?.headers ?? {}),
   };
 }
 
-async function send(url: string, init: RequestInit): Promise<Response> {
+/** Emits `api_latency_recorded` for every response and `api_error_recorded` for every 4xx/5xx. */
+function recordApiCall(path: string, method: string | undefined, status: number, startedAt: number, requestId: string) {
+  const route = routeTemplate(path);
+  const verb = httpMethod(method);
+  const responseClass = statusClass(status);
+
+  if (!verb || !responseClass) {
+    return;
+  }
+
+  track(
+    "api_latency_recorded",
+    { route_template: route, method: verb, status_class: responseClass, duration_ms: Math.max(0, performance.now() - startedAt), sample_rate: 1 },
+    requestId,
+  );
+
+  const errorClass = apiErrorClass(status, route);
+  if (errorClass) {
+    track("api_error_recorded", { route_template: route, method: verb, status_code: status, error_class: errorClass, exception_type: null }, requestId);
+  }
+}
+
+async function send(path: string, url: string, init: RequestInit, requestId: string): Promise<Response> {
+  const startedAt = performance.now();
+
   try {
-    return await fetch(url, init);
+    const response = await fetch(url, init);
+    recordApiCall(path, init.method, response.status, startedAt, requestId);
+    return response;
   } catch (cause) {
     throw new NetworkError(cause);
   }
@@ -216,10 +247,11 @@ async function send(url: string, init: RequestInit): Promise<Response> {
 
 /** Unauthenticated call. Use it only for `POST /users` and `POST /auth/login`. */
 export async function requestApi(path: string, init?: RequestInit): Promise<Response> {
-  const response = await send(buildApiUrl(path), {
+  const requestId = newTelemetryRequestId();
+  const response = await send(path, buildApiUrl(path), {
     ...init,
-    headers: withJsonHeaders(init),
-  });
+    headers: withJsonHeaders(init, null, requestId),
+  }, requestId);
 
   if (!response.ok) {
     throw new ApiError(response.status, await readErrorPayload(response));
@@ -241,13 +273,15 @@ export async function requestAuthenticatedApi(path: string, init?: RequestInit):
     throw new UnauthorizedError({ detail: "Your session has expired. Please sign in again." });
   }
 
-  const response = await send(buildApiUrl(path), {
+  const requestId = newTelemetryRequestId();
+  const response = await send(path, buildApiUrl(path), {
     ...init,
-    headers: withJsonHeaders(init, token),
-  });
+    headers: withJsonHeaders(init, token, requestId),
+  }, requestId);
 
   if (response.status === 401) {
     const payload = await readErrorPayload(response);
+    track("session_expired", { trigger: "api_401", session_age_seconds: null, route_template: routeTemplate(path) }, requestId);
     handleUnauthorized();
     throw new UnauthorizedError(payload);
   }

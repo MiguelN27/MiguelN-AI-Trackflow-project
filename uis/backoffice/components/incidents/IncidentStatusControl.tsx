@@ -4,6 +4,7 @@ import { ApiError } from "@/lib/api-client";
 import { INCIDENT_ERROR_COPY, describeError } from "@/lib/friendly-error";
 import { allowedTransitionsFrom, formatStatusLabel, isFinalStatus, isIncidentStatus } from "@/lib/incident";
 import { updateIncidentStatus } from "@/services/incidents-service";
+import { track } from "@/services/telemetry-service";
 import type { Incident, IncidentStatus } from "@/types/incident";
 import { useState } from "react";
 
@@ -64,6 +65,12 @@ export function IncidentStatusControl({
 
     try {
       onConfirmed(await updateIncidentStatus(incident.id, nextStatus));
+      track("incident_status_changed", {
+        incident_id: incident.id,
+        from_status: previousStatus,
+        to_status: nextStatus,
+        age_hours: Math.max(0, (Date.now() - Date.parse(incident.created_at)) / 3_600_000) || 0,
+      });
     } catch (updateError) {
       onStatusChange(incident.id, previousStatus);
 
