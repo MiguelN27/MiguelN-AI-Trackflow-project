@@ -11,8 +11,8 @@ The inventory system works but nobody can see inside it. This plan answers the m
 
 | Item | Count |
 |---|---|
-| Events in the catalogue | 43 |
-| Mandatory events | 11 |
+| Events in the catalogue | 44 |
+| Mandatory events | 12 |
 | Identified opportunities | 32 |
 | Categories | 7 (inventory, authentication, navigation, performance, errors, operations, pipeline) |
 | Stream / batch | 13 / 30 |
@@ -54,6 +54,7 @@ If a different list exists, replace the mandatory set before Friday. The identif
 | Inbound orders per day | `inbound_order_created` | InventoryMovement |
 | Outbound orders per day | `outbound_order_created` | Lead message |
 | Validation errors per product | `order_validation_failed` | Lead message |
+| Physical-count stock discrepancies | `inventory_discrepancy_detected` | CTO feedback; Warehouse Operations reports discrepancies are frequent and detected late |
 | Direct stock modification attempts | `direct_stock_edit_rejected` | Business constraint |
 | Minimum-stock alerts and when they fire | `stock_threshold_triggered` | Warehouse Operations "low-stock alerts" |
 | Failed login attempts per day | `login_failed` | Lead message |
@@ -76,6 +77,10 @@ flowchart LR
     F -->|not enough| X[Rejected]
     H --> T{Crossed 9 or 0?}
     T -->|yes| Alert[stock_threshold_triggered]
+    B --> Count[Physical count submitted]
+    Count --> Compare{Count differs from derived stock?}
+    Compare -->|yes| Discrepancy[inventory_discrepancy_detected]
+    Discrepancy --> Investigate[Investigate; correct only via traceable inbound or outbound order]
 ```
 
 | # | Point in the flow | Event(s) | Code location |
@@ -91,6 +96,9 @@ flowchart LR
 | 9 | Daily stock history | `stock_snapshot_recorded` | Scheduled job reading `list_products` |
 | 10 | Browsing products and history | `section_viewed`, `list_filter_applied` | Frontend routes under `/backoffice/inventory/...` |
 | 11 | Abandoned inbound/outbound forms | `flow_started`, `flow_completed`, `flow_abandoned` | `uis/backoffice` shared order form |
+| 12 | Physical count or warehouse-system count is reconciled against derived inventory | `inventory_discrepancy_detected` | Future reconciliation action/endpoint or WMS connector, after the count is submitted and compared with inbound-minus-outbound stock |
+
+**Discrepancy capture boundary.** No physical-count or reconciliation endpoint exists today. Add the event when a count is submitted through a future reconciliation workflow (or imported from the Monterrey/Zaragoza WMS) and the counted quantity differs from the transaction-derived quantity. Emit one event per product per reconciliation, including zero-count discrepancies; do not emit for a matching count. This event records evidence only: it must not update stock. Any correction remains a separately authenticated inbound or outbound order, attributed to its user, preserving the existing non-negotiable stock constraint.
 
 **Note on direct stock edits.** There is no endpoint that writes stock, which is the point of the constraint. A direct edit attempt therefore shows up as: (a) `POST /inventory/products` or an order payload with a stock-like field, which the `extra="forbid"` schemas already reject with 422, or (b) a `PUT`, `PATCH` or `DELETE` against `/inventory/products/{id}`, which returns 405 (or 404). The event is emitted from the exception handler and a small middleware hook that sees these statuses on `/inventory` routes. Only field names from an allow-list are recorded, never values.
 
@@ -115,13 +123,14 @@ Every entry completes the sentence: "We capture [event_type] because we need to 
 2. [inventory] We capture `inbound_order_created` because we need to know how much stock enters each warehouse per day and who records it, which allows us to size receiving staff per warehouse and detect days with no receipts.
 3. [inventory] We capture `outbound_order_created` because we need to know how many outbound orders are registered per day, per warehouse and per user, which allows us to plan picking capacity and replenishment.
 4. [inventory] We capture `order_validation_failed` because we need to know which products and fields accumulate the most validation errors, and how large the stock shortfall is, which allows us to fix confusing forms, correct stock records, or reorder products that operators keep over-requesting.
-5. [inventory] We capture `direct_stock_edit_rejected` because we need to know whether users or integrations try to bypass the inbound/outbound rule, and who, which allows us to decide on user training, tighter access, or a clearer UI when the attempts concentrate on one user or client.
-6. [inventory] We capture `stock_threshold_triggered` because we need to know when and where the minimum-stock alerts fire most, which allows us to set reorder points and trigger replenishment before a warehouse stocks out.
-7. [authentication] We capture `login_failed` because we need to know how many failed login attempts happen per day and whether they concentrate on one identifier, which allows us to tune rate limiting, add lockout or investigate credential-stuffing.
-8. [navigation] We capture `section_viewed` because we need to know which sections operators visit most and in which order, which allows us to prioritise the roadmap and decide what to promote or retire in the navigation.
-9. [navigation] We capture `flow_abandoned` because we need to know which flows get abandoned halfway through and at which step, which allows us to fix the step that loses operators, or remove a flow nobody finishes.
-10. [performance] We capture `api_latency_recorded` because we need to know which endpoints are slow and how latency changes over time, which allows us to decide on indexing, caching and capacity before operators feel it.
-11. [errors] We capture `api_error_recorded` because we need to know the error rate per endpoint and which errors are domain rules versus defects, which allows us to page an engineer for 5xx and prioritise bug fixes versus UX fixes.
+5. [inventory] We capture `inventory_discrepancy_detected` because we need to know which products and warehouses have physical counts that disagree with transaction-derived stock, which allows us to investigate process or integration failures before they cause missed picks, overselling or inaccurate reports.
+6. [inventory] We capture `direct_stock_edit_rejected` because we need to know whether users or integrations try to bypass the inbound/outbound rule, and who, which allows us to decide on user training, tighter access, or a clearer UI when the attempts concentrate on one user or client.
+7. [inventory] We capture `stock_threshold_triggered` because we need to know when and where the minimum-stock alerts fire most, which allows us to set reorder points and trigger replenishment before a warehouse stocks out.
+8. [authentication] We capture `login_failed` because we need to know how many failed login attempts happen per day and whether they concentrate on one identifier, which allows us to tune rate limiting, add lockout or investigate credential-stuffing.
+9. [navigation] We capture `section_viewed` because we need to know which sections operators visit most and in which order, which allows us to prioritise the roadmap and decide what to promote or retire in the navigation.
+10. [navigation] We capture `flow_abandoned` because we need to know which flows get abandoned halfway through and at which step, which allows us to fix the step that loses operators, or remove a flow nobody finishes.
+11. [performance] We capture `api_latency_recorded` because we need to know which endpoints are slow and how latency changes over time, which allows us to decide on indexing, caching and capacity before operators feel it.
+12. [errors] We capture `api_error_recorded` because we need to know the error rate per endpoint and which errors are domain rules versus defects, which allows us to page an engineer for 5xx and prioritise bug fixes versus UX fixes.
 
 #### Identified opportunities
 
@@ -273,6 +282,26 @@ Property tables list the permitted keys. Full constraints (enum values, ranges, 
 | `requested_quantity` | integer, nullable | yes | Quantity requested, null if not an integer. |
 | `available_stock` | integer (>= 0), nullable | yes | Stock at refusal time, null if the product was not found. |
 | `shortfall` | integer (>= 1), nullable | yes | requested - available when insufficient_stock, else null. |
+
+#### `inventory_discrepancy_detected`
+
+- Class: mandatory; category: inventory; emitted by: backend reconciliation workflow or WMS connector (future capture point; not implemented today).
+- Description: One physical or imported count disagrees with transaction-derived stock for a product.
+- Sensitive data / PII: `userId` in the envelope identifies the authenticated counter where available; no names, free text or customer data. `source_system` is a fixed enum.
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| `reconciliation_id` | string (uuid) | yes | Stable identifier for the count/reconciliation run. |
+| `product_id` | string (uuid) | yes | Product UUID. |
+| `sku` | string | yes | Product SKU (business identifier, not personal data). |
+| `warehouse` | enum: `Monterrey`, `Zaragoza` | yes | Warehouse where the count was performed. |
+| `expected_stock` | integer (>= 0) | yes | Stock computed from committed inbound minus outbound orders at reconciliation time. |
+| `counted_stock` | integer (>= 0) | yes | Physical or imported quantity observed. |
+| `variance_units` | non-zero integer | yes | `counted_stock - expected_stock`; negative means fewer units were found. |
+| `count_method` | enum: `cycle_count`, `full_count`, `inbound_receipt_check`, `outbound_pick_check`, `manual_investigation` | yes | How the observed quantity was obtained. |
+| `source_system` | enum: `backoffice`, `monterrey_wms`, `zaragoza_wms`, `manual`, `other` | yes | System that supplied the observation. |
+
+Emit only when `variance_units` is non-zero, once per product per reconciliation. Detection is a stream because warehouse operations should investigate the discrepancy during the current shift. The event reports a mismatch; it never changes stock or substitutes for a traceable inbound/outbound correction.
 
 #### `direct_stock_edit_rejected`
 
@@ -769,6 +798,7 @@ The rule: an event is **stream** only if someone must act within the hour or the
 | `outbound_order_created` | stream | Outbound volume and stock depletion drive same-day replenishment decisions. | None. |
 | `order_validation_failed` | stream | A burst of shortfalls signals a stock-record error or a broken form and is worth catching the same day. | None. |
 | `direct_stock_edit_rejected` | stream | A security- and integrity-relevant behaviour; the business rule is non-negotiable, so detection must be near real time. | No throttle. Alert rule: 3 or more per user in 10 minutes. |
+| `inventory_discrepancy_detected` | stream | A physical-count mismatch can cause missed picks, overselling or inaccurate reports; operations should investigate during the current shift. | Emit once per product per reconciliation, only when variance is non-zero. |
 | `stock_threshold_triggered` | stream | Low stock is the one inventory signal that must reach procurement before the next order, not tomorrow. | Emitted on band crossing only, not on every order inside the band. |
 | `stock_availability_checked` | batch | Usability and latency tuning, reviewed weekly. | Debounce 500 ms per product. |
 | `inventory_lock_wait_recorded` | batch | Capacity tuning; no operator action is needed immediately. | Emit only when wait_ms >= 50 or the transaction rolled back. |

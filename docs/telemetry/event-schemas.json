@@ -512,6 +512,112 @@
           }
         ]
       },
+      "inventory_discrepancy_detected": {
+        "title": "inventory_discrepancy_detected",
+        "description": "We capture inventory_discrepancy_detected because we need to know which products and warehouses have physical counts that disagree with transaction-derived stock, which allows us to investigate process or integration failures before they cause missed picks, overselling or inaccurate reports.",
+        "x-trackflow": {
+          "classification": "mandatory",
+          "category": "inventory",
+          "emitter": "backend_reconciliation_or_wms_connector",
+          "delivery": "stream",
+          "containsPII": false,
+          "piiHandling": "The envelope userId identifies the authenticated counter where available. No names, free text or customer data; source_system is a fixed enum."
+        },
+        "allOf": [
+          {
+            "$ref": "#/definitions/envelope"
+          },
+          {
+            "properties": {
+              "event_type": {
+                "const": "inventory_discrepancy_detected"
+              },
+              "schemaVersion": {
+                "const": "1.0.0"
+              },
+              "properties": {
+                "type": "object",
+                "required": [
+                  "reconciliation_id",
+                  "product_id",
+                  "sku",
+                  "warehouse",
+                  "expected_stock",
+                  "counted_stock",
+                  "variance_units",
+                  "count_method",
+                  "source_system"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "reconciliation_id": {
+                    "type": "string",
+                    "description": "Stable identifier for the count/reconciliation run.",
+                    "format": "uuid"
+                  },
+                  "product_id": {
+                    "type": "string",
+                    "description": "Product UUID.",
+                    "format": "uuid"
+                  },
+                  "sku": {
+                    "type": "string",
+                    "description": "Product SKU (business identifier, not personal data).",
+                    "maxLength": 100
+                  },
+                  "warehouse": {
+                    "type": "string",
+                    "description": "Warehouse where the count was performed.",
+                    "enum": [
+                      "Monterrey",
+                      "Zaragoza"
+                    ]
+                  },
+                  "expected_stock": {
+                    "type": "integer",
+                    "description": "Stock computed from committed inbound minus outbound orders at reconciliation time.",
+                    "minimum": 0
+                  },
+                  "counted_stock": {
+                    "type": "integer",
+                    "description": "Physical or imported quantity observed.",
+                    "minimum": 0
+                  },
+                  "variance_units": {
+                    "type": "integer",
+                    "description": "counted_stock - expected_stock; negative means fewer units were found.",
+                    "not": {
+                      "const": 0
+                    }
+                  },
+                  "count_method": {
+                    "type": "string",
+                    "description": "How the observed quantity was obtained.",
+                    "enum": [
+                      "cycle_count",
+                      "full_count",
+                      "inbound_receipt_check",
+                      "outbound_pick_check",
+                      "manual_investigation"
+                    ]
+                  },
+                  "source_system": {
+                    "type": "string",
+                    "description": "System that supplied the observation.",
+                    "enum": [
+                      "backoffice",
+                      "monterrey_wms",
+                      "zaragoza_wms",
+                      "manual",
+                      "other"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
       "direct_stock_edit_rejected": {
         "title": "direct_stock_edit_rejected",
         "description": "We capture direct_stock_edit_rejected because we need to know whether users or integrations try to bypass the inbound/outbound rule, and who, which allows us to decide on user training, tighter access, or a clearer UI when the attempts concentrate on one user or client.",
@@ -3086,6 +3192,9 @@
     },
     {
       "$ref": "#/definitions/events/order_validation_failed"
+    },
+    {
+      "$ref": "#/definitions/events/inventory_discrepancy_detected"
     },
     {
       "$ref": "#/definitions/events/direct_stock_edit_rejected"
