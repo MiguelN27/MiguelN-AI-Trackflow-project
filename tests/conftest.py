@@ -9,11 +9,12 @@ incidents leak into the next and into `data/suppliers.json`.
 import pytest
 from fastapi.testclient import TestClient
 
-from services.core import config
+from services.core import config, supabase_client
 from services.core import db as core_db
 from services.incidents.read_cache import clear_read_cache
 from services.inventory import database as inventory_database
 from services.main import app
+from services.telemetry import database as telemetry_database
 
 # Settings every test reads, whatever the developer's `.env` holds. Environment
 # variables outrank `.env` in pydantic-settings, so these win.
@@ -29,6 +30,8 @@ TEST_SETTINGS = {
     "RESEND_API_KEY": "",
     "EMAIL_FROM": "TrackFlow <onboarding@resend.dev>",
     "FRONTEND_BASE_URL": "http://localhost:3000",
+    "SUPABASE_URL": "https://test-project.supabase.co",
+    "SUPABASE_SECRET_KEY": "sb_secret_test_only",
 }
 
 
@@ -60,9 +63,20 @@ def isolated_postgres(monkeypatch):
     monkeypatch.setattr(psycopg2, "connect", forbid_connection)
     monkeypatch.setattr(inventory_database, "check_connection", lambda: None)
     monkeypatch.setattr(inventory_database, "initialize_schema", lambda: None)
+    monkeypatch.setattr(telemetry_database, "initialize_schema", lambda: None)
     yield
     monkeypatch.setattr(inventory_database, "get_engine", engine_factory)
     dispose()
+
+
+@pytest.fixture(autouse=True)
+def isolated_supabase(monkeypatch):
+    """Telemetry rows are append-only, so a test that reached Supabase would leave them forever."""
+
+    def forbid_supabase():
+        raise AssertionError("Unit tests must not call Supabase")
+
+    monkeypatch.setattr(supabase_client, "get_supabase", forbid_supabase)
 
 
 @pytest.fixture

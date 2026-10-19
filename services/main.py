@@ -34,6 +34,7 @@ from services.inventory import database as inventory_database
 from services.inventory.routers.inventory import router as inventory_router
 from services.profiles.router import router as profiles_router
 from services.suppliers.router import router as suppliers_router
+from services.telemetry import database as telemetry_database
 from services.telemetry.router import router as telemetry_router
 from services.users.router import router as users_router
 
@@ -52,6 +53,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         inventory_database.get_identity_db()
         inventory_database.check_connection()
         inventory_database.initialize_schema()
+        telemetry_database.initialize_schema()
         yield
     finally:
         inventory_database.dispose_engine()

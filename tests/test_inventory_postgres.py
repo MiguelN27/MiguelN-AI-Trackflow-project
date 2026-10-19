@@ -193,15 +193,16 @@ def test_postgres_api_uses_tinydb_uuid_and_computed_stock(
             assert movement(client, headers, "inbound", created["id"], 10).status_code == 201
             outbound = movement(client, headers, "outbound", created["id"], 3)
             assert outbound.status_code == 201
-            assert outbound.json()["user_uuid"] == user.id
             assert movement(client, headers, "outbound", created["id"], 8).status_code == 400
             assert (
                 client.get("/inventory/products", headers=headers).json()[0]["current_stock"] == 7
             )
             orders = client.get("/inventory/orders", headers=headers).json()
             assert len(orders) == 2
+            # Movement confirmations no longer echo the actor (serialization audit,
+            # 2026-10-12); the order history is where attribution is read back.
             assert all(
-                row["user_uuid"] == user.id and row["product"]["sku"] == "SHOE-42" for row in orders
+                row["user_uuid"] == user.id and row["product_sku"] == "SHOE-42" for row in orders
             )
     finally:
         app.dependency_overrides.clear()

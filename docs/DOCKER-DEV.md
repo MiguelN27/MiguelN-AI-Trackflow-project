@@ -12,6 +12,8 @@ If `.env` already exists, keep it and add the Compose variables from `docker-com
 
 The `NEXT_PUBLIC_API_URL` value is the browser-reachable URL of the separate candidate-records API. The sample assumes that API is running on the host at `http://localhost:4000`.
 
+`SUPABASE_URL` and `SUPABASE_SECRET_KEY` have no local sample: telemetry events are stored in a Supabase project's `telemetry_events` table, not in the Compose PostgreSQL, so they need a real project's URL and secret key. Compose refuses to start the API without them, and events from a Docker session land in that project.
+
 Start the development stack from the repository root:
 
 ```sh

@@ -4,6 +4,7 @@
 - Date: 2026-10-14
 - Companion file: [event-schemas.json](event-schemas.json) (JSON Schema draft-07, schema version 1.0.0)
 - Scope: design only. No instrumentation code is written by this document.
+- Implementation (2026-10-19): the backoffice captures frontend events and `POST /telemetry/events` stores them in Supabase's `telemetry_events`. Each event is validated against the `TelemetryEvent` envelope; `properties` is stored as `payload`, and the correlation fields plus the context dimensions (`warehouse`, `branch`, `source_system`, `client_app`, `section`) as `tags`, behind a GIN index. The row contract is `packages/shared/types/telemetry.ts`. Open question 3 is answered by this; per-event `properties` are not yet checked against their individual schemas.
 
 ## 0. Summary
 
@@ -894,7 +895,7 @@ Proposed paths (to be confirmed by the team):
 
 1. Confirm the mandatory metrics list (section 0.1).
 2. Is a per-product minimum stock threshold going to be added, and does it replace the 0 / 1-9 bands?
-3. Which sink stores events (log shipping, a database table, or a managed service)? It decides how `batch` is implemented.
+3. ~~Which sink stores events (log shipping, a database table, or a managed service)? It decides how `batch` is implemented.~~ Answered 2026-10-19: a Supabase table, `telemetry_events`, append-only.
 4. Is retention of 90 days raw acceptable, and who may read `userId`-level data?
 5. Is `userId` as a pseudonymous identifier acceptable to the Zaragoza data-protection contact?
 

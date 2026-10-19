@@ -1,15 +1,16 @@
-"""Stub ingest endpoint for frontend telemetry batches.
+"""Ingest endpoint for frontend telemetry batches.
 
-Public on purpose: the plan accepts anonymous pre-login events. Nothing is
-stored yet; accepted batches are only logged.
+Public on purpose: the plan accepts anonymous pre-login events. Each event is
+validated on its own and the valid ones are stored in `telemetry_events`.
 """
 
 import logging
-from collections import Counter
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
+from services.telemetry import service
 from services.telemetry.models import TelemetryBatch, TelemetryReceipt
 
 MAX_BODY_BYTES = 256 * 1024
@@ -21,10 +22,13 @@ router = APIRouter(prefix="/telemetry", tags=["telemetry"])
 
 @router.post("/events", response_model=TelemetryReceipt)
 async def receive_events(request: Request) -> TelemetryReceipt:
-    """Accept a batch of events.
+    """Store the valid events of a batch and report what was stored and rejected.
 
     The raw body is parsed here rather than declared as a model parameter
     because `navigator.sendBeacon` sends `text/plain` to avoid a CORS preflight.
+    A batch with rejected events still answers 200: resending it cannot make
+    those events valid. Only a storage failure answers 5xx, which the frontend
+    retries.
     """
     body = await request.body()
     if len(body) > MAX_BODY_BYTES:
@@ -38,6 +42,10 @@ async def receive_events(request: Request) -> TelemetryReceipt:
             [{"loc": e["loc"], "msg": e["msg"], "type": e["type"]} for e in exc.errors()],
         ) from None
 
-    counts = Counter(event.event_type for event in batch.events)
-    logger.info("telemetry batch received=%d types=%s", len(batch.events), dict(counts))
-    return TelemetryReceipt(received=len(batch.events))
+    try:
+        return await run_in_threadpool(service.ingest, batch.events)
+    except service.TelemetryStorageUnavailable as exc:
+        logger.error("telemetry storage failed: %s", exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Telemetry storage unavailable"
+        ) from None

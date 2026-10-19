@@ -38,8 +38,10 @@ class Settings(BaseSettings):
     # Where the reset link points. The token is appended as `?token=<jwt>`.
     frontend_base_url: str = "http://localhost:3000"
 
-    # Where telemetry batches are forwarded once a real sink exists; unused by the stub.
-    telemetry_endpoint: str | None = None
+    # Supabase project that stores telemetry events. The secret key bypasses Row
+    # Level Security, so it is read here, on the server, and nowhere else.
+    supabase_url: str = Field(pattern=r"^https://")
+    supabase_secret_key: SecretStr = Field(min_length=1)
 
     @field_validator("database_url")
     @classmethod

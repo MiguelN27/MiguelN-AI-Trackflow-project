@@ -1,6 +1,27 @@
 # Development Progress
 
-Last updated: 2026-10-15
+Last updated: 2026-10-19
+
+## Update 2026-10-19 - Telemetry storage in Supabase (stub replaced)
+
+Goals accomplished:
+- Pre-flight (2026-10-17): real Chrome confirmed the backoffice `TelemetryService` delivers batches to the stub with 200, by fetch and by `sendBeacon`. The API itself could not start: a stray `$` after the quoted `DATABASE_URL` in the git-ignored `.env` stopped python-dotenv from loading it (fixed), and the Supabase project was unreachable (restored 2026-10-19). Phases 1-3 were first built against a throwaway local PostgreSQL, then completed on Supabase as below.
+- Phase 1, storage: Supabase's `telemetry_events` is the table created in the dashboard (`id` uuid PK, `timestamp`, `event_type`, `payload` jsonb, `tags` jsonb, `created_at`). `services/telemetry/database.py` mirrors it and, at startup over `DATABASE_URL`, adds only what is missing: the three indexes (`timestamp` DESC, `event_type`, GIN on `tags`, named exactly as in Supabase because `IF NOT EXISTS` matches by name), RLS with no policies, and triggers rejecting UPDATE, DELETE and TRUNCATE, so events are append-only.
+- Row contract: `id` = `eventId` (a retry cannot duplicate), `payload` = `properties` verbatim, `tags` = `sessionId`, `userId`, `requestId`, `schemaVersion` plus the context dimensions the event carries (`warehouse`, `branch`, `source_system`, `client_app`, `section`). Stated in Python (`service.to_row`) and TypeScript (`packages/shared/types/telemetry.ts`, `toTelemetryRow`, re-exported from the shared index); `tests/test_telemetry_contract.py` keeps the field lists and the real `TelemetryEvent` names in sync, and both mappings produced identical rows on sample events under Node 24.
+- Phase 2, real endpoint: same URL and envelope. The list is parsed loosely, each event is validated with the unchanged `TelemetryEvent.model_validate`, and invalid events are rejected one by one - including NaN/Infinity and NUL characters that JSONB refuses, and a repeated `eventId` within the batch - while the rest is stored with one Supabase `upsert(on_conflict="id", ignore_duplicates=True)`. Response `{received, stored, rejected}`: 200 for any well-formed batch, 413/422 for a malformed envelope, 503 when Supabase fails (the frontend retries only 429/5xx). Logs carry counts and `field:error_type` reasons, never values.
+- Supabase Python client added (`supabase` 2.33; the resolver moved `websockets` to 15.0.1), behind `services/core/supabase_client.py` with a 10 s timeout. `SUPABASE_URL` and `SUPABASE_SECRET_KEY` are required server-only settings; `.env.example` documents them and the previously undocumented `DATABASE_URL`; Docker Compose passes both through (`docs/DOCKER-DEV.md`). The unused `telemetry_endpoint` setting was removed. The frontend did not change.
+- Phase 3, end to end on Supabase: a failed login (stored as `api_error_recorded`, 401), registration and sign-in, and a 1-unit inbound plus 1-unit outbound order (stock unchanged at 45) gave 47 rows, all batches 200, no duplicates; `tags` searches by warehouse, client app and section return the right rows. A curl batch mixing 2 valid and 6 invalid events returned `{"received":8,"stored":2,"rejected":6}`, and its replay stored nothing twice. A real frontend race - an in-flight batch re-sent by beacon - was absorbed by the `id` dedupe (20 events skipped).
+- Both opt-in PostgreSQL suites ran against Supabase: telemetry 11/11, inventory 4/4 after updating `test_postgres_api_uses_tinydb_uuid_and_computed_stock`, stale since the 2026-10-12 serialization audit removed `user_uuid` from movement responses and flattened order history.
+- Verification: ruff format and check clean; mypy shows only the known noise; shared types `tsc --strict` and backoffice typecheck clean; backend 501 passed, 22 skipped (the 15 opt-in PostgreSQL tests, passed separately on Supabase, and 7 Flask error-contract tests that skip because `flask` is not in the uv environment); website Jest 170 and backoffice Jest 262 passed.
+
+Still missing / next goals:
+1. Sign-in events (`user_registered`, `login_succeeded`, the first dashboard view) carry `userId: null`, because `AuthProvider` attaches the user only after `/auth/me`; the plan uses `login_succeeded` for daily active users. The fix is in `auth-service.ts`, a frontend change.
+2. Per-event `properties` are not yet validated against `event-schemas.json`.
+3. Backend-emitted mandatory events are still not instrumented: `login_failed`, `direct_stock_edit_rejected`, server-side `api_latency_recorded`, `inventory_discrepancy_detected`.
+4. The proposed 90-day retention needs a purge job that deliberately disables the append-only trigger.
+5. Plan gaps: no country dimension; inventory `warehouse` (Monterrey/Zaragoza) and incident `branch` (`la_*`) use different location vocabularies; frontend events carry no client app on the envelope (the `Origin` header could supply it).
+6. Pre-existing, unrelated: concurrent authenticated requests can 500 with `JSONDecodeError` because TinyDB shares one file handle across threads; `flask` is missing from the uv environment.
+7. Supabase keeps the E2E test data the guard protects: 47 browser rows, 2 curl rows (`tags.sessionId` `0e2e0000-0000-4000-8000-00000000c0de`) and a manual `test.ping` row. The test account `telemetry-e2e-1792409010@example.com` exists only in the local TinyDB.
 
 ## Update 2026-10-15 - Backoffice telemetry capture
 

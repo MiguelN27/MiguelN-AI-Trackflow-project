@@ -38,6 +38,8 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-TrackFlow <onboarding@resend.dev>}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
+      SUPABASE_URL: ${SUPABASE_URL:?Set SUPABASE_URL in the root .env}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:?Set SUPABASE_SECRET_KEY in the root .env}
       DB_PATH: /app/data/suppliers.json
     volumes:
       - .:/app

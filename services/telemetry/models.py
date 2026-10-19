@@ -1,7 +1,8 @@
 """Wire contract for frontend telemetry batches.
 
-Mirrors the envelope in `docs/telemetry/event-schemas.json`. Per-event
-`properties` are not validated here: the stub only proves the transport.
+`TelemetryEvent` mirrors the envelope in `docs/telemetry/event-schemas.json` and
+is the contract every stored event meets. Per-event `properties` are not checked
+against their individual schemas yet.
 """
 
 from datetime import datetime
@@ -27,10 +28,20 @@ class TelemetryEvent(BaseModel):
 
 
 class TelemetryBatch(BaseModel):
+    """The `{"events": [...]}` envelope, with each event left unparsed.
+
+    Events are validated one by one afterwards, so a bad event is rejected on
+    its own instead of failing the whole batch.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    events: list[TelemetryEvent] = Field(min_length=1, max_length=MAX_BATCH_SIZE)
+    events: list[Any] = Field(min_length=1, max_length=MAX_BATCH_SIZE)
 
 
 class TelemetryReceipt(BaseModel):
+    """`received` is always `stored + rejected`."""
+
     received: int
+    stored: int
+    rejected: int
