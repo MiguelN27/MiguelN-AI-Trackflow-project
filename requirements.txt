@@ -26,7 +26,10 @@ hyperframe==6.1.0
 idna==3.20
 libpass==1.9.3
 multidict==7.1.0
+numpy==2.4.6 ; python_full_version < '3.12'
+numpy==2.5.4 ; python_full_version >= '3.12'
 packaging==26.3
+pandas==3.0.6
 postgrest==2.33.0
 propcache==0.5.4
 psycopg2-binary==2.9.13
@@ -36,6 +39,7 @@ pydantic==2.13.5
 pydantic-core==2.46.5
 pydantic-settings==2.15.0
 pyjwt==2.15.1
+python-dateutil==2.9.0.post0
 python-dotenv==1.2.3
 python-jose==3.5.0
 python-multipart==0.0.32
@@ -56,6 +60,7 @@ supabase-functions==2.33.0
 tinydb==4.9.0
 typing-extensions==4.16.0
 typing-inspection==0.4.4
+tzdata==2026.5 ; sys_platform == 'emscripten' or sys_platform == 'win32'
 urllib3==2.8.0
 uvicorn==0.53.0
 uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'

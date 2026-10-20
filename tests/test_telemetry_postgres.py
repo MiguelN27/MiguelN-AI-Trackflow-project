@@ -11,6 +11,7 @@ cast by PostgreSQL - since the Supabase client itself needs a Supabase project.
 
 import json
 import os
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import psycopg2
@@ -21,7 +22,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.schema import CreateSchema, DropSchema
 
 from services.inventory import database as inventory_database
-from services.telemetry import database
+from services.telemetry import analysis, database
 from services.telemetry.models import TelemetryEvent
 from services.telemetry.service import to_row
 from tests.test_telemetry_service import make_event
@@ -269,3 +270,42 @@ def test_jsonb_really_refuses_what_validation_filters(initialized, payload):
     with pytest.raises(DBAPIError), engine.begin() as connection:
         connection.execute(INSERT, params)
     assert query(engine, "SELECT count(*) FROM telemetry_events") == [(0,)]
+
+
+def latency_event(timestamp, **overrides):
+    properties = {
+        "route_template": "/auth/login",
+        "method": "POST",
+        "status_class": "2xx",
+        "duration_ms": 120.5,
+        "sample_rate": 1,
+    }
+    return make_event(
+        timestamp=timestamp, event_type="api_latency_recorded", properties=properties, **overrides
+    )
+
+
+def test_the_report_loader_filters_the_window_and_types_in_postgres(initialized):
+    """The SQL behind every report metric: `[start, end)`, the types asked for, the session tag."""
+    engine, _ = initialized
+    session = str(uuid4())
+    insert(
+        engine,
+        latency_event("2026-10-18T00:00:00Z", sessionId=session),
+        make_event(timestamp="2026-10-18T12:00:00Z", event_type="section_viewed"),
+        latency_event("2026-10-17T23:59:59.999Z"),
+        latency_event("2026-10-19T00:00:00Z"),
+    )
+    start = datetime(2026, 10, 18, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 19, tzinfo=timezone.utc)
+
+    calls = analysis.load_events(start, end, ["api_latency_recorded"], payload=True)
+    everything = analysis.load_events(start, end)
+
+    assert list(calls.columns) == ["timestamp", "event_type", "session_id", "payload"]
+    assert calls["session_id"].tolist() == [session]
+    assert calls.loc[0, "payload"]["duration_ms"] == 120.5
+    assert list(everything.columns) == ["timestamp", "event_type", "session_id"]
+    assert sorted(everything["event_type"]) == ["api_latency_recorded", "section_viewed"]
+    assert analysis.events_per_day(start, end)[0]["events"] == 2
+    assert analysis.latency_by_route(start, end)[0]["p50_ms"] == 120.5
