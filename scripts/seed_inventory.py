@@ -23,6 +23,7 @@ class SeedProduct:
     sku: str
     name: str
     warehouse: Warehouse
+    client_id: str
     target_stock: int
     outbound_quantity: int = 0
 
@@ -33,10 +34,16 @@ class SeedProduct:
         )
 
 
+# Owners are fictional brand clients, one per product, approved by the developer
+# for the business performance pipeline (PIPELINE_DESIGN.md, open question Q1).
 SEED_PRODUCTS = (
-    SeedProduct("SHOE-BLK-42", "Black Running Shoes - Size 42", Warehouse.MONTERREY, 45),
-    SeedProduct("LAPTOP-DELL-15", "Dell Laptop 15 inch", Warehouse.ZARAGOZA, 8, 1),
-    SeedProduct("PERFUME-COCO-50", "Coco Perfume 50ml", Warehouse.MONTERREY, 120),
+    SeedProduct(
+        "SHOE-BLK-42", "Black Running Shoes - Size 42", Warehouse.MONTERREY, "stride-athletics", 45
+    ),
+    SeedProduct(
+        "LAPTOP-DELL-15", "Dell Laptop 15 inch", Warehouse.ZARAGOZA, "nexa-electronics", 8, 1
+    ),
+    SeedProduct("PERFUME-COCO-50", "Coco Perfume 50ml", Warehouse.MONTERREY, "coco-beauty", 120),
 )
 
 
@@ -45,6 +52,7 @@ class SeedReport:
     inserted_products: int = 0
     inserted_inbound: int = 0
     inserted_outbound: int = 0
+    assigned_clients: int = 0
     skipped_existing: int = 0
     current_stock: dict[str, int] = field(default_factory=dict)
 
@@ -66,11 +74,19 @@ def _seed_product(session: Session, item: SeedProduct, report: SeedReport) -> No
             raise SeedError(
                 f"Seed conflicts with an existing product for {item.sku}; no changes committed."
             )
+        if existing.client_id is None:
+            # Seeded before products had owners: claim it, once.
+            existing.client_id = item.client_id
+            session.add(existing)
+            session.flush()
+            report.assigned_clients += 1
+        elif existing.client_id != item.client_id:
+            raise SeedError(f"{item.sku} is owned by another client; no changes committed.")
         report.skipped_existing += 1
         return
     if session.get(Product, product_id) is not None:
         raise SeedError("A seed product UUID is already in use; no changes committed.")
-    session.add(Product(id=product_id, **payload.model_dump()))
+    session.add(Product(id=product_id, client_id=item.client_id, **payload.model_dump()))
     session.flush()
     report.inserted_products += 1
 
@@ -122,18 +138,17 @@ def seed_inventory(engine: Engine, user_uuid: UUID) -> SeedReport:
         raise SeedError("Seed actor must be an existing active TinyDB user; no changes committed.")
     report = SeedReport()
     try:
-        with Session(engine) as session:
-            with session.begin():
-                for item in SEED_PRODUCTS:
-                    _seed_product(session, item, report)
-                for item in SEED_PRODUCTS:
-                    _seed_movement(session, item, user_uuid, InboundOrder, report)
-                for item in SEED_PRODUCTS:
-                    _seed_movement(session, item, user_uuid, OutboundOrder, report)
-                for item in SEED_PRODUCTS:
-                    report.current_stock[item.sku] = service.get_product(
-                        session, item.record_id("product")
-                    ).current_stock
+        with Session(engine) as session, session.begin():
+            for item in SEED_PRODUCTS:
+                _seed_product(session, item, report)
+            for item in SEED_PRODUCTS:
+                _seed_movement(session, item, user_uuid, InboundOrder, report)
+            for item in SEED_PRODUCTS:
+                _seed_movement(session, item, user_uuid, OutboundOrder, report)
+            for item in SEED_PRODUCTS:
+                report.current_stock[item.sku] = service.get_product(
+                    session, item.record_id("product")
+                ).current_stock
         return report
     except SQLAlchemyError:
         raise SeedError("Inventory seed failed; database changes were rolled back.") from None
@@ -152,7 +167,8 @@ def main(argv: list[str] | None = None) -> int:
         report = seed_inventory(get_engine(), arguments.user_uuid)
         print(
             f"Inserted: {report.inserted_products} products, {report.inserted_inbound} inbound, "
-            f"{report.inserted_outbound} outbound. Skipped existing: {report.skipped_existing}."
+            f"{report.inserted_outbound} outbound. Assigned owners: {report.assigned_clients}. "
+            f"Skipped existing: {report.skipped_existing}."
         )
         for item in SEED_PRODUCTS:
             print(f"{item.sku} ({item.warehouse.value}): {report.current_stock[item.sku]} units")

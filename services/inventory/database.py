@@ -54,6 +54,24 @@ def dispose_engine() -> None:
     get_engine.cache_clear()
 
 
+# `products.client_id` arrived after the table existed, and `create_all` never
+# alters a table, so the column and its slug check are added here when missing.
+_CLIENT_ID_COLUMN = "ALTER TABLE products ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)"
+_CLIENT_ID_CHECK = """
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'products'::regclass AND conname = 'ck_product_client_id'
+    ) THEN
+        ALTER TABLE products ADD CONSTRAINT ck_product_client_id
+            CHECK (client_id ~ '^[a-z0-9]+(-[a-z0-9]+)*$');
+    END IF;
+END
+$$
+"""
+
+
 def initialize_schema() -> None:
     try:
         tables = [
@@ -64,6 +82,8 @@ def initialize_schema() -> None:
         with get_engine().begin() as connection:
             SQLModel.metadata.create_all(connection, tables=tables)
             if connection.dialect.name == "postgresql":
+                connection.execute(text(_CLIENT_ID_COLUMN))
+                connection.execute(text(_CLIENT_ID_CHECK))
                 quote = connection.dialect.identifier_preparer.quote
                 for table in tables:
                     connection.execute(

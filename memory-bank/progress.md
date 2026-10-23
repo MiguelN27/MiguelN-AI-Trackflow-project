@@ -1,6 +1,33 @@
 # Development Progress
 
-Last updated: 2026-10-19
+Last updated: 2026-10-22
+
+## Update 2026-10-22 - Business performance pipeline implemented (Prefect 3)
+
+Goals accomplished:
+- Implemented `data/pipelines/PIPELINE_DESIGN.md` following the five-phase checklist (`stages-todo.png`) and the tech lead's ticket (`lead-instr.png`). Design section 10 maps every checklist item to the code and lists the departures. `BRIEFING.md` supplied the KPI names, the destination table and the endpoint contract. `prefect>=3` was added with `uv add` (3.9.0; only `certifi` moved), and `requirements.txt` was re-exported in its existing format.
+- Phase 1, flows and tasks: `data/pipelines/pipeline.py` is the entry point. It holds `weekly_warehouse_client_performance` and `backfill_weekly_warehouse_client_performance`, with 9 tasks: `open_run`, three read-only extracts, `transform_weekly_rollup`, `compute_collection_health`, `validate_weekly_rows`, `load_weekly_rows`, and the non-critical `write_eval_snapshot` writing to `data/eval/`. The pure transforms are in `data/process/` and the SQL in `data/pipelines/weekly_warehouse_client_performance/`.
+- Phase 2, resilience: every database task retries transient errors only, with the delays justified in comments; the flow retries 3 times, 15 minutes apart. Collection health and the eval snapshot run with `return_state=True`, so their failure degrades the run instead of stopping it. Both transforms have a content-hashed `cache_key_fn` with a 1-hour `cache_expiration`, persisted under `data/raw/prefect-results/`.
+- Phase 3, idempotency: a one-transaction load upserts on `(warehouse, client_id, week_start)`, deletes stale keys and marks the run `completed`. It also holds an advisory lock, refuses a stale snapshot, and writes a revisions trigger row for every changed figure. `reporting.pipeline_runs` records start, end, counts, status, errors, cutoff, exclusions and coverage.
+- Phase 4, script: `python data/pipelines/pipeline.py` ran without errors on Supabase. It created the `reporting` schema and inserted 6 zero rows (3 clients, weeks 2026-10-05 and 2026-10-12, which hold no in-scope events). A re-run reported 0 inserted / 0 updated / 6 unchanged, with both transforms `Cached`. The schedule (Monday 06:00 `America/Monterrey`) and the run commands are in design 4.4 and `data/pipelines/README.md`.
+- Phase 5, endpoints: `services/reporting/` serves the KPI query, the latest-run status and the manual trigger, all with a bearer token and all importing from `data/pipelines`. They were checked over HTTP with a real Prefect server and the served deployment: 401/200/422/404 on the reads, then 202 on `POST`, after which the served run completed with `triggered_by` recorded. That check found that serving from `__main__` crashed every run (a cloudpickle `RecursionError`); `serve()` now serves the importable module.
+- Client dimension (design Q1, developer's choice: product owner only): nullable `products.client_id` with a slug check, added by inventory `initialize_schema`, absent from product responses. The seeded owners are `stride-athletics`, `coco-beauty` and `nexa-electronics`, assigned on Supabase by the seed, whose second run changed nothing. Two existing tests that pinned the old product column set were updated.
+- Config: `data` added to the wheel packages, pipeline outputs git-ignored, `.env.example` documents `PREFECT_API_URL` and `REPORTING_DATABASE_URL`. The Dockerfile copies `data/pipelines` and `data/process`, and compose moves the TinyDB volume from `/app/data` to `/app/var`, since the volume would otherwise hide the pipeline code. The volume's data stays.
+- Verification: ruff format and check are clean on all changed files, and mypy is clean on `data/`, `services/reporting`, `services/inventory` and the seed. The backend suite gave 675 passed, 40 skipped, with 105 new tests (111 after the follow-up). The opt-in PostgreSQL `tests/test_reporting_postgres.py` (17) passed on a local PostgreSQL 16 and on Supabase through the pooler, alongside the telemetry and inventory suites (33 passed). No test schemas were left behind.
+
+- Follow-up the same day, closing two gaps found when re-checking the checklist:
+  - Phase 3, run metadata: failed and skipped runs now keep `events_read`, and when `reporting.pipeline_runs` cannot take a failed run's record, the failure hook appends start, end, events read, status, error and reason to `data/eval/weekly_warehouse_client_performance/run_log_fallback.jsonl`. `run_log.fail_run` now reports `failed` / `unchanged` / `missing`. Verified with an unreachable database: 3 `open_run` attempts, `Failed`, exit 1, one fallback line.
+  - Phase 5, boundary: the week rules and the `stale` derivation moved from the router to `queries.check_requested_week` and `queries.get_pipeline_status`. The status codes and messages are unchanged.
+  - Neither touched the tasks, retries, caching, load, endpoints or contracts. ruff and mypy are clean; the backend suite gave 681 passed, 41 skipped; `tests/test_reporting_postgres.py` (18) passed locally and on Supabase.
+
+Still missing / next goals:
+1. The `reporting_pipeline` database role and the `trackflow-reporting-database-url` Secret block. The pipeline uses `DATABASE_URL` until they exist.
+2. Prefect Automations for `Late`/`Failed`/`Crashed` and their notification block; the Prefect Variable `reporting_lookback_weeks`.
+3. The `client_id` event property (schema `1.1.0`, backoffice payload, `POST /inventory/products`), and backend emission of the order events (design Q11).
+4. Nothing serves the deployment permanently yet. The week of 2026-10-19, the first with real order events, closes on 2026-10-26 and needs that morning's scheduled run or a manual one.
+5. The Docker changes were not run (Docker is not installed here). The API's 409 only covers a run whose row is already `running`; before that, Prefect's `ENQUEUE` serialises runs.
+6. A deterministic failure (validation) also waits out the 3 flow retries, because Prefect 3 has no flow retry condition; its alert fires after about 45 minutes.
+7. Supabase now holds the 4 runs of the verification in `reporting.pipeline_runs`, and the 6 zero rows. A local test account `reporting-e2e@example.com` exists only in a scratch TinyDB copy, not in `data/suppliers.json`.
 
 ## Update 2026-10-19 - Telemetry storage in Supabase (stub replaced)
 

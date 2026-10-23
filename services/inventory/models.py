@@ -34,6 +34,12 @@ class Product(SQLModel, table=True):
             nullable=False,
         )
     )
+    # The brand client that owns the goods: in a 3PL warehouse every SKU belongs
+    # to one client. A lowercase slug assigned by Commercial and Client Relations
+    # (PIPELINE_DESIGN.md 2.4). Nullable until every product has an owner; the
+    # slug format is a PostgreSQL check added by `initialize_schema`. Internal:
+    # product responses do not carry it.
+    client_id: str | None = Field(default=None, max_length=64, nullable=True)
 
 
 class InboundOrder(SQLModel, table=True):

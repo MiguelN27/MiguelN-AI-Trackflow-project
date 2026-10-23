@@ -12,6 +12,9 @@ RUN uv pip install --system -r requirements.txt
 COPY services ./services
 COPY scripts ./scripts
 COPY packages/shared ./packages/shared
+COPY data/__init__.py ./data/__init__.py
+COPY data/pipelines ./data/pipelines
+COPY data/process ./data/process
 RUN uv pip install --system --no-deps --editable .
 
 EXPOSE 8000

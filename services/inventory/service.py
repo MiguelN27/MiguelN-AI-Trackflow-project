@@ -48,6 +48,11 @@ def _stock_query():
     )
 
 
+def _response(product: Product, stock: int) -> ProductResponse:
+    # `client_id` is internal to reporting and not part of the product contract.
+    return ProductResponse(**product.model_dump(exclude={"client_id"}), current_stock=stock)
+
+
 def list_products(
     session: Session,
     warehouse: Warehouse | None = None,
@@ -58,10 +63,7 @@ def list_products(
         query = query.where(Product.warehouse == warehouse)
     if sku is not None:
         query = query.where(Product.sku == sku)
-    return [
-        ProductResponse(**product.model_dump(), current_stock=int(stock))
-        for product, stock in session.exec(query).all()
-    ]
+    return [_response(product, int(stock)) for product, stock in session.exec(query).all()]
 
 
 def get_product(session: Session, product_id: UUID) -> ProductResponse:
@@ -69,7 +71,7 @@ def get_product(session: Session, product_id: UUID) -> ProductResponse:
     if row is None:
         raise ProductNotFound()
     product, stock = row
-    return ProductResponse(**product.model_dump(), current_stock=int(stock))
+    return _response(product, int(stock))
 
 
 def create_product(session: Session, payload: ProductCreate) -> ProductResponse:
@@ -78,7 +80,7 @@ def create_product(session: Session, payload: ProductCreate) -> ProductResponse:
             product = Product(**payload.model_dump())
             session.add(product)
             session.flush()
-            response = ProductResponse(**product.model_dump(), current_stock=0)
+            response = _response(product, 0)
         return response
     except IntegrityError:
         existing = session.exec(

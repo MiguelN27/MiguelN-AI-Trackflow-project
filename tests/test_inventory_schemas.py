@@ -65,9 +65,11 @@ def test_product_response_requires_computed_stock():
     product = Product(name="Shoes", sku="SHOE-42", warehouse=Warehouse.MONTERREY)
     with pytest.raises(ValidationError):
         schemas.ProductResponse.model_validate(product)
-    response = schemas.ProductResponse(**product.model_dump(), current_stock=7)
+    # The owning client is internal to reporting: the product contract does not carry it.
+    response = schemas.ProductResponse(**product.model_dump(exclude={"client_id"}), current_stock=7)
     assert response.current_stock == 7
     assert "current_stock" not in Product.__table__.columns
+    assert "client_id" not in schemas.ProductResponse.model_fields
 
 
 def test_order_response_includes_product_user_and_utc_timestamp():

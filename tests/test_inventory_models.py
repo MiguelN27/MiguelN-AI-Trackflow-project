@@ -26,7 +26,9 @@ def inventory_engine():
 
 def test_inventory_tables_have_no_stock_or_identity_columns():
     assert set(SQLModel.metadata.tables) == {"products", "inbound_orders", "outbound_orders"}
-    assert set(Product.__table__.columns.keys()) == {"id", "name", "sku", "warehouse"}
+    # `client_id` is the owning brand client, read by the reporting pipeline.
+    assert set(Product.__table__.columns.keys()) == {"id", "name", "sku", "warehouse", "client_id"}
+    assert Product.__table__.columns.client_id.nullable
     for model in (InboundOrder, OutboundOrder):
         assert set(model.__table__.columns.keys()) == {
             "id",

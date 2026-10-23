@@ -1,9 +1,9 @@
 # Weekly Warehouse & Client Performance Pipeline — Design
 
-- Status: draft for tech lead review
-- Date: 2026-10-21 (robustness review 2026-10-22, section 9)
-- Branch: `telemetry-tech-report`
-- Scope: **design only.** No orchestration code is written by this document. The implementation comes next, once the open questions in section 8 are answered.
+- Status: **implemented** (Part 2, 2026-10-22). Section 10 maps the code to the phase checklist and lists where it departs from this design
+- Date: 2026-10-21 (robustness review 2026-10-22, section 9; implementation 2026-10-22, section 10)
+- Branch: `telemetry-tech-report` (design), `pipeline-design` (implementation)
+- Scope: sections 1-9 are the approved design. Section 10 records the implementation.
 - Source of requirements: [`BRIEFING.md`](../../BRIEFING.md) (business performance pipeline), the tech lead's brief (`lead-instr.png`) and the phase checklist (`stages-todo.png`).
 - Builds on: [`docs/telemetry/telemetry-plan.md`](../../docs/telemetry/telemetry-plan.md), [`docs/telemetry/event-schemas.json`](../../docs/telemetry/event-schemas.json), `services/telemetry/` and `services/inventory/`.
 
@@ -19,7 +19,7 @@
 | Destination | `reporting.weekly_warehouse_client_performance`, plus the run log `reporting.pipeline_runs` |
 | Idempotency | Every run recomputes whole weeks from a fixed snapshot of the source (`created_at <= arrival_cutoff`) and upserts on `unique (warehouse, client_id, week_start)` in a single transaction. Every change to a published figure is kept in a revisions table |
 | Observability | Each run measures its input against the inventory tables (capture coverage), plus arrival lag, gaps, bursts and clock skew, so "no activity", "lost capture" and "never ran" look different |
-| Orchestration | Prefect: 1 main flow, 8 tasks, optional backfill flow |
+| Orchestration | Prefect 3: 1 main flow, 9 tasks (8 + the non-critical `write_eval_snapshot`), backfill flow. Entry point `data/pipelines/pipeline.py` |
 | API | New `services/reporting/` module with 3 endpoints, separate from `services/telemetry/` and `GET /telemetry/report` |
 | Blocking prerequisite | No client is recorded anywhere today. The four events need an additive `client_id` field (section 2.4) |
 | Robustness | Section 9 answers the ten robustness checks (idempotency, observability, recoverability, concurrency) and points to the mechanism behind each |
@@ -471,6 +471,8 @@ Why each field is needed to audit the pipeline in production:
 | `trigger`, `triggered_by`, `flow_run_id` | Who or what started the run, and the link to its full Prefect log. `triggered_by` is the pseudonymous user UUID, never a name or email |
 | `code_version` | Which code produced a number, so a past figure can be reproduced or explained after a fix |
 
+A run that fails still keeps its minimum record: the failure hook writes `finished_at`, `status = 'failed'`, the error fields and `events_read` (how many events it had read, null when extraction itself failed). When the run log cannot take that record - the database is unreachable, or the run failed before `open_run` wrote its row - the hook appends the same fields to `data/eval/weekly_warehouse_client_performance/run_log_fallback.jsonl` with the reason, so no run ends without a record. A run that skipped itself already has its row and writes no fallback line.
+
 ### 3.5 Data quality checks (the `validate_weekly_rows` task)
 
 The load refuses to start, and the run fails at `error_stage = 'validate'`, if:
@@ -562,10 +564,13 @@ Checklist:
 | `extract_inventory_order_counts` | Extract | Daily counts per warehouse from `inbound_orders` / `outbound_orders` joined to `products` | 3 | Read-only. The independent count for capture coverage (9.6) |
 | `transform_weekly_rollup` | Transform | `data/process/weekly_rollup.py` | 0 | Deterministic: retrying the same input gives the same failure. Its exclusion list (event ids and reasons) is persisted with the checkpoint key below |
 | `compute_collection_health` | Transform | `data/process/collection_health.py` | 0 | Coverage, lag, gaps, bursts, clock skew, late events outside the window, dropped counts (3.7). Persisted with the same cache key as `validate_weekly_rows`, because the load writes it too. Aggregates only |
-| `validate_weekly_rows` | Transform → Load gate | `data/process/weekly_rollup.py::validate` | 0 | Checks in 3.5. **Checkpoint:** `persist_result=True` with cache key `(weeks, arrival_cutoff, code_version)`, so a retried load resumes from here without re-extracting (9.7). It holds counts only, no event ids or user data |
+| `validate_weekly_rows` | Transform → Load gate | `data/process/weekly_rollup.py::validate` | 0 | Checks in 3.5. Always runs: a gate is never served from a cache |
 | `load_weekly_rows` | Load | `data/pipelines/weekly_warehouse_client_performance/load.py` | 2 | One transaction: `set_config` run id, advisory lock, stale-snapshot check, upsert, stale-key delete, health and exclusion rows, mark `completed`. Safe to retry because of 3.1 |
+| `write_eval_snapshot` | After load, **non-critical** | `pipeline.py` | 0 | Writes the run's validation summary to `data/eval/weekly_warehouse_client_performance/` (totals per week and warehouse, exclusions, load counts, collection health; no per-client figures). Invoked with `return_state=True`: a failure is logged and the run still completes |
 
-Task timeouts are 300 s each, and the flow timeout is 1800 s. The flow has 3 retries, 15 minutes apart, so it can ride out a short database outage on Monday morning before 07:00 (9.7). A flow retry keeps its `flow_run_id`, so it resumes its own run row (3.3).
+As implemented, the checkpoint of 9.7 is the **transform cache** rather than a persisted `validate_weekly_rows`: `transform_weekly_rollup` and `compute_collection_health` persist their results to `data/raw/prefect-results/` under a content key (section 10.3), so a flow retry re-reads the same snapshot and reuses the stored rollup. `compute_collection_health` is invoked with `return_state=True`: if it fails, the figures are still published and the run is marked `degraded` (3.5).
+
+Task timeouts are 300 s each, and the flow timeout is 1800 s. The flow has 3 retries, 15 minutes apart, so it can ride out a short database outage on Monday morning before 07:00 (9.7). A flow retry keeps its `flow_run_id`, so it resumes its own run row (3.3). Database tasks retry only transient errors (lost or refused connection, timeout); a `ProgrammingError` or an integrity violation fails at once. Prefect 3 has no retry condition for flows, so a deterministic failure (validation) also goes through the 3 flow retries and alerts after the last one, about 06:50 for the 06:00 run.
 
 ### 4.3 States that matter
 
@@ -585,18 +590,31 @@ Alerts are Prefect Automations on `Late`, `Failed` and `Crashed` that notify the
 
 ### 4.4 Schedule and deployment
 
-```yaml
-# prefect.yaml (sketch)
-deployments:
-  - name: weekly
-    entrypoint: data/pipelines/weekly_warehouse_client_performance/flow.py:weekly_warehouse_client_performance
-    schedules:
-      - cron: "0 6 * * 1"            # Monday 06:00
-        timezone: "America/Monterrey"   # one hour of margin before the 07:00 report
-    parameters: { lookback_weeks: 2, trigger: schedule }
-    concurrency_limit: { limit: 1, collision_strategy: ENQUEUE }   # queue, never drop, the Monday run
-    work_pool: { name: trackflow-process }
+**Intended schedule:** every Monday at 06:00 `America/Monterrey` (cron `0 6 * * 1`), rebuilding the last 2 closed ISO weeks. It is one hour before the 07:00 Monday report leadership expects.
+
+As implemented, the deployment is served from the entry point instead of a `prefect.yaml` work pool, so the schedule lives in one place (`pipeline.py`: `SCHEDULE_CRON`, `SCHEDULE_TIMEZONE`, `DEFAULT_LOOKBACK_WEEKS`):
+
+| Setting | Value |
+|---|---|
+| Deployment | `weekly-warehouse-client-performance/weekly` (Prefect names the flow after its function, with `-`) |
+| Schedule | `Cron("0 6 * * 1", timezone="America/Monterrey")` |
+| Parameters | `{lookback_weeks: 2, trigger: "schedule"}` |
+| Concurrency | `global_limit` 1 with `collision_strategy: ENQUEUE`: a second run waits, it is never dropped |
+
+**Run commands** (from the repository root, with the virtual environment active, or prefixed with `uv run`):
+
+```bash
+python data/pipelines/pipeline.py                            # once: the last 2 closed weeks (trigger "manual")
+python data/pipelines/pipeline.py --week-start 2026-10-12    # once: one closed week
+python data/pipelines/pipeline.py --backfill 2026-09-28 2026-10-12
+python data/pipelines/pipeline.py --flow-retries 0           # interactive run without 15-minute flow retries
+
+# Scheduled operation: a Prefect server, then the served deployment pointed at it
+prefect server start
+PREFECT_API_URL=http://127.0.0.1:4200/api python data/pipelines/pipeline.py --serve
 ```
+
+The API's `POST /reporting/pipeline-runs` needs the same `PREFECT_API_URL`; without it the endpoint answers 503. The command line validates its arguments before starting a flow (exit code 2), so a bad week never waits out the flow retries.
 
 The ISO week closes at Monday 00:00 UTC, which is Sunday 18:00 in Monterrey and Monday 01:00/02:00 in Zaragoza. The run starts 12 hours after the week closes in UTC. That is ample time for frontend batches, which arrive within seconds.
 
@@ -634,17 +652,22 @@ Checklist:
 
 ```
 data/
+  raw/
+    prefect-results/              # intermediate files: persisted transform results (git-ignored)
   process/
-    weekly_rollup.py              # pure Pandas: normalize, resolve_client, dedupe, aggregate, validate
-    collection_health.py          # pure Pandas: coverage, lag, gaps, bursts, skew, late events
+    weekly_rollup.py              # pure Pandas: weeks, normalize, resolve_client, dedupe, aggregate, validate
+    collection_health.py          # pure Pandas: coverage, lag, gaps, bursts, skew
+  eval/
+    weekly_warehouse_client_performance/   # one validation snapshot per run (git-ignored)
   pipelines/
     PIPELINE_DESIGN.md            # this document
-    run_log.py                    # reporting.pipeline_runs: open_run, complete_run, fail_run, get_latest_run, latest_completed_week
+    pipeline.py                   # entry point: Prefect flows, tasks, hooks, cache keys, CLI, serve
+    reporting_db.py               # the flow's engine: REPORTING_DATABASE_URL, Secret block, DATABASE_URL
+    run_log.py                    # reporting.pipeline_runs: open_run, complete_run, skip_run, fail_run, readers
     weekly_warehouse_client_performance/
-      schema.py                   # DDL from 2.9 and 3.4 (idempotent, IF NOT EXISTS)
-      extract.py                  # SQL from 2.5
+      schema.py                   # DDL from 2.9, 3.4, 3.6, 3.7 (idempotent, matched by name)
+      extract.py                  # read-only SQL from 2.5
       load.py                     # transaction from 3.1
-      flow.py                     # Prefect flows and tasks from section 4
       queries.py                  # get_weekly_performance(engine, week_start)
       trigger.py                  # trigger_run(week_start, triggered_by) -> run_deployment(...)
 services/
@@ -652,6 +675,8 @@ services/
     models.py                     # Pydantic response contracts only
     router.py                     # HTTP only: parse, call data.pipelines, map errors to status codes
 ```
+
+`flow.py` became `pipeline.py`: the developer's brief names `data/pipelines/pipeline.py` as the entry point.
 
 - The dependency direction is `services/reporting` → `data/pipelines` → `data/process`. Nothing in `data/` imports `services/`. Functions take an SQLAlchemy engine as an argument: the API passes its shared engine (`services/inventory/database.py::get_engine`), and the flow passes one built from the Secret block.
 - `services/reporting/` imports nothing from `services/telemetry/`, and `services/main.py` mounts its router next to the others.
@@ -731,6 +756,8 @@ services/
 5. `flow.py`, `prefect.yaml`, the blocks, the `reporting_pipeline` role and the Automations.
 6. `services/reporting/` and its API tests, mounted in `services/main.py`.
 7. Docs: `memory-bank/techContext.md`, `memory-bank/progress.md`, and a section in `data/pipelines/README.md`.
+
+Status 2026-10-22: steps 3, 4, 6 and 7 are done. Step 2 is done for the product owner only (`products.client_id`); the event field is deferred. Step 5 is done except the `reporting_pipeline` role, the blocks and the Automations. Section 10 has the detail.
 
 ## 7. Test plan
 
@@ -921,7 +948,7 @@ Longer outages:
 
 - Task retries cover about 2 minutes. Flow retries (3 × 15 min) cover the window before 07:00. After that the run is `Failed`, and an alert goes out.
 - The Supabase outage of 2026-10-17 → 2026-10-19 lasted about two days. The next Monday run's 2-week lookback would have recomputed the missed week without anyone acting. Anything longer needs the backfill flow.
-- During an outage the run log is unreachable too, because it lives in the same database. Prefect's state and the Automation alert are the record. The `on_failure` hook's write is best-effort, and the next `open_run` sweep reconciles it.
+- During an outage the run log is unreachable too, because it lives in the same database. The failure hook then writes the run's minimum record to the fallback log file (3.4), next to Prefect's own state. A run row left `running` is reconciled by the next `open_run` sweep.
 - The reporting endpoints answer `503`. They never serve stale data as fresh.
 
 ### 9.8 Frontend buffer
@@ -981,3 +1008,88 @@ The pipeline's own trigger follows the same rule. Retrying `POST /reporting/pipe
   3. One `running` row per pipeline, with `open_run` idempotent per `flow_run_id`.
   4. In the load: an advisory transaction lock, plus a stale-snapshot check so an older read can never overwrite a newer one.
 - **Recovery.** The queued run executes afterwards and recomputes the same weeks, normally with 0 changes. A crashed run's row is swept once Prefect reports its flow run terminal, or after about 3 h if Prefect cannot answer.
+
+---
+
+## 10. Implementation (Part 2)
+
+Checklist (`stages-todo.png`), with where each item lives:
+
+**Phase 1 — Flows and tasks**
+
+- [x] The pipeline is Prefect flows following the stages of section 2.6: `weekly_warehouse_client_performance` (main) and `backfill_weekly_warehouse_client_performance` (one main-flow subflow per week), in `data/pipelines/pipeline.py`
+- [x] Each stage is an independent `@task` with explicit inputs and outputs: the 9 tasks of table 4.2
+- [x] Optional, non-critical steps invoked with `return_state=True`: `write_eval_snapshot` (to `data/eval/`) and `compute_collection_health`. Neither can stop extract → transform → load
+
+**Phase 2 — Resilience**
+
+- [x] `retries` and `retry_delay_seconds` on every task that touches PostgreSQL, each justified in a comment: `open_run` 2 (5 s, 30 s), the three extracts 3 (10 s, 30 s, 90 s), `load_weekly_rows` 2 (15 s, 60 s). `retry_condition_fn` limits them to transient errors. The flow adds 3 retries 15 minutes apart
+- [x] Task failures handled explicitly with `return_state=True`: a failed collection health publishes the figures as `degraded`, and a failed eval snapshot is logged while the run still completes
+- [x] Caching (`cache_key_fn`, `cache_expiration` = 1 hour) on `transform_weekly_rollup` and `compute_collection_health`. The key is explained in 10.3 and in `rollup_cache_key`'s docstring
+
+**Phase 3 — Idempotency**
+
+- [x] The load upserts on BRIEFING's `unique (warehouse, client_id, week_start)`, deletes stale keys of the recomputed weeks, and marks the run completed, all in one transaction (3.1). A second run over the same data reports `0 inserted / 0 updated / 0 deleted`, and the table is byte-identical
+- [x] Execution metadata per run in `reporting.pipeline_runs`: `started_at`, `finished_at`, `events_read` and `rows_*`, `status`, `error_stage` / `error_class` / `error_message`, plus the other fields of 3.4. Failed and skipped runs keep `events_read`, and a run the database cannot record goes to the log file `data/eval/weekly_warehouse_client_performance/run_log_fallback.jsonl` (3.4)
+
+**Phase 4 — Script-based execution**
+
+- [x] `data/pipelines/pipeline.py` runs as a script through `if __name__ == "__main__": sys.exit(main())`
+- [x] `python data/pipelines/pipeline.py` verified without errors against Supabase on 2026-10-22 (10.4)
+- [x] Schedule and run commands documented in 4.4
+
+**Phase 5 — Backend endpoints**
+
+- [x] `services/reporting/` serves `GET /reporting/pipeline-runs/latest` (status), `POST /reporting/pipeline-runs` (manual trigger) and `GET /reporting/weekly-warehouse-client-performance` (KPI rows). It is mounted in `services/main.py` and imports nothing from `services/telemetry/`
+- [x] Every endpoint calls `data.pipelines` (`run_log`, `queries`, `trigger`); there is no pipeline logic in `services/`. The week rules (`queries.check_requested_week`, `closed_weeks`) and the report's freshness (`queries.get_pipeline_status`: `last_closed_week`, `stale`) live in `data/pipelines/` too, so the router only maps HTTP
+- [x] Same conventions as the rest of the API: bearer token through `CurrentUser`, FastAPI's 422 detail list, plain-string `detail` for 404/409/503, class names only in logs. The KPI response is BRIEFING section 6's shape
+
+### 10.1 The client dimension
+
+Q1 was answered for this milestone with the product owner only:
+
+- `products.client_id`: `varchar(64)`, nullable, with the slug check `ck_product_client_id`. `services/inventory/database.py::initialize_schema` adds both when missing. Product API responses do not carry it.
+- Seeded owners (fictional clients approved by the developer): `stride-athletics` (SHOE-BLK-42, Monterrey), `coco-beauty` (PERFUME-COCO-50, Monterrey), `nexa-electronics` (LAPTOP-DELL-15, Zaragoza). `scripts/seed_inventory.py` assigns an owner once and refuses to overwrite a different one.
+- Deferred: the `client_id` event property (`1.1.0`), the backoffice copying it, and `POST /inventory/products` accepting it. Resolution step 1 (payload first) is implemented and tested, but no emitter sends it yet, so today every event resolves through step 2.
+
+### 10.2 Where the implementation departs from sections 1-9
+
+| Design | Implementation | Why |
+|---|---|---|
+| `weekly_warehouse_client_performance/flow.py` | `data/pipelines/pipeline.py` | The brief names `pipeline.py` as the entry point |
+| `prefect.yaml` with a work pool | `pipeline.py --serve` (`Flow.serve`, `global_limit` 1, `ENQUEUE`) | One source for the schedule; no work pool to run locally |
+| Extract filter on `timestamp` | Filter on `least(timestamp, created_at)`, plus `timestamp >= :window_start` for the index | Reads exactly the events whose effective time (2.7 step 1) falls in the window, including those stamped by a clock running ahead |
+| — | Exclusion reason `outside_window` | Defensive: an event outside the computed weeks is reported instead of silently ignored. The SQL filter keeps it at 0 |
+| Checkpoint: persisted `validate_weekly_rows`, key `(weeks, arrival_cutoff, code_version)` | Content-keyed cache on the two transform tasks; validation always runs | The cache serves both purposes: a flow retry reuses the rollup, and so does a repeat run within the hour (10.3) |
+| Abandoned: Prefect terminal, or age only when Prefect cannot answer | Prefect terminal, **or** older than 3 h whatever Prefect says | A process killed outright can leave Prefect showing `Running` forever. No live run can be older than 3 h, given the flow's timeouts |
+| — | `GET /reporting/pipeline-runs/latest` ignores `skipped` rows | A run that lost a race would otherwise hide the one running or the last one that loaded |
+| — | `TRUNCATE` guard on the report table | `TRUNCATE` fires no row trigger, so it would erase figures without a revision |
+| Constraints matched by name | Unique constraints matched by **columns** | A table created by hand from BRIEFING's SQL gets PostgreSQL's truncated constraint name, and must not get a second unique key |
+| Coverage per warehouse and day | Stored per day (3.7); the `degraded` verdict uses warehouse-weeks (3.5) | An order at 23:59:59 whose event lands a second later must not read as loss |
+| During an outage, Prefect's state is the record (9.7) | Plus a fallback log file, `run_log_fallback.jsonl`, written by the failure hook | The run-metadata checklist item covers every run, and the Automations that would alert on it are not built yet |
+
+`late_events_outside_window` is null on the first completed run, since there is no earlier cutoff to compare with.
+
+### 10.3 What defines the cache key
+
+`transform_weekly_rollup` is pure, so its key is everything its output depends on: the SHA-256 of the source of `data/process/weekly_rollup.py`, the weeks, and a content hash of the extracted events and of the product owners. A result younger than 1 hour (`cache_expiration`) with the same key is reused. One new event, a reassigned product or an edit to the transform produces a new key. The run id and the clock are not part of it, because they do not change the result. `compute_collection_health` follows the same rule, adding `collection_health.py`, the exclusions and the inventory order counts.
+
+Results are persisted to `data/raw/prefect-results/` (git-ignored). They hold counts and excluded `eventId`s, never payloads or user ids. Extraction always runs: reading the snapshot is how a run learns whether anything changed. Two runs within the hour over an unchanged source therefore recompute nothing, and the load writes nothing.
+
+### 10.4 Verification (2026-10-22)
+
+- Unit tests: `tests/test_weekly_rollup.py` (46), `tests/test_collection_health.py` (9), `tests/test_reporting_api.py` (29) and `tests/test_pipeline_flow.py` (27, under `prefect_test_harness`). The backend suite passes: 681 passed, 41 skipped.
+- Opt-in PostgreSQL `tests/test_reporting_postgres.py` (17 at first, 18 with the run-metadata test: idempotency, late event, stale key, failure injection, snapshot reproducibility, clock skew, concurrency, sweep, stale snapshot, audit trail, constraints, read-only, hand-made table, readers, the real flow). It passed on a local PostgreSQL 16 and on Supabase through the transaction pooler, together with the telemetry and inventory suites (33 passed).
+- Supabase: `client_id` added and the three owners assigned (a second seed run changed nothing). The first pipeline run inserted 6 rows: zero rows for the 3 clients in the weeks of 2026-10-05 and 2026-10-12, which hold no in-scope events. The second, the plain `python data/pipelines/pipeline.py`, reported `0 / 0 / 6 unchanged`, with both transforms `Cached`.
+- Run metadata for failed runs: a validation failure records `events_read`; with the database unreachable (`REPORTING_DATABASE_URL` pointing at a closed port), `python data/pipelines/pipeline.py` retried `open_run` 3 times, ended `Failed` with exit code 1, and the hook wrote one fallback line (start, end, `events_read`, status, error, reason). A skipped run writes no fallback line. Covered by `tests/test_pipeline_flow.py` and, for `fail_run`'s `failed` / `unchanged` / `missing` outcomes, `tests/test_reporting_postgres.py` (18, again passed on Supabase).
+- HTTP, real API plus a Prefect server plus the served deployment: the reads answered 401 without a token, 200 in the BRIEFING shape, 422 for a non-Monday and 404 for the open week. `POST` answered 202, the served run completed and recorded `triggered_by`, and a second `POST` was queued by `ENQUEUE` and ran afterwards. This check found that serving from `__main__` crashed every run (cloudpickle copies `__main__` by value, and unpickling hit a `RecursionError`); `serve()` now serves the importable module.
+
+### 10.5 Not done yet
+
+1. The `reporting_pipeline` role and the `trackflow-reporting-database-url` Secret block. The code reads the block when it exists; until then the pipeline uses `DATABASE_URL`, and "read-only" rests on `READ ONLY` extract transactions plus the append-only triggers.
+2. Prefect Automations for `Late` / `Failed` / `Crashed`, and their notification block.
+3. The Prefect Variable `reporting_lookback_weeks`. The parameter default (2) stands in for it.
+4. The `client_id` event property (10.1) and backend emission of the order events (Q11).
+5. The API's 409 applies once a run row is `running`. Between the `POST` and the runner picking the run up, Prefect's `ENQUEUE` limit is what serialises runs.
+6. The Docker changes (code copied into the image, TinyDB volume moved to `/app/var`) were not run: Docker is not installed on the development machine.
+7. The week of 2026-10-19, the first with real order events, closes on Monday 2026-10-26 at 00:00 UTC. It is published by that morning's 06:00 run if the deployment is being served, or by any manual run afterwards.

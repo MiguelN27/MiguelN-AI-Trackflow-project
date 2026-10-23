@@ -40,10 +40,12 @@ services:
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
       SUPABASE_URL: ${SUPABASE_URL:?Set SUPABASE_URL in the root .env}
       SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:?Set SUPABASE_SECRET_KEY in the root .env}
-      DB_PATH: /app/data/suppliers.json
+      # The TinyDB file lives outside /app/data, which now holds the pipeline
+      # code the reporting endpoints import; a volume there would hide it.
+      DB_PATH: /app/var/suppliers.json
     volumes:
       - .:/app
-      - api_data:/app/data
+      - api_data:/app/var
     depends_on:
       db:
         condition: service_healthy
