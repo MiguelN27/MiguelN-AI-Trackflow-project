@@ -9,5 +9,6 @@ This folder is intended for **raw data** related to the company: dumps, exports,
 
 - `incidents-trackflow.csv`: the helpdesk export that `scripts/seed_incidents.py` seeds from.
 - `prefect-results/` (git-ignored, created by the pipeline): Prefect's persisted results of the cached transform tasks (the four KPI tasks, the row assembly and collection health), the intermediate files behind the 1-hour cache. They hold counts per warehouse, client and week and collection stats, never event rows, event ids, payloads or user ids, and can be deleted at any time.
+- `telemetry_<YYYY-MM-DD>.csv` (git-ignored, written by `scripts/nightly_export.py`): one UTC day of `telemetry_events`, exported once as a backup and audit snapshot, with the table's columns (`id,timestamp,event_type,payload,tags,created_at`). The pipeline reads the database, not these files. They carry pseudonymous user and session ids, which is why they stay out of git. See `docs/NIGHTLY_EXPORT.md`.
 
 > _Spanish version: [README.es.md](./README.es.md)._

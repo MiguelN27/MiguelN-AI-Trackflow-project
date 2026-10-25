@@ -2,6 +2,47 @@
 
 Last updated: 2026-10-25
 
+## Update 2026-10-25 (later) - DEV-53: nightly telemetry script, status control and cron trigger
+
+Goals accomplished (CTO's ticket DEV-53, `lead-instr.png`, worked through the six sections of `stages-todo.png`; full write-up in `docs/NIGHTLY_EXPORT.md`):
+- Phase 1, data model:
+  - `public.job_runs` (`id, job_name, target_date NOT NULL, status pending|processing|completed|failed, started_at, finished_at, error_message, created_at`) with lifecycle checks.
+  - Indexes `job_runs_job_name_target_date_idx` and the unique partial `job_runs_one_active_idx` (the lock, with no lock table or column).
+  - RLS on; reviewable SQL `services/job_runner/migrations/001_create_job_runs.sql` next to the idempotent `ensure_schema`.
+  - Kept apart from `reporting.pipeline_runs`, which is a different layer.
+- Phase 2, status control (`services/job_runner/`):
+  - `create_job_run`, `mark_processing/completed/failed`, `get_job_run`, `list_job_runs`, `has_processing_lock`, `has_completed_for_date`, `sweep_abandoned` and `run_job`.
+  - Any `BaseException`, Ctrl-C and SIGTERM included, marks the row `failed` with the message, is logged at ERROR with the traceback, and propagates.
+  - A row left `processing` by SIGKILL is swept to `failed` after 6 h.
+- Phase 3, `scripts/nightly_export.py`:
+  - `TARGET_DATE` or yesterday in UTC. The CSV export to `data/raw/telemetry_<date>.csv` happens only if absent, from a READ ONLY transaction with an atomic rename.
+  - Then the pipeline as a subprocess: `python -m data.pipelines.pipeline --week-start <last week closed by the end of the target date>`, as decided with the developer.
+  - The result goes to `job_runs`. It runs as `python scripts/nightly_export.py` from any working directory.
+- Phase 4, idempotency and locking: an active row means a silent abort with the cancellation logged; a completed `(nightly_export, target_date)` means a duplicate skip. A failed day can be re-run, keeping its CSV and re-running only the pipeline.
+- Phase 5, trigger:
+  - OS crontab, `30 3 * * *`, through `scripts/cron/nightly_export.sh`. The decision (not FastAPI, not the Prefect deployment; a scheduler container as the production follow-up) and the PR text are in `docs/NIGHTLY_EXPORT.md`.
+  - A temporary entry proved cron runs it: it fired at 19:34 EDT and exported 174 events for 2026-10-20 on Supabase, completed. The nightly entry is now installed in the developer's crontab.
+- Phase 6, observability: INFO for start, finish and skips, ERROR for failures. Every line carries a UTC timestamp, the job, the target date and the status. The pipeline's stderr is re-logged line by line with Prefect's level.
+- Found while verifying:
+  - The pipeline CLI runs Prefect's temporary API server as a separate process. `subprocess.run`'s SIGKILL orphaned it, and it held the stderr pipe open.
+  - Signalling the whole group at once stopped the server before the pipeline's crash hook could report, leaving its `pipeline_runs` row `running`.
+  - Fix: the pipeline runs in its own process group with file-backed output; SIGTERM goes to the pipeline first (its row ends `failed`/`Crashed`), then to the group, then SIGKILL.
+  - macOS `crontab <file>` truncates long paths, so the entry is installed on stdin.
+- Verification:
+  - Unit: `tests/test_job_runner.py` (31, SQLite) and `tests/test_nightly_export.py` (39).
+  - Opt-in `tests/test_job_runner_postgres.py` (7) passed on local PostgreSQL 16 and on Supabase, with no test schemas left.
+  - Real runs on local PostgreSQL: completed, duplicate, two concurrent processes (one refused by the unique index), pipeline failure then retry, SIGTERM mid-pipeline (exit 143 after 1.4 s, both run logs failed, no leftover processes), SIGKILL then lock abort then sweep.
+  - Supabase: a run for 2026-10-24 (0 events, header-only CSV, pipeline 3 rows unchanged), then a duplicate skip.
+  - Backend suite: 797 passed, 48 skipped.
+  - ruff format and check clean on the changed files. mypy on the new modules shows only the known `Settings` noise, after fixing two annotation-level errors in the new script (`RowMapping` vs `Mapping[str, Any]`, `getLevelName`'s return type) with no behaviour change.
+
+Still missing / next goals:
+1. A dedicated scheduler container (for example supercronic in `docker-compose.yml`) running the same wrapper, for production. Docker is not installed here to verify it.
+2. The pipeline CLI has no `--trigger` option, so nightly runs appear as `trigger = manual` in `reporting.pipeline_runs`. Adding one changes the pipeline code, which was out of scope.
+3. No catch-up: a night missed while the Mac sleeps is not exported automatically (run it with `TARGET_DATE`). `logs/nightly_export.log` is not rotated (about 40 lines a night).
+4. No alert when a nightly run fails: the evidence is the `job_runs` row and the log. A failure notification, for example together with the Prefect Automations still pending, would close that.
+5. Supabase now holds `job_runs` with 2 completed rows (2026-10-24, 2026-10-20), plus 2 new `manual` rows in `reporting.pipeline_runs` from these runs. The report rows are unchanged. `data/raw/` holds the two real exports.
+
 ## Update 2026-10-25 - Pipeline to production: subflows, KPI unit tests, CLI, leadership dashboard
 
 Goals accomplished (CTO's Part 3 ticket, `lead-instr.png`, worked through the four-phase checklist in `stages-todo.png`; detail in `data/pipelines/PIPELINE_DESIGN.md` section 11). `uv add "prefect>=3"` changed nothing: Prefect 3.9.0 was already locked.
