@@ -1,7 +1,8 @@
-"""The Prefect flow (`data/pipelines/pipeline.py`): task wiring, failure handling, caching.
+"""The Prefect flows (`data/pipelines/pipeline.py` and its subflows): wiring, failures, caching.
 
 Runs under `prefect_test_harness` with every database call mocked, so nothing
-here needs PostgreSQL; `tests/test_reporting_postgres.py` covers the SQL.
+here needs PostgreSQL; `tests/test_reporting_postgres.py` covers the SQL and
+`tests/pipelines/test_pipeline.py` the KPI tasks one by one.
 """
 
 import json
@@ -17,9 +18,19 @@ from prefect.testing.utilities import prefect_test_harness
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from data.pipelines import pipeline, run_log
+from data.pipelines.subflows import activity_extraction, performance_load, policies
 from data.pipelines.weekly_warehouse_client_performance import extract, load, schema
 from data.process import collection_health, weekly_rollup
+from tests.pipelines.prefect_support import redirect_cached_results, subflow_runs
 from tests.test_weekly_rollup import PRODUCTS, event
+
+STAGE_SUBFLOWS = [
+    "extract-weekly-warehouse-client-activity",
+    "compute-weekly-warehouse-client-kpis",
+    "measure-kpi-event-collection-health",
+    "load-weekly-warehouse-client-performance",
+    "export-weekly-performance-eval-snapshot",
+]
 
 CUTOFF = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)
 WEEKS = (date(2026, 10, 5), date(2026, 10, 12))
@@ -44,6 +55,7 @@ class Database:
         self.reads = {"events": 0, "products": 0, "orders": 0}
         self.read_errors: list[Exception] = []
         self.loads: list[dict] = []
+        self.load_errors: list[Exception] = []
         self.failures: list[dict] = []
         self.run_status = "running"
         self.open_errors: list[Exception] = []
@@ -97,6 +109,8 @@ class Database:
         )
 
     def load_weekly_rows(self, engine, **kwargs):
+        if self.load_errors:
+            raise self.load_errors.pop(0)
         self.loads.append(kwargs)
         return load.LoadResult(status="completed", rows_inserted=len(kwargs["rows"]))
 
@@ -121,12 +135,14 @@ def database(harness, monkeypatch, tmp_path):
     monkeypatch.setattr(weekly_rollup, "closed_weeks", lambda now, week, lookback: WEEKS)
     monkeypatch.setattr(weekly_rollup, "last_closed_week", lambda now: WEEKS[-1])
     # Results and snapshots go to this test's own folders, never data/raw or data/eval.
-    for name in ("transform_weekly_rollup", "compute_collection_health"):
-        task = getattr(pipeline, name)
-        monkeypatch.setattr(pipeline, name, task.with_options(result_storage=tmp_path / "results"))
-    for name in ("open_run", "extract_source_events", "load_weekly_rows"):
-        task = getattr(pipeline, name)
-        monkeypatch.setattr(pipeline, name, task.with_options(retry_delay_seconds=0))
+    redirect_cached_results(monkeypatch, tmp_path / "results")
+    for module, name in (
+        (pipeline, "open_run"),
+        (activity_extraction, "extract_inventory_kpi_events"),
+        (performance_load, "load_weekly_rows"),
+    ):
+        task = getattr(module, name)
+        monkeypatch.setattr(module, name, task.with_options(retry_delay_seconds=0))
     monkeypatch.setattr(pipeline, "EVAL_DIR", tmp_path / "eval")
     return db
 
@@ -157,6 +173,47 @@ def test_every_stage_runs_and_the_load_gets_validated_rows(database, tmp_path):
     snapshot = json.loads(Path(summary["eval_snapshot"]).read_text())
     assert snapshot["validation"] == {"passed": True, "rows": len(rows)}
     assert "stride-athletics" not in json.dumps(snapshot)  # no per-client figures
+
+
+def test_the_main_flow_invokes_one_subflow_per_stage_in_order(database):
+    state = run()
+
+    assert state.is_completed()
+    children = subflow_runs(state.state_details.flow_run_id)
+    assert [flow_name for flow_name, _ in children] == STAGE_SUBFLOWS
+    assert all(child.state is not None and child.state.is_completed() for _, child in children)
+
+
+def test_subflow_parameters_record_row_counts_not_events_or_client_figures(database):
+    state = run()
+
+    assert state.is_completed()
+    children = dict(subflow_runs(state.state_details.flow_run_id))
+    stored = json.dumps([child.parameters for child in children.values()])
+    event_id = database.events["id"].iloc[0]
+    assert event_id not in stored  # no event rows
+    assert "stride-athletics" not in stored  # no per-client figures
+    kpis = children["compute-weekly-warehouse-client-kpis"].parameters
+    assert kpis["activity"]["source"]["events"] == {"rows": 2}
+    assert kpis["activity"]["products"] == {"rows": len(PRODUCTS)}
+    load_parameters = children["load-weekly-warehouse-client-performance"].parameters
+    assert load_parameters["kpis"]["events_read"] == 2
+
+
+def test_a_flow_retry_runs_the_stage_subflows_again(database):
+    database.load_errors = [ProgrammingError("INSERT", {}, Exception("deadlock detected"))]
+    flow = pipeline.weekly_warehouse_client_performance.with_options(
+        retries=1, retry_delay_seconds=0
+    )
+
+    state = flow(return_state=True)
+
+    assert state.is_completed()
+    # The completed extraction ran again on the retry instead of being reused
+    # without a result (stage results are never persisted).
+    assert database.reads == {"events": 2, "products": 2, "orders": 2}
+    assert len(database.loads) == 1
+    assert database.failures == []  # the failure hook waits for the last attempt
 
 
 def test_a_failed_eval_snapshot_does_not_fail_the_run(database, monkeypatch, tmp_path):
@@ -290,42 +347,55 @@ def test_a_flow_retry_after_commit_does_not_load_again(database):
     assert database.loads == []
 
 
-def test_the_transform_is_reused_within_the_hour_for_the_same_input(database, monkeypatch):
-    calls = []
-    real = weekly_rollup.build_rollup
+def test_the_kpi_tasks_are_reused_within_the_hour_for_the_same_input(database, monkeypatch):
+    calls = {"inbound_volume": 0, "assemble_rows": 0}
 
-    def counting(*args):
-        calls.append(1)
-        return real(*args)
+    def counting(name):
+        real = getattr(weekly_rollup, name)
 
-    monkeypatch.setattr(weekly_rollup, "build_rollup", counting)
+        def wrapper(*args):
+            calls[name] += 1
+            return real(*args)
+
+        return wrapper
+
+    for name in calls:
+        monkeypatch.setattr(weekly_rollup, name, counting(name))
 
     assert run().is_completed()
     assert run().is_completed()
-    assert len(calls) == 1  # the second run hit the cache
+    assert calls == {"inbound_volume": 1, "assemble_rows": 1}  # the second run hit the cache
 
     database.events = pd.concat(
         [database.events, pd.DataFrame([event(weekly_rollup.OUTBOUND, "2026-10-14T09:00:00Z")])],
         ignore_index=True,
     )
     assert run().is_completed()
-    assert len(calls) == 2  # a new event is a new key
+    # A new outbound order changes what every KPI is handed: a new key for all.
+    assert calls == {"inbound_volume": 2, "assemble_rows": 2}
 
 
 # --- Pieces that need no flow run ----------------------------------------------------
 
 
 def test_cache_key_follows_content_not_identity():
-    events = pd.DataFrame([event(weekly_rollup.INBOUND, "2026-10-12T09:00:00Z", quantity="1")])
-    base = {"events": events, "products": PRODUCTS, "weeks": WEEKS}
-    key = pipeline.rollup_cache_key(None, base)
+    prepared = weekly_rollup.prepare_events(
+        pd.DataFrame([event(weekly_rollup.INBOUND, "2026-10-12T09:00:00Z", quantity="1")]),
+        PRODUCTS,
+        WEEKS,
+    )
+    cache_key = policies.content_cache_key("wwcp-test", weekly_rollup)
+    base = {"kpi_events": prepared.countable, "products": PRODUCTS, "weeks": WEEKS}
+    key = cache_key(None, base)
 
-    assert pipeline.rollup_cache_key(None, {**base, "events": events.copy()}) == key
-    changed = events.assign(quantity="2")
-    assert pipeline.rollup_cache_key(None, {**base, "events": changed}) != key
-    assert pipeline.rollup_cache_key(None, {**base, "weeks": WEEKS[1:]}) != key
+    assert cache_key(None, {**base, "kpi_events": prepared.countable.copy()}) == key
+    changed = prepared.countable.assign(quantity=pd.array([2], dtype="Int64"))
+    assert cache_key(None, {**base, "kpi_events": changed}) != key
+    assert cache_key(None, {**base, "weeks": WEEKS[1:]}) != key
     owners = PRODUCTS.assign(client_id="coco-beauty")
-    assert pipeline.rollup_cache_key(None, {**base, "products": owners}) != key
+    assert cache_key(None, {**base, "products": owners}) != key
+    # Two tasks with the same input never share a key.
+    assert policies.content_cache_key("wwcp-other", weekly_rollup)(None, base) != key
 
 
 @pytest.mark.parametrize(
@@ -341,7 +411,7 @@ def test_cache_key_follows_content_not_identity():
 )
 def test_only_transient_errors_are_retried(error, retry):
     state = Failed(data=error)
-    assert pipeline.retry_on_transient_error(None, None, state) is retry
+    assert policies.retry_on_transient_error(None, None, state) is retry
 
 
 @pytest.fixture

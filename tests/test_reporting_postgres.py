@@ -636,12 +636,11 @@ def test_the_prefect_flow_runs_end_to_end(seeded, monkeypatch, tmp_path):
     from prefect.testing.utilities import prefect_test_harness
 
     from data.pipelines import pipeline
+    from tests.pipelines.prefect_support import redirect_cached_results
 
     monkeypatch.setattr(pipeline.reporting_db, "get_pipeline_engine", lambda: seeded)
     monkeypatch.setattr(pipeline, "EVAL_DIR", tmp_path / "eval")
-    for name in ("transform_weekly_rollup", "compute_collection_health"):
-        task = getattr(pipeline, name)
-        monkeypatch.setattr(pipeline, name, task.with_options(result_storage=tmp_path / "results"))
+    redirect_cached_results(monkeypatch, tmp_path / "results")
     flow = pipeline.weekly_warehouse_client_performance.with_options(retries=0)
 
     with prefect_test_harness(server_startup_timeout=120):

@@ -6,6 +6,8 @@ import type { ReactNode } from "react";
 
 const NAV_LINKS = [
   { href: "/", label: "Dashboard" },
+  // Leadership's destination: the weekly KPIs, read from the reporting pipeline.
+  { href: "/reporting", label: "Weekly report" },
   { href: "/incidents", label: "Incidents" },
   // Its own entry rather than a button buried in the list: the people the
   // incident manager is for are reporting from a warehouse terminal, and the

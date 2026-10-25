@@ -7,7 +7,7 @@ This folder contains **processed/intermediate data** and/or artifacts produced b
 
 ## In this folder
 
-- `weekly_rollup.py`: the Weekly Warehouse & Client Performance transform (week assignment, client resolution, exclusions, business-key dedupe, aggregation, the validation gate).
+- `weekly_rollup.py`: the Weekly Warehouse & Client Performance transform. `prepare_events` (week assignment, client resolution, exclusions, business-key dedupe), one function per KPI (`inbound_volume`, `outbound_throughput`, `stockout_frequency`, `discrepancy_rate`), `assemble_rows` (zero rows, destination columns) and the validation gate. `build_rollup` runs them in one call.
 - `collection_health.py`: capture coverage, lag, gaps, bursts and clock skew for the same run.
 
 Both are pure Pandas, with no I/O, clock or randomness, so the flow, the backfill and the tests share them. See `data/pipelines/PIPELINE_DESIGN.md` 2.7 and 3.7.

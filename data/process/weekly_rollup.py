@@ -14,11 +14,18 @@ rules as `services/telemetry/analysis.py`:
 Event time is trusted only up to arrival: `effective_time = min(timestamp,
 created_at)`, so a client clock running ahead cannot move an event into a week
 that had not started when it arrived.
+
+The transform runs in steps the Prefect subflow calls one task each:
+`prepare_events` screens the raw events, one function per KPI of BRIEFING
+section 2 counts them (`inbound_volume`, `outbound_throughput`,
+`stockout_frequency`, `discrepancy_rate`), and `assemble_rows` combines the four
+into the destination rows. `build_rollup` runs the same steps in one call.
 """
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Final, cast
+from numbers import Real
+from typing import Final
 
 import numpy as np
 import pandas as pd
@@ -76,6 +83,10 @@ FIGURES: Final = (
 COUNT_COLUMNS: Final = FIGURES[:4]
 ROW_COLUMNS: Final = (*KEY, *FIGURES)
 
+# What `prepare_events` hands the KPIs: one row per counted event, reduced to
+# the fields a KPI reads. No event, product, order or user id.
+COUNTABLE_COLUMNS: Final = ("event_type", "warehouse", "client_id", "week_start", "quantity")
+
 # The keys of `pipeline_runs.events_excluded`, in the order they are checked.
 # An event gets the first reason that applies.
 EXCLUSION_REASONS: Final = (
@@ -100,11 +111,30 @@ class RollupValidationError(ValueError):
     """
 
 
+class KpiInputError(ValueError):
+    """A KPI was handed events it cannot count: a missing column, no key, a bad quantity.
+
+    `prepare_events` hands over only countable events, so this means a caller
+    skipped it or a bug let a bad row through. The KPI refuses instead of
+    publishing a wrong figure. The message names the KPI and a count, never values.
+    """
+
+
 @dataclass(frozen=True)
 class Rollup:
     """The output of the transform: the destination rows and what was left out."""
 
     rows: pd.DataFrame
+    exclusions: pd.DataFrame
+    events_read: int
+    events_excluded: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PreparedEvents:
+    """The events the KPIs may count (`COUNTABLE_COLUMNS`) and every event left out, with why."""
+
+    countable: pd.DataFrame
     exclusions: pd.DataFrame
     events_read: int
     events_excluded: dict[str, int] = field(default_factory=dict)
@@ -297,61 +327,14 @@ def duplicate_mask(events: pd.DataFrame) -> pd.Series:
     return pd.Series(duplicated, index=ordered.index).reindex(events.index)
 
 
-def aggregate(
-    counted: pd.DataFrame, products: pd.DataFrame, weeks: tuple[date, ...]
-) -> pd.DataFrame:
-    """One row per `(warehouse, client_id, week_start)` with the four KPIs.
-
-    Every pair that owns products gets a row for every computed week, with
-    zeros when nothing happened, so a missing row means only that the client
-    has no products in that warehouse (design 2.7 step 7).
-    """
-    # Plain object keys on both sides, so the event keys and the zero-row grid
-    # union into one index instead of two that only look alike.
-    keyed = counted.astype({"warehouse": "object", "client_id": "object"})
-    is_type = keyed["event_type"]
-    figures = pd.concat(
-        [
-            keyed[is_type == INBOUND].groupby(KEY)["quantity_value"].sum().astype("int64"),
-            keyed[is_type == OUTBOUND].groupby(KEY).size(),
-            keyed[is_type == THRESHOLD].groupby(KEY).size(),
-            keyed[is_type == DISCREPANCY].groupby(KEY).size(),
-        ],
-        axis=1,
-        keys=list(COUNT_COLUMNS),
-    )
-
-    owners = products.loc[:, ["warehouse", "client_id"]].astype("string")
-    owners = owners[owners["warehouse"].isin(WAREHOUSES) & _valid_client_id(owners["client_id"])]
-    every_week = pd.DataFrame({"week_start": pd.Series(weeks, dtype="object")})
-    grid = pd.MultiIndex.from_frame(
-        owners.drop_duplicates().astype("object").merge(every_week, how="cross").loc[:, KEY]
-    )
-
-    if len(figures):
-        keys = grid.union(cast(pd.MultiIndex, figures.index))
-        rows = figures.reindex(keys).fillna(0).astype("int64")
-    elif len(grid):
-        rows = pd.DataFrame(0, index=grid, columns=list(COUNT_COLUMNS), dtype="int64")
-    else:
-        return empty_rows()
-
-    rows = rows.rename_axis(KEY).reset_index()
-    orders = rows["outbound_orders_count"]
-    rate = (rows["discrepancy_events_count"] / orders.where(orders > 0)).round(RATE_DECIMALS)
-    rows["discrepancy_rate"] = rate.fillna(0.0).astype("float64")
-    rows = rows.astype({"warehouse": "object", "client_id": "object", "week_start": "object"})
-    return rows.sort_values(["week_start", "warehouse", "client_id"], ignore_index=True).loc[
-        :, list(ROW_COLUMNS)
-    ]
-
-
-def build_rollup(events: pd.DataFrame, products: pd.DataFrame, weeks: tuple[date, ...]) -> Rollup:
-    """Normalize, resolve clients, exclude, deduplicate and aggregate.
+def prepare_events(
+    events: pd.DataFrame, products: pd.DataFrame, weeks: tuple[date, ...]
+) -> PreparedEvents:
+    """Normalize, resolve clients, exclude and deduplicate: what the KPIs may count.
 
     `events` has the `EVENT_COLUMNS` of extraction; `products` has
-    `PRODUCT_COLUMNS`. Returns exactly the destination columns, sorted by
-    `week_start, warehouse, client_id`, plus every excluded `eventId` and why.
+    `PRODUCT_COLUMNS`. Every event comes out either countable, reduced to
+    `COUNTABLE_COLUMNS`, or excluded with its `eventId` and reason.
     """
     normalized = resolve_client(normalize_events(events), products)
     reason = exclusion_reasons(normalized, weeks)
@@ -360,6 +343,15 @@ def build_rollup(events: pd.DataFrame, products: pd.DataFrame, weeks: tuple[date
     reason.loc[duplicated[duplicated].index] = "duplicate_business_key"
     counted = normalized[reason.isna()]
 
+    countable = pd.DataFrame(
+        {
+            "event_type": counted["event_type"].astype("object"),
+            "warehouse": counted["warehouse"].astype("object"),
+            "client_id": counted["client_id"].astype("object"),
+            "week_start": counted["week_start"],
+            "quantity": counted["quantity_value"],
+        }
+    ).reset_index(drop=True)
     excluded = reason.dropna()
     exclusions = pd.DataFrame(
         {
@@ -368,11 +360,187 @@ def build_rollup(events: pd.DataFrame, products: pd.DataFrame, weeks: tuple[date
         }
     ).reset_index(drop=True)
     tally = excluded.value_counts()
-    return Rollup(
-        rows=aggregate(counted, products, weeks),
+    return PreparedEvents(
+        countable=countable,
         exclusions=exclusions if len(exclusions) else empty_exclusions(),
         events_read=len(normalized),
         events_excluded={name: int(tally.get(name, 0)) for name in EXCLUSION_REASONS},
+    )
+
+
+# --- The four KPIs (BRIEFING section 2) ----------------------------------------------
+#
+# Each takes countable events (`COUNTABLE_COLUMNS`) and returns one row per
+# `(warehouse, client_id, week_start)` that had the KPI's event, with its
+# column of the destination table. Keys without the event are left to
+# `assemble_rows`, which writes their zeros.
+
+
+def _figure_frame(rows: pd.DataFrame, *figures: str) -> pd.DataFrame:
+    keyed = rows.astype(dict.fromkeys(KEY, "object"))
+    return keyed.sort_values(KEY, ignore_index=True).loc[:, [*KEY, *figures]]
+
+
+def _empty_figure(name: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            **{key: pd.Series(dtype="object") for key in KEY},
+            name: pd.Series(dtype="int64"),
+        }
+    )
+
+
+def _events_of(countable: pd.DataFrame, event_type: str, kpi: str) -> pd.DataFrame:
+    """The countable events of one type, after checking a KPI can count them."""
+    missing = [name for name in COUNTABLE_COLUMNS if name not in countable.columns]
+    if missing:
+        raise KpiInputError(f"{kpi} needs the column(s) {', '.join(missing)}")
+    events = countable[(countable["event_type"] == event_type).fillna(False).astype(bool)]
+    keyless = int(events.loc[:, KEY].isna().any(axis=1).sum())
+    if keyless:
+        raise KpiInputError(f"{kpi}: {keyless} event(s) have no warehouse, client_id or week_start")
+    return events
+
+
+def _count_per_key(events: pd.DataFrame, name: str) -> pd.DataFrame:
+    if events.empty:
+        return _empty_figure(name)
+    return _figure_frame(events.groupby(KEY).size().rename(name).reset_index(), name)
+
+
+def _is_unit_count(value: object) -> bool:
+    """A whole number of units, at least 1. Not text, not a flag, not missing."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        return False
+    units = float(value)
+    return units >= 1 and units.is_integer()
+
+
+def inbound_volume(countable: pd.DataFrame) -> pd.DataFrame:
+    """Inbound Volume (`inbound_units_count`): units of a client's goods a warehouse received.
+
+    The sum of `quantity` over `inbound_order_created`. A quantity that is not
+    a whole number of at least 1 is refused, never summed (`KpiInputError`).
+    """
+    inbound = _events_of(countable, INBOUND, "Inbound Volume")
+    unusable = int((~inbound["quantity"].map(_is_unit_count).astype(bool)).sum())
+    if unusable:
+        raise KpiInputError(
+            f"Inbound Volume: {unusable} inbound event(s) have a quantity that is not a whole"
+            " number of at least 1"
+        )
+    if inbound.empty:
+        return _empty_figure("inbound_units_count")
+    units = inbound.assign(inbound_units_count=inbound["quantity"].astype("int64"))
+    volume = units.groupby(KEY)["inbound_units_count"].sum().reset_index()
+    return _figure_frame(volume, "inbound_units_count")
+
+
+def outbound_throughput(countable: pd.DataFrame) -> pd.DataFrame:
+    """Outbound Throughput (`outbound_orders_count`): orders picked and dispatched.
+
+    A count of `outbound_order_created` events: orders, not units.
+    """
+    outbound = _events_of(countable, OUTBOUND, "Outbound Throughput")
+    return _count_per_key(outbound, "outbound_orders_count")
+
+
+def stockout_frequency(countable: pd.DataFrame) -> pd.DataFrame:
+    """Stockout Frequency (`stockout_events_count`): times a SKU fell below the minimum.
+
+    A count of `stock_threshold_triggered` events, `low` and `out_of_stock`
+    crossings alike: a product dropping 12 -> 5 -> 0 in one week counts 2.
+    """
+    crossings = _events_of(countable, THRESHOLD, "Stockout Frequency")
+    return _count_per_key(crossings, "stockout_events_count")
+
+
+def discrepancy_rate(countable: pd.DataFrame, outbound_orders: pd.DataFrame) -> pd.DataFrame:
+    """Discrepancy Rate: `discrepancy_events_count / outbound_orders_count`, 0 without orders.
+
+    `outbound_orders` is `outbound_throughput`'s result: the denominator. The
+    rate is rounded to `RATE_DECIMALS` here, so a re-run gives the same value and
+    the load sees the row as unchanged. Every key with either a discrepancy or
+    an outbound order gets a row; a percentage is the dashboard's job.
+    """
+    found = _events_of(countable, DISCREPANCY, "Discrepancy Rate")
+    discrepancies = _count_per_key(found, "discrepancy_events_count")
+    orders = outbound_orders.loc[:, [*KEY, "outbound_orders_count"]].astype(
+        dict.fromkeys(KEY, "object")
+    )
+    combined = discrepancies.merge(orders, on=KEY, how="outer")
+    counts = ["discrepancy_events_count", "outbound_orders_count"]
+    combined[counts] = combined[counts].fillna(0).astype("int64")
+    shipped = combined["outbound_orders_count"]
+    rate = (combined["discrepancy_events_count"] / shipped.where(shipped > 0)).round(RATE_DECIMALS)
+    combined["discrepancy_rate"] = rate.fillna(0.0).astype("float64")
+    return _figure_frame(combined, "discrepancy_events_count", "discrepancy_rate")
+
+
+def assemble_rows(
+    inbound: pd.DataFrame,
+    outbound: pd.DataFrame,
+    stockouts: pd.DataFrame,
+    discrepancies: pd.DataFrame,
+    products: pd.DataFrame,
+    weeks: tuple[date, ...],
+) -> pd.DataFrame:
+    """One row per `(warehouse, client_id, week_start)` with the four KPIs.
+
+    Takes the results of the four KPI functions. Every pair that owns products
+    gets a row for every computed week, with zeros when nothing happened, so a
+    missing row means only that the client has no products in that warehouse
+    (design 2.7 step 7). A key with no outbound orders has a rate of 0.
+    """
+    owners = products.loc[:, ["warehouse", "client_id"]].astype("string")
+    owners = owners[owners["warehouse"].isin(WAREHOUSES) & _valid_client_id(owners["client_id"])]
+    every_week = pd.DataFrame({"week_start": pd.Series(weeks, dtype="object")})
+    grid = owners.drop_duplicates().astype("object").merge(every_week, how="cross").loc[:, KEY]
+
+    figures = [inbound, outbound, stockouts, discrepancies]
+    # Plain object keys everywhere, so the event keys and the zero-row grid
+    # merge as one set instead of two that only look alike.
+    keys = (
+        pd.concat([grid, *(figure.loc[:, KEY] for figure in figures)], ignore_index=True)
+        .astype("object")
+        .drop_duplicates(ignore_index=True)
+    )
+    if keys.empty:
+        return empty_rows()
+
+    rows = keys
+    for figure in figures:
+        rows = rows.merge(figure.astype(dict.fromkeys(KEY, "object")), on=KEY, how="left")
+    rows[list(COUNT_COLUMNS)] = rows[list(COUNT_COLUMNS)].fillna(0).astype("int64")
+    rows["discrepancy_rate"] = rows["discrepancy_rate"].fillna(0.0).astype("float64")
+    return rows.sort_values(["week_start", "warehouse", "client_id"], ignore_index=True).loc[
+        :, list(ROW_COLUMNS)
+    ]
+
+
+def build_rollup(events: pd.DataFrame, products: pd.DataFrame, weeks: tuple[date, ...]) -> Rollup:
+    """Every step of the transform in one call: prepare, the four KPIs, assemble.
+
+    `events` has the `EVENT_COLUMNS` of extraction; `products` has
+    `PRODUCT_COLUMNS`. Returns exactly the destination columns, sorted by
+    `week_start, warehouse, client_id`, plus every excluded `eventId` and why.
+    The Prefect subflow runs the same steps as separate tasks.
+    """
+    prepared = prepare_events(events, products, weeks)
+    outbound = outbound_throughput(prepared.countable)
+    rows = assemble_rows(
+        inbound_volume(prepared.countable),
+        outbound,
+        stockout_frequency(prepared.countable),
+        discrepancy_rate(prepared.countable, outbound),
+        products,
+        weeks,
+    )
+    return Rollup(
+        rows=rows,
+        exclusions=prepared.exclusions,
+        events_read=prepared.events_read,
+        events_excluded=prepared.events_excluded,
     )
 
 

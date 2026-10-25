@@ -1,9 +1,9 @@
 # Weekly Warehouse & Client Performance Pipeline — Design
 
-- Status: **implemented** (Part 2, 2026-10-22). Section 10 maps the code to the phase checklist and lists where it departs from this design
-- Date: 2026-10-21 (robustness review 2026-10-22, section 9; implementation 2026-10-22, section 10)
-- Branch: `telemetry-tech-report` (design), `pipeline-design` (implementation)
-- Scope: sections 1-9 are the approved design. Section 10 records the implementation.
+- Status: **in production shape** (Part 3, 2026-10-25): stage subflows, KPI unit tests, the CLI and the leadership dashboard (section 11). Part 2, the first implementation, is section 10
+- Date: 2026-10-21 (robustness review 2026-10-22, section 9; implementation 2026-10-22, section 10; subflows and dashboard 2026-10-25, section 11)
+- Branch: `telemetry-tech-report` (design), `pipeline-design` (implementation), `pipeline-implementation` (Part 3)
+- Scope: sections 1-9 are the approved design. Section 10 records the implementation, section 11 the refactor into subflows; where they differ, section 11 is current.
 - Source of requirements: [`BRIEFING.md`](../../BRIEFING.md) (business performance pipeline), the tech lead's brief (`lead-instr.png`) and the phase checklist (`stages-todo.png`).
 - Builds on: [`docs/telemetry/telemetry-plan.md`](../../docs/telemetry/telemetry-plan.md), [`docs/telemetry/event-schemas.json`](../../docs/telemetry/event-schemas.json), `services/telemetry/` and `services/inventory/`.
 
@@ -556,6 +556,8 @@ Checklist:
 
 ### 4.2 Tasks (main flow)
 
+> Since Part 3 (2026-10-25) these tasks live in stage subflows, the transform is split into one task per KPI, and two names changed (`extract_source_events` is `extract_inventory_kpi_events`; `transform_weekly_rollup` became `prepare_kpi_events` plus the KPI tasks). Section 11.1 has the current table.
+
 | Task | Stage | Calls | Retries | Notes |
 |---|---|---|---|---|
 | `open_run` | — | `data/pipelines/run_log.py::open_run` | 2 | Idempotent per `flow_run_id`. Sweeps abandoned runs, then inserts or resumes the `running` row and fixes `arrival_cutoff`. Records `skipped` if another run holds the slot (3.3) |
@@ -1093,3 +1095,70 @@ Results are persisted to `data/raw/prefect-results/` (git-ignored). They hold co
 5. The API's 409 applies once a run row is `running`. Between the `POST` and the runner picking the run up, Prefect's `ENQUEUE` limit is what serialises runs.
 6. The Docker changes (code copied into the image, TinyDB volume moved to `/app/var`) were not run: Docker is not installed on the development machine.
 7. The week of 2026-10-19, the first with real order events, closes on Monday 2026-10-26 at 00:00 UTC. It is published by that morning's 06:00 run if the deployment is being served, or by any manual run afterwards.
+
+---
+
+## 11. Production shape (Part 3, 2026-10-25)
+
+Sources: the CTO's enhancement ticket (`lead-instr.png`, Part 3) and its phase checklist (`stages-todo.png`). Starting point: `data/pipelines/pipeline.py` as of section 10.
+
+**Phase 1 — Refactoring into subflows**
+
+- [x] The main flow `weekly_warehouse_client_performance` opens the run (`open_run`) and then invokes one `@flow` per stage of section 2.6, in sequence: `extract_weekly_warehouse_client_activity` (from `telemetry_events`, `products` and the inventory order tables), `compute_weekly_warehouse_client_kpis`, and `load_weekly_warehouse_client_performance` (into `reporting.weekly_warehouse_client_performance`). The subflows live in `data/pipelines/subflows/`, one module per stage.
+- [x] Every subflow takes explicit parameters and returns its output; nothing passes between them through module state. The eval directory and the code version are parameters too.
+- [x] The optional steps are subflows invoked with `return_state=True`: `measure_kpi_event_collection_health` (a failure publishes the figures as `degraded`) and `export_weekly_performance_eval_snapshot` (the secondary export to `data/eval/`; a failure is logged and the run completes).
+
+**Phase 2 — Unit tests**
+
+- [x] `tests/pipelines/test_pipeline.py` tests the transformation tasks one by one: `compute_inbound_volume`, `compute_outbound_throughput`, `compute_stockout_frequency`, `compute_discrepancy_rate`, plus `prepare_kpi_events` and `assemble_weekly_warehouse_client_rows`.
+- [x] Each test calls the task's own function (`task.fn`): no flow, no Prefect server, no database. Inputs are in-memory rows shaped like `telemetry_events` (event type plus payload fields).
+- [x] Defensive behaviour: a null quantity, text or a flag where a number is expected, a fraction, zero or a negative quantity, and a null warehouse, client or week are refused by the KPI tasks (`KpiInputError`). The same malformed telemetry is excluded with its reason by `prepare_kpi_events`, never counted and never fatal.
+- [x] Hand-calculated values against BRIEFING's definitions: Inbound Volume 120 + 45 + 9 = 174; Discrepancy Rate 3 / 8 = 0.375 and 1 / 3 = 0.3333; 0 when no order shipped; and one full week from raw telemetry rows to the destination row.
+- [x] `python -m pytest tests/pipelines/test_pipeline.py`: 43 passed.
+
+**Phase 3 — CLI after the refactor**
+
+- [x] `python data/pipelines/pipeline.py` ran the full ETL on Supabase without errors (exit 0, 0 inserted / 0 updated / 6 unchanged, so the refactor reproduces the published figures exactly). `--week-start 2026-10-12`, `--backfill 2026-10-05 2026-10-12` and `--flow-retries 0` also exit 0, and a non-Monday week still exits 2 before Prefect starts. `--serve` was checked with a real served run (Prefect server, `prefect deployment run`): the main flow and its five subflows completed. The `__main__` entry point and the run commands of 4.4 are unchanged.
+
+**Phase 4 — Business dashboard**
+
+- [x] `uis/backoffice` serves `/reporting` ("Weekly report" in the nav). It reads `GET /reporting/weekly-warehouse-client-performance` and `GET /reporting/pipeline-runs/latest` with the session token (`lib/reporting.ts`) and renders every KPI of BRIEFING section 2.
+- [x] Each KPI carries BRIEFING's exact name, what it measures in plain words, the week's total with its unit, and a bar per warehouse and client. The period is written out ("Week of Monday, 12 October 2026 to Sunday, 18 October 2026", weeks Monday to Sunday in UTC), with previous and next week controls.
+- [x] Written for Daniel Espinoza and Ana Whitfield: client slugs become names ("Stride Athletics"), the rate is a percentage with its counts ("37.5% (3 of 8 orders)"), a quiet week says what did not happen, a week that was never calculated is explained in plain words, and the run log's staleness and `degraded` verdict become plain notices. One table under the charts holds every figure of the week.
+- [x] Real data: the dashboard was checked in Chrome against the real API and Supabase (the weeks of 2026-10-05 and 2026-10-12, which hold zero rows), and with mocked non-zero figures for the bars, the notices and a 390 px phone layout.
+
+### 11.1 Flows and tasks
+
+| Flow | Tasks | Notes |
+|---|---|---|
+| `weekly_warehouse_client_performance` (main) | `open_run` | Retries, timeout, hooks and schedule as in 4.1-4.4. Records the failing stage: `extract`, `transform`, `load`, or `validate` when the load subflow's gate refuses the rollup |
+| `extract_weekly_warehouse_client_activity` | `extract_inventory_kpi_events`, `extract_product_clients`, `extract_inventory_order_counts` | Read-only; 3 transient-error retries each; results never persisted |
+| `compute_weekly_warehouse_client_kpis` | `prepare_kpi_events` → `compute_inbound_volume`, `compute_outbound_throughput` → `compute_discrepancy_rate`, `compute_stockout_frequency` → `assemble_weekly_warehouse_client_rows` | Pure (`data/process/weekly_rollup.py`). The KPI tasks and the assembly are cached by content for 1 hour; `prepare_kpi_events` is not, because its output holds one row per event |
+| `measure_kpi_event_collection_health` (optional) | `compute_collection_health` | Cached by content; `return_state=True` |
+| `load_weekly_warehouse_client_performance` | `validate_weekly_rows` → `load_weekly_rows` | The gate, then the one-transaction load of 3.1 |
+| `export_weekly_performance_eval_snapshot` (optional) | `write_eval_snapshot` | After the commit; `return_state=True` |
+| `backfill_weekly_warehouse_client_performance` | — | Unchanged: one main-flow run per week |
+
+### 11.2 Decisions
+
+| Decision | Why |
+|---|---|
+| One task per KPI, each on the countable events (`event_type, warehouse, client_id, week_start, quantity`) | The checklist asks for tests per KPI task, and each KPI now names its own rule. `prepare_kpi_events` keeps the screening of 2.7 (normalize, resolve client, exclude, dedupe) in one place, and `build_rollup` runs the same steps in one call for the tests and any caller outside Prefect |
+| The KPI tasks refuse malformed input instead of skipping it | `prepare_kpi_events` only hands over countable events, so a bad row reaching a KPI is a bug upstream. Refusing it fails the run with a recorded stage; skipping it would publish a wrong figure |
+| Data crosses subflow boundaries in `StageData` containers (`WarehouseClientActivity`, `WeeklyWarehouseClientKpis`) | Prefect stores every subflow run's parameters in its database, JSON-encoded where possible. A text DataFrame encodes, so the week's events and the per-client rows would have been copied into Prefect and its UI. The containers serialize as row counts (`{"events": {"rows": 1200}}`), which `tests/pipelines/test_pipeline_flow.py` pins |
+| Stage results are not persisted | On a flow retry, Prefect 3.9 starts a completed subflow again when its result was not persisted, instead of reusing it. Extraction then re-reads the same snapshot (the run row keeps its arrival cutoff) and the cached KPI tasks make the rest cheap. Covered by a retry test |
+| The cache key is generic (`content_cache_key`): task name, the source of the `data/process` modules, every parameter by content | Replaces 10.3's two hand-written keys. Persisted results now hold counts per warehouse, client and week and collection stats only; no event rows or event ids |
+| The dashboard reuses the incident panel's data-viz rules: one hue (`--brand-primary`, validated against the white card), a table with bars, values always written, status notices with icon and words | One visual language across the backoffice; nothing is reachable only by hovering, and the table holds every figure |
+
+### 11.3 Verification (2026-10-25)
+
+- Backend: 727 passed, 41 skipped (46 new: 43 in `tests/pipelines/test_pipeline.py`, 3 in `tests/pipelines/test_pipeline_flow.py`, which moved from `tests/`). Opt-in `tests/test_reporting_postgres.py`: 18 passed on Supabase, no test schemas left behind.
+- Backoffice: lint and typecheck clean; Jest 280 passed (18 new in `tests/frontend/backoffice/reporting.test.ts`).
+- ruff format and check are clean on the changed files, and mypy is clean on `data/` and `tests/pipelines/`.
+- Supabase after the runs: still the 6 zero rows, plus the verification runs in `reporting.pipeline_runs`.
+
+### 11.4 Not done yet
+
+1. Sections 10.5 items 1-7 still stand (the role and Secret block, Automations, the Variable, the `client_id` event property, Docker).
+2. `/reporting` is not in the telemetry section catalogue (`lib/telemetry-routes.ts`, `event-schemas.json`), so it emits no `section_viewed`. Adding a `reporting` section is an additive schema change for the telemetry plan.
+3. The first week with real order events (2026-10-19) closes on 2026-10-26; until a run publishes it, the dashboard shows the zero weeks of 2026-10-05 and 2026-10-12.
