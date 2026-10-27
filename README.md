@@ -49,6 +49,10 @@ ai-engineering-project-template/
 4. **Read** `AGENTS.md` so you know which skills are available when working with AI.
 5. **Build** your milestone deliverables inside `apps/`, reusing `packages/shared-types` and `pipelines/data` as needed.
 
+## TrackFlow development stack
+
+For the Dockerized Next.js and FastAPI development environment, see [Docker Development](./docs/DOCKER-DEV.md). It covers the one-time local `.env` setup, Compose startup, service URLs, and the external candidate-records API dependency.
+
 ---
 
 ## Milestones (reference)
