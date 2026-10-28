@@ -3,8 +3,8 @@
 HTTP only: parse, call `data.pipelines`, map errors to status codes. Whether a
 week was computed, what it holds and how a run starts are decided there; no
 pipeline logic is duplicated here. This module is separate from
-`services/telemetry/`, and imports nothing from it: `GET /telemetry/report`
-keeps serving engineering, this serves the business.
+`services/telemetry/`, and imports nothing from it: the technical report
+(`POST /telemetry/report`) serves engineering, this serves the business.
 
 All three routes take a bearer token, like `/inventory` and `/suppliers`:
 per-client volumes are commercially sensitive (design Q6). Responses expose no
@@ -36,7 +36,7 @@ router = APIRouter(prefix="/reporting", tags=["reporting"])
 
 
 def _invalid(location: list[str], message: str) -> HTTPException:
-    # The same 422 body FastAPI produces, as `GET /telemetry/report` does.
+    # The same 422 body FastAPI produces, as `POST /telemetry/report` does.
     return HTTPException(
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         [{"loc": location, "msg": message, "type": "value_error"}],

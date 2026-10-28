@@ -54,6 +54,19 @@ def dispose_engine() -> None:
     get_engine.cache_clear()
 
 
+def reset_engine_after_fork() -> None:
+    """Forget an engine inherited from a parent process, without closing its connections.
+
+    A Celery worker child is a fork: any pooled connection it inherited shares
+    its socket with the parent. `dispose_engine` would close those sockets
+    under the parent; `dispose(close=False)` only drops this process's
+    references, and the next `get_engine()` builds a fresh pool.
+    """
+    if get_engine.cache_info().currsize:
+        get_engine().dispose(close=False)
+    get_engine.cache_clear()
+
+
 # `products.client_id` arrived after the table existed, and `create_all` never
 # alters a table, so the column and its slug check are added here when missing.
 _CLIENT_ID_COLUMN = "ALTER TABLE products ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)"

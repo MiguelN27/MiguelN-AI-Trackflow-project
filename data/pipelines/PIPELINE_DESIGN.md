@@ -70,6 +70,8 @@ The plan's minimum-stock rule uses the documented display bands: 0 is out of sto
 
 `GET /telemetry/report?start_date=&end_date=` (`services/telemetry/report.py` → `analysis.py`) computes the report on request from `telemetry_events`. It defaults to the last 7 days, groups by UTC day and caches the result for 60 s.
 
+> Since DEV-55 (2026-10-27) the report is asked for with `POST /telemetry/report`, which answers 202 with a `task_id`; a Celery worker computes it and `GET /tasks/{task_id}` returns it. The 60 s cache was removed. See `docs/ASYNC_TASKS.md`.
+
 | Metric | Engineering question it answers |
 |---|---|
 | `events_per_day` | Is telemetry flowing, and how busy is the system? |

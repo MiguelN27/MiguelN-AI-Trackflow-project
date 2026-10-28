@@ -8,7 +8,8 @@ pipelines, not here.
 Every public metric function follows the same rules:
 
 - It takes an explicit `[start, end)` window and has no default of its own;
-  `GET /telemetry/report` resolves the period once and passes it to all of them.
+  `POST /telemetry/report` resolves the period once, and the report task
+  passes it to all of them.
 - It loads only the events it needs, transforms them with Pandas and returns
   JSON-ready rows: a list of dicts holding str, int, float, bool or None.
 - It is independent and side-effect free: it never calls another metric

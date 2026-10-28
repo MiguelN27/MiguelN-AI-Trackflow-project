@@ -18,6 +18,7 @@ dependencies = [
     "supabase>=2.33.0",
     "pandas>=2.3",
     "prefect>=3",
+    "celery[redis]>=5.6,<6",
 ]
 
 [project.scripts]
