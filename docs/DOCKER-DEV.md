@@ -28,11 +28,16 @@ docker compose up --build
 | Backoffice | http://localhost:3001 | Next.js internal console |
 | FastAPI | http://localhost:8000/docs | API and OpenAPI docs |
 | PostgreSQL | Docker network only | Local inventory database |
+| Redis | localhost:6379 | Celery broker and result backend ([Async Tasks](./ASYNC_TASKS.md)) |
+| Worker | none | Celery worker running the tasks the API enqueues |
+| Flower | http://localhost:5555 | Queue monitoring: queued, running and finished tasks |
 
 Both Next.js apps run in the single `ui` container. Their `/backend/...` requests are rewritten server-side to the `api` service; browser code does not need to resolve Docker service names. The website's candidate-records API remains external and uses the browser-reachable `NEXT_PUBLIC_API_URL` from `.env`.
 
-The named `trackflow-development` network provides service-name DNS. PostgreSQL data and TinyDB data survive container recreation in named volumes. Source directories are bind-mounted for reload; dependency and Next.js build directories use separate volumes so host mounts do not hide container-installed files.
+The named `trackflow-development` network provides service-name DNS. PostgreSQL data, TinyDB data and Redis's append-only file (queued tasks) survive container recreation in named volumes. Source directories are bind-mounted for reload; dependency and Next.js build directories use separate volumes so host mounts do not hide container-installed files.
 
 The API's local PostgreSQL URL uses `sslmode=disable` only with `APP_ENV=development`. Other environments continue to require PostgreSQL SSL. The local sample JWT secret and database password are placeholders for this development stack, not production credentials.
+
+Redis and Flower are published on `127.0.0.1` only: neither has a password. The `worker` builds from the same image as `api` and reads the same settings; `REDIS_URL` inside Compose is `redis://redis:6379/0` (override with `COMPOSE_REDIS_URL`). Run either this worker or `npm run worker` on the host, not both: they share Redis but use different databases.
 
 Stop the containers with Ctrl+C. `docker compose down` preserves named data volumes; removing volumes deletes local database and API data.

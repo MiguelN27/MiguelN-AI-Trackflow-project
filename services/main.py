@@ -35,6 +35,7 @@ from services.inventory.routers.inventory import router as inventory_router
 from services.profiles.router import router as profiles_router
 from services.reporting.router import router as reporting_router
 from services.suppliers.router import router as suppliers_router
+from services.tasks.router import router as tasks_router
 from services.telemetry import database as telemetry_database
 from services.telemetry.router import router as telemetry_router
 from services.users.router import router as users_router
@@ -115,6 +116,7 @@ app.include_router(incidents_router)
 app.include_router(inventory_router)
 app.include_router(telemetry_router)
 app.include_router(reporting_router)
+app.include_router(tasks_router)
 
 # Error translation.
 #

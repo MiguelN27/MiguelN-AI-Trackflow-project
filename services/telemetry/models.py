@@ -2,8 +2,9 @@
 
 `TelemetryEvent` mirrors the envelope in `docs/telemetry/event-schemas.json` and
 is the contract every stored event meets. Per-event `properties` are not checked
-against their individual schemas yet. `TelemetryReport` is what
-`GET /telemetry/report` answers.
+against their individual schemas yet. `TelemetryReport` is the result of the
+`telemetry.generate_report` task that `POST /telemetry/report` enqueues, as
+`GET /tasks/{task_id}` returns it.
 """
 
 from datetime import date, datetime
@@ -48,7 +49,7 @@ class TelemetryReceipt(BaseModel):
     rejected: int
 
 
-# --- GET /telemetry/report ---------------------------------------------------
+# --- The technical report ----------------------------------------------------
 # One model per metric row of `services/telemetry/analysis.py`; that module's
 # docstrings say what each field measures.
 

@@ -4,21 +4,27 @@
 pre-login events. Each event is validated on its own and the valid ones are
 stored in `telemetry_events`.
 
-`GET /telemetry/report` serves the operational metrics calculated from those
-events. It is unauthenticated at this stage, like the incident routes: it
-returns aggregates only - counts, rates, latencies per route template - and no
-user, session or event identifiers.
+`POST /telemetry/report` asks for the operational metrics calculated from
+those events. Building them reads the whole period into pandas, so since
+DEV-55 the endpoint only validates the period, enqueues the work for the
+Celery worker and answers 202 with a `task_id`; `GET /tasks/{task_id}` serves
+the report once it is ready. It is unauthenticated at this stage, like the
+incident routes: the report holds aggregates only - counts, rates, latencies
+per route template - and no user, session or event identifiers.
 """
 
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
+from services.tasks.models import TaskAccepted
+from services.tasks.service import TaskQueueUnavailable, enqueue
 from services.telemetry import report, service
-from services.telemetry.models import TelemetryBatch, TelemetryReceipt, TelemetryReport
+from services.telemetry.models import TelemetryBatch, TelemetryReceipt
+from services.telemetry.tasks import generate_telemetry_report
 
 MAX_BODY_BYTES = 256 * 1024
 
@@ -58,8 +64,9 @@ async def receive_events(request: Request) -> TelemetryReceipt:
         ) from None
 
 
-@router.get("/report", response_model=TelemetryReport)
-async def get_report(
+@router.post("/report", status_code=status.HTTP_202_ACCEPTED, response_model=TaskAccepted)
+def request_report(
+    response: Response,
     start_date: datetime | None = Query(
         default=None,
         description="Start of the period, inclusive, in ISO 8601. Read as UTC without an "
@@ -70,23 +77,28 @@ async def get_report(
         description="End of the period, exclusive, in ISO 8601. Read as UTC without an "
         "offset. Defaults to now.",
     ),
-) -> TelemetryReport:
-    """Operational metrics for the period: volume, error rate, latency, dominant events.
+) -> TaskAccepted:
+    """Queue the operational metrics for the period and answer at once with the task id.
 
-    The same period asked again within 60 seconds is answered from the cache
-    without recalculating.
+    The period is resolved here, at request time, so "the last seven days"
+    means the seven days before this request, however long the task waits in
+    the queue. An invalid period is refused before anything is queued. Poll
+    the `Location` header, `GET /tasks/{task_id}`, for the report. A sync
+    route: publishing to Redis blocks.
     """
     try:
-        return await run_in_threadpool(
-            report.get_report, start_date, end_date, now=datetime.now(timezone.utc)
-        )
+        start, end = report.resolve_period(start_date, end_date, now=datetime.now(timezone.utc))
     except report.InvalidPeriod as exc:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             [{"loc": ["query", "start_date"], "msg": str(exc), "type": "value_error"}],
         ) from None
-    except report.ReportUnavailable as exc:
-        logger.error("telemetry report failed: %s", exc)
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "Telemetry report unavailable"
-        ) from None
+
+    try:
+        task_id = enqueue(generate_telemetry_report, start.isoformat(), end.isoformat())
+    except TaskQueueUnavailable as exc:
+        logger.error("telemetry report could not be queued: %s", exc)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Task queue unavailable") from None
+
+    response.headers["Location"] = f"/tasks/{task_id}"
+    return TaskAccepted(task_id=task_id)

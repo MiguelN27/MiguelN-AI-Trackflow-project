@@ -14,6 +14,7 @@ from services.core import db as core_db
 from services.incidents.read_cache import clear_read_cache
 from services.inventory import database as inventory_database
 from services.main import app
+from services.tasks.celery_app import celery_app
 from services.telemetry import database as telemetry_database
 
 # Settings every test reads, whatever the developer's `.env` holds. Environment
@@ -32,7 +33,33 @@ TEST_SETTINGS = {
     "FRONTEND_BASE_URL": "http://localhost:3000",
     "SUPABASE_URL": "https://test-project.supabase.co",
     "SUPABASE_SECRET_KEY": "sb_secret_test_only",
+    # A closed port, like DATABASE_URL: the tests use Celery's memory transport.
+    "REDIS_URL": "redis://127.0.0.1:1/0",
 }
+
+
+def _configure_celery_for_tests() -> None:
+    """Celery's in-memory transport and result store instead of Redis, for every test.
+
+    Set before the app's configuration is first read, these win over the
+    lazily read REDIS_URL, and nothing connects anywhere. The app is then
+    finalized here, under the test settings: left to happen on first use, it
+    could happen during collection - pytest inspects a test module's imported
+    task proxies - before `pinned_settings` runs, and a failure to read
+    settings there would leave the tasks half bound.
+    """
+    celery_app.conf.update(broker_url="memory://", result_backend="cache+memory://")
+    with pytest.MonkeyPatch.context() as patch:
+        for name, value in TEST_SETTINGS.items():
+            patch.setenv(name, value)
+        patch.delenv("CELERY_BROKER_URL", raising=False)
+        patch.delenv("CELERY_RESULT_BACKEND", raising=False)
+        config.get_settings.cache_clear()
+        celery_app.finalize(auto=True)
+    config.get_settings.cache_clear()
+
+
+_configure_celery_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +74,14 @@ def pinned_settings(monkeypatch):
     config.get_settings.cache_clear()
     yield
     config.get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def isolated_task_queue(monkeypatch):
+    """Celery reads these two variables ahead of its configuration: a shell that
+    exports them must not send a test's tasks to a real Redis."""
+    monkeypatch.delenv("CELERY_BROKER_URL", raising=False)
+    monkeypatch.delenv("CELERY_RESULT_BACKEND", raising=False)
 
 
 @pytest.fixture(autouse=True)

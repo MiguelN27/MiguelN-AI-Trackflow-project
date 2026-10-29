@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -43,6 +44,11 @@ class Settings(BaseSettings):
     supabase_url: str = Field(pattern=r"^https://")
     supabase_secret_key: SecretStr = Field(min_length=1)
 
+    # Redis is both the Celery broker and its result backend (DEV-55). The API
+    # enqueues on it and the worker consumes from it, so both must read the same
+    # value. Secret because a Redis URL can carry a password.
+    redis_url: SecretStr = SecretStr("redis://localhost:6379/0")
+
     @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, value: SecretStr, info: ValidationInfo) -> SecretStr:
@@ -55,10 +61,7 @@ class Settings(BaseSettings):
                 and (url.port is None or 0 < url.port <= 65535)
                 and (
                     sslmode in {"require", "verify-ca", "verify-full"}
-                    or (
-                        sslmode == "disable"
-                        and info.data.get("app_env") == "development"
-                    )
+                    or (sslmode == "disable" and info.data.get("app_env") == "development")
                 )
             )
         except (ArgumentError, ValueError):
@@ -68,6 +71,19 @@ class Settings(BaseSettings):
                 "Must be a PostgreSQL connection URL with credentials and SSL enabled "
                 "outside development"
             )
+        return value
+
+    @field_validator("redis_url")
+    @classmethod
+    def validate_redis_url(cls, value: SecretStr) -> SecretStr:
+        parsed = urlsplit(value.get_secret_value())
+        try:
+            valid = parsed.scheme in {"redis", "rediss"} and bool(parsed.hostname)
+            valid = valid and (parsed.port is None or 0 < parsed.port <= 65535)
+        except ValueError:  # a non-numeric or out-of-range port
+            valid = False
+        if not valid:
+            raise ValueError("Must be a redis:// or rediss:// URL with a host")
         return value
 
     @field_validator("frontend_base_url")
