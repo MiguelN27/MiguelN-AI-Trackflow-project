@@ -1,6 +1,476 @@
 # Development Progress
 
-Last updated: 2026-10-25
+Last updated: 2026-11-13
+
+## Update 2026-11-13 - Agent memory and self-improvement (MEM-092)
+
+Goals accomplished. The brief is ticket MEM-092 (the updated `lead-instr.png`), with its 5-section checklist in `stages-todo.png`. The rules for what may and must never be remembered are in the developer-supplied root `memory-briefing.md`. The work is on `feature/mcp-company-tools` and extends the same LangGraph agent that consumes the MCP server: no new graph, no second agent. The full write-up is in `docs/agent/agent-memory.md`, with the evidence in `docs/agent/memory-evidence.md`.
+
+- Decided with the developer: a SQLite backend in its own file, memory **shared** by all agent users (each entry names its approver), and `memory-briefing.md` as the source of the rules.
+- **Memory architecture:**
+  - `services/agent/memory/store.py`: an explicit read/write interface, separate from Qdrant (a guard test: no memory or agent code writes to `trackflow_knowledge`).
+  - The database enforces one pending proposal per conversation and one active memory per carrier + country (partial unique indexes), and an append-only decision log (triggers).
+  - The reasons are written up in the doc.
+- **Self-evaluation and proposal:**
+  - One structured call (`respond.py`: answer + `memory_check` + `memory_proposal`).
+  - The criterion is rendered from `policy.py`, which holds the briefing's lists verbatim (drift test). A regex validator, run three times, backs up the model for B2C **and** B2B locations, internal routes, single-package incidents and negotiations.
+  - The proposal is asked inside the response with a fixed template.
+  - The planner's `note_team_update` brings a no-evidence update to the self-evaluation.
+- **Confirmation and log:**
+  - The next message is classified first: a forced `classify_reply` call, then deterministic rules. Approval needs confidence >= 0.8 and a decision span really in the message.
+  - Discarded: unclear, a change of topic, a classifier failure, 24 h with no answer.
+  - An edit is asked again with the user's text before it is stored.
+  - "Yes, and <question>" is resolved, then answered.
+  - Every event is logged with the content, the decision, the redacted originating message, the user and the time.
+- **Consolidation and cleanup:**
+  - `topic_key` by carrier + country (route, or client). Updates are merged only through an approved proposal that shows what it replaces; the old entry is `superseded`.
+  - Duplicates are suppressed.
+  - TTLs: 14 days for incidents (at most 30), 180 for carrier rules, 365 for preferences.
+  - Caps of 24 / 20 / 50 with least-recently-used eviction, all logged.
+- **API and CLI:**
+  - `POST /agent/query` with `conversation_id`; `GET /agent/memory`;
+  - `npm run agent -- chat`, `memory list|log|show|cleanup`.
+- **Live verification** (4Geeks gateway models + Qdrant; MCP lookups unconfigured, so honest fallbacks):
+  - `npm run agent:record -- --memory` recorded 17 cases / 27 turns into `data/eval/agent/memory-traces.json`;
+  - `npm run agent:memory:eval`: **171 passed**, including both evidence cycles (approved -> recalled by a new conversation; rejected -> store unchanged).
+  - The first recording caught four real issues, all fixed before the final one:
+    - answers drifting into Spanish;
+    - Spanish memories;
+    - "it was a one-off" taken as a new request;
+    - "maybe later" labelled as a change of topic.
+  - `MIN_MEMORY_SCORE` 0.45 is measured (`npm run agent:memory:calibrate`): related >= 0.5085, unrelated <= 0.4072.
+- **Verification:**
+  - backend **1430 passed, 51 skipped**, without the two recorded-eval files;
+  - `ruff format` / `ruff check` clean on every changed Python file;
+  - mypy clean on `services/agent`, the scripts and the new tests (one existing finding in `test_agent_graph.py:113`, unchanged);
+  - `uv lock --check` OK, no new dependency;
+  - Compose config valid.
+
+Still missing / next goals:
+1. **Re-record the 17 Part 1-3 agent evals** (`data/eval/agent/traces.json`, still the Part 2 recording) against the live stack once Auth0 is configured: `LLM_TIMEOUT_SECONDS=120 npm run agent:record`, then `npm run agent:eval`. The routing-baseline check now sets the memory nodes aside, and a new check requires that no eval question is proposed as a memory.
+2. Auth0 configuration and the MCP Playground run, still pending from the MCP ticket (see the entry below).
+3. Commit when asked (AGENTS.md workflow). Ask whether `memory-briefing.md` and the updated PNGs go in.
+4. Optional:
+   - a UI for the conversation (the backoffice `/knowledge` page still calls `/knowledge/query`);
+   - Part 2 of Milestone 8 (the agent's harness);
+   - a reviewed-change path for shared memory, in production (omitted on purpose, per the ticket's disclaimer).
+
+## Update 2026-11-12 (later) - MCP Server for company tools: server, OAuth (MCP Auth), agent migration
+
+Goals accomplished. The brief is the updated `lead-instr.png`, with its checklist in `stages-todo.png`. The work is on the new branch `feature/mcp-company-tools`. The full write-up is in `docs/mcp/mcp-server.md` (the decisions, Auth0 setup, error and exit codes), with the generated `docs/mcp/TOOLS.md` and the runbook `docs/mcp/PLAYGROUND.md`.
+
+- Decided with the developer: Auth0 is the OAuth/OIDC provider, and **both** agent lookups (ticket and stock) move to MCP.
+- MCP Server (`mcps/trackflow_tools/`, FastMCP 3.4.11):
+  - Tools on the real routes: `create_incident`, `update_incident_status` (through `PATCH /api/incidents/{id}/status`), `get_incident` (id or helpdesk reference), `search_incidents`, and the read-only `query_inventory` (`list_products` / `get_product` / `list_orders`).
+  - Field names come from the APIs (drift tests), and the server never imports `services/`.
+  - Discovery: descriptions with "Use it when", the scopes and the errors; every field described; output schemas; annotations; `_meta.required_scopes`; server instructions; `npm run mcp:tools`; and `TOOLS.md`, kept in sync by a test.
+- Authentication and security:
+  - MCP Auth 0.2.0b1 in resource-server mode, with Protected Resource Metadata and bearer JWT validation (signature, exp, iss, aud) before any MCP method. FastMCP's auth is not used.
+  - Per-tool scopes `incidents:read|create|update` and `inventory:read`, enforced by `ScopeGuard` from MCP Auth's `AuthInfo`.
+  - The read-only inventory has four layers: no write scope exists; a startup policy check (exit 5); `ReadOnlyInventoryGuard` explicitly refuses write operations, `quantity` and write tool names with `inventory_read_only`; and a GET-only upstream client.
+  - Error contract: HTTP 401 codes with `WWW-Authenticate`; JSON tool error codes (`errors.ErrorCode`); CLI exit codes 0-5.
+  - An audit JSONL line per tool call (tool, client, scopes, arguments by value only when identifying, outcome, upstream requests, duration) plus `auth_rejected` records.
+  - Transport: Streamable HTTP, stateless, with a Host/Origin guard and optional CORS.
+- Two bugs caught during development, both fixed and covered by tests:
+  - **Auth context leaked between concurrent requests.** The bridge mutated `scope["state"]`, which asgi-lifespan shares across requests; it now creates a new dict per request.
+  - **MCP Auth's built-in "jwt" mode downloads the JWKS on every request.** It was replaced with MCP Auth's own `create_verify_jwt` and a cached `PyJWKClient`.
+- Agent migration:
+  - `lookup_ticket` / `lookup_stock` were replaced by the MCP client nodes `lookup_ticket_mcp` / `lookup_stock_mcp`. They use `langchain-mcp-adapters`, an allow-list of the three read tools, and an Auth0 client-credentials token with `incidents:read inventory:read`, cached.
+  - The direct modules (`tools/incidents.py`, `inventory.py`, `http.py`, `auth.py`) and `INCIDENTS_API_URL`, `INVENTORY_API_URL` and `AGENT_INVENTORY_*` are deleted. A guard test ensures there is no other path to the services.
+  - Routing unchanged: `data/eval/agent/routing-baseline.json` freezes the Part 2 decisions, with a new eval check against it, and a graph-level end-to-end test shows the same decisions.
+- Infra:
+  - npm `mcp`, `mcp:tools`, `mcp:token`;
+  - Compose service `mcp`, and the api's `AGENT_MCP_URL` / `AGENT_OAUTH_*`;
+  - the Dockerfile copies `mcps` (the editable install needs it);
+  - `.devcontainer/devcontainer.json` for Codespaces;
+  - `.env.example` documents every new setting.
+- Live rehearsal (local OIDC stand-in for Auth0, throwaway Postgres, real `npm run mcp` + API on :8010):
+  - all 14 Playground runbook rows behaved as designed; stock stayed at 8 after the write attempts;
+  - the agent CLI answered ticket 12 + Dell stock through `lookup_ticket_mcp` / `lookup_stock_mcp` with the real models;
+  - with the MCP server stopped, the honest fallback;
+  - `POST /agent/query` answered 45 units.
+- Verification:
+  - backend **1308 passed, 51 skipped** without the evals (128 new in `tests/mcps/`, plus the new agent client suite);
+  - `ruff format` / `ruff check` clean on every changed file (no unrelated hunks);
+  - mypy clean on `mcps`, `services/agent`, the recorder and the new tests;
+  - `uv lock --check` OK;
+  - Compose config valid.
+- **The agent evals: 45 failed, 102 passed.** This is expected until the re-recording: `traces.json` is still the Part 2 recording (old graph version and node names).
+
+Still missing / next goals:
+1. **Auth0, by the developer**: the API "TrackFlow MCP Server" with its 4 permissions, the M2M apps `trackflow-agent` (read scopes) and `trackflow-mcp-tester` (all), and the values in `.env` (steps in `docs/mcp/mcp-server.md`). Seed the service account `mcp-inventory@trackflow.com`. Then verify `.env` with a masked read.
+2. **MCP Playground from Codespaces** (`docs/mcp/PLAYGROUND.md`): public port 8100, `MCP_RESOURCE_URL` = the forwarded URL, `MCP_CORS_ORIGINS` = the Playground's origin; record the 14 rows' results in that file.
+3. **Re-record the agent evals** against the live stack (`LLM_TIMEOUT_SECONDS=120 npm run agent:record` with `npm run api` + `npm run mcp` + Auth0 + Qdrant), then `npm run agent:eval` must pass, including the routing-baseline check. If the planner model routes a case differently from Part 2, report it rather than editing the baseline.
+4. Commit when asked (AGENTS.md workflow). Include `mcps/`, `tests/mcps/`, `docs/mcp/`, `.devcontainer/`, `data/eval/agent/routing-baseline.json`, the updated eval cases and the re-recorded traces. Ask about the two PNGs.
+5. Housekeeping: an old uvicorn from 2026-11-11 is still listening on :8000 with pre-migration code, and the Part 2 throwaway container `tools-verify-pg` is still running. Ask the developer before stopping either.
+6. Optional: step-up authorization (an HTTP 403 `insufficient_scope` challenge); a Postgres-backed inventory fixture for `tests/mcps`; authentication on the incident routes themselves.
+
+## Update 2026-11-12 - MCP Server milestone: preparation (dependencies + migration point)
+
+Goals accomplished. The tech lead's new brief is the updated `lead-instr.png` with its checklist in `stages-todo.png` (both untracked). It asks for an OAuth-protected MCP Server under `mcps/` that exposes the Incidents Manager (create, update status, check status) and read-only inventory. The agent must then consume that server through `langchain-mcp-adapters` instead of calling the Incidents Manager directly. Work continues on `feature/langgraph-external-tools`; no branch was created yet.
+
+- The services the MCP Server wraps are the existing ones; it does not replace them:
+  - Incidents Manager, `services/incidents/router.py`, no auth: `POST /api/incidents`, `GET /api/incidents` (filters `status`, `origin`, `branch`, `category`, `reference`), `GET /api/incidents/summary`, `GET /api/incidents/{id}`, and `PATCH /api/incidents/{id}/status`, the lifecycle endpoint the brief requires for status changes. The vocabulary and transitions are in `trackflow_shared.incidents`.
+  - Inventory, `services/inventory/routers/inventory.py`, bearer token: reads are `GET /inventory/products`, `/products/{id}` and `/orders`; writes are `POST /inventory/products`, `/products/inbound` and `/products/outbound`.
+- Dependencies, added with `uv add` (no existing package changed version; `requirements.txt` re-exported with its header and Flask line):
+  - `fastmcp>=3.4.11,<4` (3.4.11). fastmcp 4 needs `mcp>=2.3`, and every `langchain-mcp-adapters` release needs `mcp<2`.
+  - `mcpauth>=0.2.0b1,<0.3` (0.2.0b1, a pre-release). Stable 0.1.1 has no resource-server mode or Protected Resource Metadata. 0.2.0b1 has `MCPAuth(protected_resources=ResourceServerConfig(...))`, `resource_metadata_router()` and `bearer_auth_middleware("jwt", resource=..., audience=..., required_scopes=...)`.
+  - `langchain-mcp-adapters>=0.3.2` (0.3.2), which brings `mcp` 1.30.0.
+  - The reason for the pins is in a comment in `pyproject.toml`.
+- Migration point (direct path to the Incidents Manager):
+  - Node `lookup_ticket` (`services/agent/nodes.py:76`) → `services/agent/tools/incidents.py::lookup_ticket` → `tools/http.py::get_json` (httpx GET to `INCIDENTS_API_URL` + `/api/incidents...`).
+  - It is wired in `graph.py:274` (NodeSpec) and `graph.py:322` (`route_after_ticket`), and declared to the planner as the `lookup_ticket` tool (`planner.py:38`, `:77`).
+  - A second direct caller is the recorder preflight, `scripts/record_agent_traces.py:110`. It must move too, or there are two paths.
+
+Still missing / next goals:
+1. Build `mcps/` (FastMCP + MCP Auth resource-server mode, per-tool scopes, explicit rejection of inventory writes, discovery docs, error codes, invocation log), then migrate `lookup_ticket` to MCP-loaded tools without changing the routing. Re-record the agent evals afterwards.
+2. Open design points:
+   - Transport: Streamable HTTP, since remote clients and the Playground need it.
+   - The OIDC provider for MCP Auth (none is configured yet).
+   - The agent graph is synchronous (`graph.stream`, sync endpoints), while MCP adapter tools are async-only.
+   - Whether `lookup_stock` also moves to MCP. The brief only requires incidents.
+3. Commit when asked (AGENTS.md workflow). Ask whether the new `lead-instr.png` / `stages-todo.png` belong in it.
+
+## Update 2026-11-11 (later) - Milestone 7 Part 2: live tools for the agent (incident manager + inventory)
+
+Goals accomplished. The tech lead's brief is the updated `lead-instr.png`, with its checklist in `stages-todo.png`. A support agent asking "what's the status of ticket 482?" got a made-up answer, because the status lives in the incident manager, not the knowledge base. Branch `feature/langgraph-external-tools`; full write-up in `docs/agent/agent-graph.md`.
+
+- Before starting:
+  - The incident manager (`/api/incidents`) and inventory (`/inventory/products`) are routers of this repo's API.
+  - Both were confirmed running on :8000. Supabase's pooler was timing out (TCP open, handshake never completes; REST gateway alive), so a throwaway `postgres:17-alpine` and scratch TinyDB/agent stores were used.
+  - Developer's rule: no new dependency for HTTP. `httpx` (already installed transitively) is used.
+- Decided with the developer:
+  - The incident API exposes the helpdesk reference, so "ticket 482" can be resolved.
+  - The inventory tool authenticates with a service account from `.env`.
+- Phase 0, incident API: `IncidentResponse.reference`, read-only from `source_incident_id`, plus a `?reference=TRF-000123` filter (400 on a non-canonical form, its own cache key). The shared rule `normalize_reference` lives in `trackflow_shared.incidents`. The backoffice ignores the extra field (291 Jest tests pass).
+- Phase 1, ticket tool (all seven checkmarks):
+  - typed contract (`TicketLookupInput` / `TicketLookupResult`, `TicketRecord` mirrors `IncidentResponse` with a drift test);
+  - reads the real incident manager over HTTP by reference, id or filters;
+  - no auth needed, which is documented;
+  - read-only (GET-only helper plus AST/transport tests);
+  - its own node (`lookup_ticket`) plus a conditional edge;
+  - numeric timeout of 4 s (`AGENT_TOOL_TIMEOUT_SECONDS`, at most 5);
+  - fallback node `answer_lookup_failed` with fixed honest texts.
+- Phase 2, stretch inventory tool: `lookup_stock` (SKU or name matched against live rows, optional warehouse), signing in as `AGENT_INVENTORY_EMAIL` / `AGENT_INVENTORY_PASSWORD` with a cached token. Same timeout and fallback.
+- Phase 3, routing:
+  - `plan_sources` asks `gpt-6-luna` to choose among `lookup_ticket`, `lookup_stock` and `search_knowledge_base` (tool calling, verified on the gateway first). The model only chooses; the graph runs each source as its own node, in the fixed order ticket, stock, knowledge base.
+  - Invented references, invalid arguments, unknown tools and duplicate calls are dropped with reasons. A planner failure falls back to the knowledge base, never raising.
+  - One tool per job.
+- Phase 4, tracing and evals:
+  - The trace shows the sources used, in order (`RunTrace.sources()`, `sources` in `GET /agent/runs/{id}`, `Sources:` in the CLI). Lookup rows show the endpoint, outcome and timing.
+  - 7 new eval cases:
+    - tool-not-RAG (ticket status, ticket search);
+    - RAG-not-tool (an inventory-sounding pricing question);
+    - both;
+    - stock;
+    - ticket not found;
+    - incident service down (recorded against a closed port).
+  - Re-recorded live: graph `faabff53fa40c2ca`, all 16 non-empty questions routed by the model's own choice, no fallback. **130 of 130 evals pass.**
+- Live verification (2026-11-11):
+  - CLI runs: ticket 12 (tool only), ticket 482 (not found, fixed answer), TRF-000043 plus the damaged-return policy (both, in order).
+  - `POST /agent/query` answered the Dell laptop stock (8, Zaragoza) and ticket 93 (in progress) in one run, with `sources: [incident_manager, inventory_manager]`.
+  - A hung incident service: `lookup_ticket` gave up at 4022 ms, and the run answered honestly in 7 s.
+  - The gateway stalled for about 10 minutes mid-session: the planner fell back to the knowledge base and `retrieve` returned a resumable 503, as designed.
+- Verification:
+  - backend 1317 passed, 51 skipped (1187 non-eval + 130 evals), run with `DYLD_LIBRARY_PATH` for XGBoost;
+  - `ruff format` / `ruff check` clean on the changed files (formatter hunks in untouched incident code reverted);
+  - mypy clean on `services/agent`, `services/incidents`, the shared rule, the recorder and the new tests (`uvx mypy --python-executable .venv/bin/python`).
+- Docs:
+  - `docs/agent/agent-graph.md` (rewritten for Part 2), `docs/INCIDENTS.md` (reference field and filter; incident routes have no auth);
+  - `TESTING.md`, `techContext.md`;
+  - `.env.example` (5 agent tool settings), `docker-compose.yml` + `docker-compose.env.example` (tool URLs and credentials for the api container).
+
+Still missing / next goals:
+1. Commit when the developer asks (AGENTS.md workflow). Include `data/eval/agent/` (cases + re-recorded traces). Ask whether the updated `lead-instr.png` and `stages-todo.png` belong in the commit. The PR must say that the incident routes have no auth.
+2. Create the real inventory service account in the developer's TinyDB store (`uv run seed-user --email agent-inventory@trackflow.com --role user`) and put `AGENT_INVENTORY_EMAIL` / `AGENT_INVENTORY_PASSWORD` in `.env`. It only exists in the session's scratch store.
+3. Supabase was unreachable again: resume the project in the dashboard if it is paused, then re-record the evals so the stock figures come from Supabase instead of the throwaway seed.
+4. Optional:
+   - point the backoffice `/knowledge` page at `/agent/query` and show its sources;
+   - show `reference` in the backoffice incident list;
+   - several tickets per question;
+   - Spanish fallback answers;
+   - a name filter on `GET /inventory/products` so stock matching moves server-side;
+   - declare `httpx` as a runtime dependency (only with the developer's approval).
+5. Still open from earlier: the trace retention purge, the geography mismatch (KB: Los Angeles; `context.md`: Monterrey), and the sales-forecast corrective action.
+
+## Update 2026-11-11 - Milestone 7 Part 1: the RAG flow as an explicit LangGraph graph
+
+Goals accomplished. The tech lead's ticket is `lead-instr.png`, with its checklist in `stages-todo.png`: make the RAG reasoning explicit and traceable before Part 2 adds capabilities. Branch `feature/langgraph-agent-base`; full write-up in `docs/agent/agent-graph.md`.
+
+- Dependencies:
+  - `uv add langgraph` (1.2.20, which pulls in `langchain-core` 1.8.0 and `langsmith`);
+  - `uv add langgraph-checkpoint-sqlite` (3.1.3, plus `sqlite-vec`);
+  - `requirements.txt` re-exported, with its header and Flask line kept.
+- Decided with the developer:
+  - checkpoints and traces in a local git-ignored SQLite file;
+  - a new `POST /agent/query` coexisting with `/knowledge/query`, with the backoffice unchanged;
+  - `{answer, run_id}` returned, plus a token-protected `GET /agent/runs/{run_id}` for the trace.
+- Agent graph (`services/agent/`), the first checklist:
+  - State: `question`, `error`, `context`, `answer`. It is minimal and has no conversation history.
+  - Four single-responsibility nodes:
+    - `receive_question`;
+    - `retrieve` (reuses `rag.retrieve`);
+    - `generate_answer` (reuses `rag.generate_answer` with retrieve's context; never `rag.query()`);
+    - `answer_no_information` (fixed honest text, no model call).
+  - Two real conditional edges, each writing its decision and reason to the trace:
+    - an empty question → `END`;
+    - no context ≥ 0.30 → `answer_no_information`.
+  - Compiled before any execution: in the API lifespan, startup fails with `AgentGraphBuildError`. Checked against LangGraph 1.2.20 first:
+    - `compile()` accepts an orphan node;
+    - a node returning an unknown key has it silently dropped;
+    - `get_graph()` draws a dead end as reaching `END`.
+
+    So our own checks were added: node contracts against `AgentState`, reachability from `START` and to `END` on the declarations, and a run-time guard on node writes.
+  - Checkpointing: `SqliteSaver` after every step (`thread_id = run_id`); `resume_run` continues a failed run from the failed node.
+- Tracing and evaluation, the second checklist:
+  - Every run writes `agent_runs` + `agent_run_events` (nodes in order with inputs, outputs, errors and timings; decisions with reasons). Readable by SQL, `npm run agent -- trace`, and `GET /agent/runs/{id}`.
+  - Evals:
+    - 10 cases in `data/eval/agent/eval-cases.json`;
+    - recorded once from the real models (`npm run agent:record`) into the committed `data/eval/agent/traces.json`;
+    - `npm run agent:eval` checks routing, the node contract (generation got exactly retrieve's output, retrieve ran once and first), grounding (BRIEFING facts in both the answer and a retrieved chunk), faithfulness of figures and freshness of the recording.
+    - **57 of 57 pass** on gpt-6-luna / pplx-embed-v1-0.6b, graph `b80c9d0318e7aba2`. The answers were read by hand as well: every rule (Black Friday, Sofía Ramos, Miguel Torres, Carlos Vega) is followed.
+- Endpoint, the third checklist:
+  - `POST /agent/query` only calls `runner.run_agent` (an AST test pins it);
+  - 422 when the graph refuses an empty question;
+  - 503 or 500 naming the failed step plus the `run_id`, never exception text or a traceback.
+- Live verification:
+  - Qdrant started from Compose after launching Docker Desktop (14 points intact);
+  - a CLI ask and trace;
+  - a resume demo: generation endpoint broken → failed at `generate_answer` → resumed with no second `retrieve`;
+  - the real API under uvicorn: 200 with its trace, 422, 401, and 503 with Qdrant stopped.
+  - Supabase was unreachable, so the API ran against a throwaway `postgres:17-alpine` container (`--rm`). The test user and runs went to scratch stores.
+- The `.env` on disk now holds the correct model IDs and the `/v1` base URL, so the 2026-11-08 "save `.env`" item is resolved.
+- Verification:
+  - backend 1104 passed, 51 skipped (980 + 124 new);
+  - the existing RAG suites pass unchanged;
+  - `ruff format` / `ruff check` clean;
+  - mypy clean on `services/agent`, the recorder and the new tests;
+  - `uv lock --check` OK.
+- Docs: `docs/agent/agent-graph.md` (new), a pointer in `docs/rag/rag-design.md`, `TESTING.md`, `techContext.md`, `.env.example` (`AGENT_STORE_PATH`), and `docker-compose.yml` (the api's `AGENT_STORE_PATH` on the `api_data` volume).
+
+Still missing / next goals:
+1. Commit when the developer asks (AGENTS.md workflow). Include `data/eval/agent/` (cases + recorded traces), not `data/agent/`. `lead-instr.png` and `stages-todo.png` show as untracked: confirm with the developer whether they belong in the commit.
+2. Part 2 (new capabilities/tools): add each as a node plus a conditional edge, extend `AgentState` only with the field the new node reads, and re-record the eval traces (the freshness check will demand it).
+3. Optional:
+   - point the backoffice `/knowledge` page at `/agent/query` and show the run's trace;
+   - a Spanish no-information answer;
+   - a trace retention purge;
+   - a Postgres checkpointer for multi-instance deployments;
+   - LangSmith as an extra sink.
+4. Supabase was unreachable during this session (the API's startup DB check failed), so check it before the next DB-backed task.
+5. Still open from earlier: the geography mismatch (KB documents: Los Angeles; `contexts/context.md`: Monterrey), the sales-forecast corrective action, and the full `docker compose up` needing the Compose variables in `.env`.
+
+## Update 2026-11-08 (night) - Milestone 7: first real run (Docker Qdrant + 4Geeks models)
+
+Goals accomplished:
+- Docker Desktop installed by the developer. Qdrant runs from Compose, is healthy, and is reached from `.venv`. The `docker` CLI is not on the shell PATH yet; it lives at `/Applications/Docker.app/Contents/Resources/bin`.
+- 4Geeks models configured (developer-owned `.env`) and checked against the gateway:
+  - base URL `https://llm.4geeks.ai/v1` (`/v1` required);
+  - IDs without the `litellm/` prefix;
+  - embeddings `pplx-embed-v1-0.6b` (1024 dimensions);
+  - generation `gpt-6-luna`, chosen over `deepseek-v4-flash` after both answered the same 9 questions with the same context. Both follow every briefing rule; DeepSeek adds unsourced remarks.
+- `npm run rag:setup` indexed 14 chunks (3/5/3/3) into `trackflow_knowledge`.
+- Threshold measured:
+  - On the original 15 questions (document wording) the score groups separated, and 0.48 was suggested.
+  - Real questions at 0.48 lost the "3 to 5 business days" chunk (0.444) and the Carlos Vega chunk (0.329). Both chat models then answered the delivery-times question wrongly.
+  - Added 5 `paraphrase` questions and 2 business-sounding out-of-scope ones. The groups now overlap (lowest correct 0.3285, highest out-of-scope 0.4489).
+  - `suggest_threshold` now gives a recall-first value when they overlap. **`MIN_SCORE = 0.30`.**
+  - Recall@3 = **100%** (20/20), on the ranking and with the threshold; 17 of 20 at rank 1.
+- Prompt: the `Sources:` line is left out when no passage was used (models were writing lines like "Sources: No relevant passage provided").
+- `LLM_TIMEOUT_SECONDS` setting (default 30, max 600). The gateway stalls for 30-120 s at times; the batch CLIs need `LLM_TIMEOUT_SECONDS=120`. Passed through Compose; documented in `.env.example`.
+- `docs/rag/rag-design.md`: the *Pending* sections are filled (models, dimension, threshold evidence, results, model choice).
+- Tests: backend 980 passed, 51 skipped (+8: timeout setting, recall-first suggestion). Ruff and mypy are clean.
+
+Still missing / next goals:
+1. The developer must **save** the corrected `.env` lines. The runs above passed `EMBEDDING_MODEL`, `GENERATION_MODEL` and `LLM_BASE_URL` as environment overrides, because the file on disk still held `litellm/...`, a placeholder and no `/v1`.
+2. The root `.env` lacks the Compose variables (`APP_ENV`, `COMPOSE_DATABASE_URL`, `POSTGRES_*`, `NEXT_PUBLIC_API_URL`), so the full `docker compose up` does not start. Qdrant alone was started with `--env-file docker-compose.env.example`.
+3. Try the backoffice page end to end (`npm run api` + `npm run dev:backoffice`) once `.env` is saved.
+4. Commit when asked (AGENTS.md workflow), including `data/eval/rag/retrieval_eval.json`.
+5. Still open: the geography mismatch (documents: Los Angeles; `context.md`: Monterrey).
+
+## Update 2026-11-08 (later) - Milestone 7: RAG knowledge assistant, Phases 1-6 + backoffice dark mode
+
+Goals accomplished. The CTO's ticket is `lead-instr.png`, with its phases in `stage-todo-1.png` and `stages-todo-2.png`. The brief is `contexts/RAG-briefing.md` (= the ticket's "company-BRIEFING.md"): Miguel Torres's commercial team asks policy questions in natural language and gets a generated, sourced answer in a salesperson's voice.
+- Preparation:
+  - Qdrant `v1.20.0` added to `docker-compose.yml` (localhost-only ports, `qdrant_data` volume, `QDRANT_URL` via `COMPOSE_QDRANT_URL`).
+  - `uv add qdrant-client` (1.20.0) and `uv add openai` (3.46.0, for the 4Geeks models' OpenAI-compatible API); `requirements.txt` re-exported (the Docker image installs from it).
+  - The four briefing documents were copied verbatim into `docs/company-knowledge-base/`; the user added them to `contexts/`.
+- Phase 1 (`data/process/knowledge_base.py`):
+  - `load_source_documents`;
+  - `split_into_chunks`: Markdown blocks, never cut mid-rule, intros merged with their lists, the title prefixed; 14 chunks, 3/5/3/3;
+  - `embed`: the dedicated embeddings model, NFC + whitespace normalisation;
+  - `setup()` into `trackflow_knowledge`, idempotent: uuid5 IDs, stale points deleted, the collection recreated on a vector-size change;
+  - `RagSettings` refuses the same model ID for embeddings and generation;
+  - CLI `npm run rag:setup [-- --dry-run]`.
+- Phase 2 (`data/pipelines/rag.py`):
+  - `retrieve` (k=5, `MIN_SCORE` applied twice, plain dicts);
+  - `build_messages`: salesperson voice and the briefing's four business rules; no digits in the system prompt, so every figure comes from the chunks;
+  - `generate_answer`: temperature 0, called even with no context;
+  - `query()` = `generate_answer(question, retrieve(question))`.
+- Phase 3 (`services/knowledge/`): `POST /knowledge/query` with a bearer token, `{question}` -> `{answer}` only, 503 on knowledge-base failures; the router imports only `query()`.
+- Phase 4 (`uis/backoffice`, `/knowledge`, "Knowledge assistant"):
+  - question box, example questions, distinct loading, failure and answer states;
+  - an empty or unreadable reply is an error;
+  - **dark mode for the whole backoffice**, chosen by the user over page-only: `globals.css` dark tokens plus Tailwind palette re-pointing, a new `--on-brand` token, `bg-white` -> `--surface`, all text pairs WCAG AA.
+  - Verified in Chrome (playwright-core from the scratchpad, API mocked) in light and dark: blank question blocked, loading, answer with sources, 503, empty answer. Reporting, incidents and login checked in dark mode.
+- Phase 5 tests:
+  - `tests/pipelines/test_rag.py` (22, with `retrieve` on in-memory Qdrant and a threshold-ignoring stub, and `query` with retrieval and the LLM mocked);
+  - `test_knowledge_base.py` (32), `test_rag_retrieval_eval.py` (12), `tests/test_knowledge_api.py` (10);
+  - Jest `knowledge.test.ts` (11).
+- Phase 5b: `data/eval/test-queries.json` (15 questions across the four documents, 2 about peaks, 4 out of scope) and `scripts/evaluate_rag_retrieval.py` (`npm run rag:eval`): Recall@3 on the ranking and with the threshold, plus the threshold evidence.
+- Phase 6: `docs/rag/rag-design.md` (flow, chunking, embedding practices, threshold method, prompt rules, API, UI, idempotency, eval, runbook, limitations).
+- The existing guard `test_pure_transforms_do_no_io` failed on `knowledge_base.py`. On the user's decision, `knowledge_base.py` is allow-listed as the one documented I/O module in `data/process/`; the guard still covers every other module.
+- Verification:
+  - backend 972 passed, 51 skipped (896 + 76 new);
+  - backoffice Jest 13 suites, 291 tests;
+  - `tsc` and ESLint clean;
+  - `ruff format`, `ruff check` (with the picked-up config and `--isolated`) and mypy on the new modules clean;
+  - both CLIs exit 2 with a clear message when no model is configured.
+
+Still missing / next goals:
+1. **The first real run**, now blocked only on **the 4Geeks model details** in `.env`: `EMBEDDING_MODEL`, `GENERATION_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`. Then run `npm run rag:setup` and `npm run rag:eval`.
+   - Done 2026-11-08: Docker Desktop is installed (engine 29.9.2, Compose v5.6.1). `docker compose up -d qdrant` started `qdrant/qdrant:v1.20.0`; the compose healthcheck reports healthy, the dashboard answers on `localhost:6333`, and `get_qdrant_client()` from `.venv` connects (server 1.20.0, no collections yet). Prep step 1 (Qdrant connectivity) is confirmed.
+   - The root `.env` currently fails Compose's parser (a stray character on its last line), so the full stack (`docker compose up`) cannot start until the developer fixes that line. Qdrant was started with `--env-file docker-compose.env.example`, without reading `.env`.
+2. Set `MIN_SCORE` (provisional 0.30) from the eval's threshold window. Record the model IDs, vector dimension, Recall@3 and threshold in `docs/rag/rag-design.md` (marked *Pending*), and commit `data/eval/rag/retrieval_eval.json`.
+3. Check real answers against the briefing constraints: Black Friday, international returns, storage discounts, carrier exceptions, and an out-of-scope question.
+4. Optional: Spanish questions in the eval set; `/knowledge` and `/reporting` in the telemetry section catalogue.
+5. The geography mismatch (KB documents: Los Angeles; `contexts/context.md`: Monterrey) is still open with the developer.
+6. Nothing is committed yet. Commit only on the developer's request, after the AGENTS.md pre-commit workflow.
+
+## Update 2026-11-08 - Sales forecast: formal technical evaluation (fit diagnosis)
+
+Goals accomplished. This is the tech lead's ticket in `lead-instr.png`, worked through the five phases of `stages-todo.png`. The ticket asks whether the forecast is under-fitted, over-fitted or well fitted, how stable it is, and what the specific corrective action is. The report is `data/eval/evaluation_report.md`, summarised in `docs/SALES_FORECAST.md → Technical evaluation`.
+- Before starting:
+  - The model reproduces exactly: a re-run gives byte-identical `metrics.json`, CSV and PNG, and its 23 tests pass.
+  - No new dependency was needed. Everything used is already in `pyproject.toml`, and any future addition goes through `uv add` only.
+- Phase 1, time-aware cross-validation (`scripts/sales_forecast_evaluation.py`):
+  - sklearn `TimeSeriesSplit(n_splits=5, test_size=6)` with expanding windows over the 60 usable training months (2019-01..2023-12, after the 36-month warm-up). Fold 1 trains on 30 months; the default sizing would have left it 10.
+  - `assert_chronological` refuses mixed, shuffled, gapped or overlapping folds.
+  - `check_fold_boundary_leakage` runs three tamper checks per fold. All pass on the real data.
+  - Metrics are reported as mean ± std (ddof=1).
+  - Validation is one month ahead, the same task as the training fit; the recursive error is reported next to it.
+- Phase 2, learning curves (`data/eval/learning_curve.png`):
+  - the same 5 CV windows with growing `max_train_size` (12 to 30 months);
+  - validation on 2023 with 12 to 48 training months.
+- Phase 3, metrics: MAE and RMSE for training and validation, in EUR and as % of mean monthly revenue.
+  - **Business cost:** under-forecasting costs more. Revenue tracks shipment volume, so a miss is a workload miss for warehouse staff and carrier capacity, and peak shortfalls cost more than proportionally.
+  - RMSE is therefore the decision metric and MAE the plain-language one. The signed bias is added because both metrics ignore direction.
+- Phase 4, diagnosis (`classify_fit`): **overfitting**.
+  - Validation RMSE is 4.51 ± 0.97% against 1.34 ± 0.19% in training (gap 3.37×). The learning-curve gap at 48 months is 3.38×, and validation was still falling (−7.5% in the last step).
+  - It is not underfitting: the model beats a seasonal-naive rule in 4 of 5 folds.
+  - **Root cause:** too much capacity for 30-60 rows. That is 17 features and depth-2 interactions, while more history does not exist.
+  - **Corrective action, proposed and not applied (developer's decision):** depth-1 trees + 9 compact features, chosen in CV over 3 alternatives. Validation RMSE 4.25 ± 0.44%: −6% on the mean, −55% on the fold spread, gap 1.46×.
+- Phase 5, tests: `tests/pipelines/test_sales_forecast_evaluation.py` (20 tests).
+  - The required chronological-order test.
+  - Refusal of broken folds.
+  - Leakage across fold boundaries, with a negative control: a centred window must be flagged.
+  - Learning-curve windows.
+  - MAE and RMSE mean ± std.
+  - The diagnosis rule and the selection rule.
+  - Test years ×3 leave the evaluation identical.
+  - Exit code 3 on a failed check.
+- CLI `scripts/evaluate_sales_forecast.py`:
+  - writes the report, chart and `data/eval/sales_forecast/evaluation.json`;
+  - deterministic (two runs give identical files) and takes about 7 s;
+  - exit codes 0 / 2 / 3.
+- `scripts/sales_forecast.py`: `forecast_recursive` gets an optional `feature_columns` (default unchanged). The shipped outputs are byte-identical after the change.
+- Docs: `docs/SALES_FORECAST.md` (section + pieces table), `data/eval/README.md`, `memory-bank/techContext.md`.
+- Verification:
+  - Full backend suite: 896 passed, 51 skipped (876 + 20 new).
+  - `ruff format`: clean.
+  - `ruff check`: clean apart from the E402 `sys.path` bootstrap shared with `train_sales_forecast.py`.
+  - mypy on the new files: clean with and without `pandas-stubs`. The 24 pre-existing stub errors in the 2026-11-06 files are unchanged.
+
+Still missing / next goals:
+1. Tech lead's decision on the corrective action. If approved, apply depth 1 + the 9 compact features in `scripts/sales_forecast.py`, re-run `train_sales_forecast.py` **once**, and compare the 2024-2025 metrics (the test years were never used to choose it).
+2. The peak is flattened: 5 of 6 Nov-Dec validation months are under-forecast, which is the expensive direction, and depth 1 + compact does not change it. An asymmetric loss (`reg:quantileerror` above the median) is the option to weigh with Thomas, a trade-off against RMSE.
+3. The growth-year bias flips sign with the briefing's alternating 9%/3% growth: an over-forecast in low years, an under-forecast in high years. A growth-regime feature or external drivers would address it.
+4. Still open from 2026-11-07: the developer's decision on the 24 `pandas-stubs` mypy errors, a permanent libomp install, and forecasting 2026 onwards.
+5. Nothing is committed yet. Commit only on the developer's request.
+
+## Update 2026-11-07 - Sales forecast: real-data run on the company dataset
+
+Goals accomplished (finishes the 2026-11-06 work against `stages-todo.png`, now with the real `contexts/company-sales.csv`, which the previous session could not read):
+- Data:
+  - The dataset is at `data/raw/trackflow_sales.csv`, the path the briefing names. It is an identical copy of `contexts/company-sales.csv`, and the CLI's default input.
+  - Verified against the briefing: 120 `consolidated` rows from 2016-01 to 2025-12, no blanks, gaps or duplicates (the cleaning report is all zeros), and every data-profile check passes.
+  - Measured patterns: yearly growth alternates high/low (9.6, 1.8, 9.4, 2.9, 8.0, 2.8, 10.1, 4.0, 7.9%), Nov-Dec +25/+24%, February −15.9%.
+- Results on the 2024-2025 test years (forecast recursively from the end of 2023):
+
+  | | XGBoost | Seasonal-naive baseline |
+  |---|---|---|
+  | MSE | 2.10e9 EUR² | 1.16e10 EUR² |
+  | RMSE, % of the mean month | 3.53% | 8.31% |
+  | MAPE | 2.75% | 7.33% |
+  | K2 = R² | 0.928 | 0.602 |
+  | Gini | 0.931 | 0.921 |
+
+  - 23 of 24 months fall inside the 80% range (±7.0% in year 1, ±7.5% in year 2). The exception is 2025-08, 0.87% under the lower edge.
+  - Parameters chosen: depth 2, 200 trees, learning rate 0.03.
+  - Runs are deterministic: two runs give identical outputs.
+- PSI noise check: `psi_shift_p_value` re-splits the pooled values at random (2000 permutations) to show how large PSI gets by chance.
+  - The seasonal-pattern PSI of 0.156 is labelled "moderate shift" by the rule of thumb, but p = 0.66, so it is within the noise of 24 test months, not a real shift.
+  - `metrics.json` and the CLI summary report `p_value_vs_no_shift` next to each PSI.
+- Fixes:
+  - If the CSV carried US/Spain rows, the US share means would have been labelled and printed as PSI values. They no longer are.
+  - `metrics.json` stores the dataset path repo-relative instead of an absolute home path.
+  - `requirements.txt` gets back its header comment and the `Flask>=3.1,<4` line, which the 2026-11-06 `uv export` had dropped.
+- Docs:
+  - `docs/SALES_FORECAST.md`: real results in place of the synthetic ones, a plain-language answer for Finance, the XGBoost justification backed by the numbers, the PSI noise check, and macOS setup without Homebrew.
+  - The `data/raw` READMEs (EN and ES) and the `data/eval` README (EN) list the new files.
+- Tests: 3 new in `tests/pipelines/test_sales_forecast.py`, for 23 in total.
+  - The 8/2 split and no-leakage rule on the real company file.
+  - The PSI p-value separates noise from a real shift.
+  - Market rows are not mislabelled as PSI.
+- Verification:
+  - Full backend suite: 876 passed, 51 skipped.
+  - `ruff format`: clean.
+  - `ruff check`: only the pre-existing E402 for the `sys.path` bootstrap in `scripts/train_sales_forecast.py`.
+  - mypy: clean without `pandas-stubs`. With the stubs it reports 24 index-typing errors in the 2026-11-06 code (`Index` vs `DatetimeIndex`, `int(Hashable)`). None are runtime bugs. They are pending the developer's decision per AGENTS.md.
+
+Still missing / next goals:
+1. Developer decision on the 24 `pandas-stubs` mypy errors (fix with typed casts or leave).
+2. "K2 Score" is read as R² (sklearn `r2_score`). If the course means D'Agostino's K² normality test on the residuals (`scipy.stats.normaltest`), it is a small addition.
+3. A permanent libomp install (Homebrew + `brew install libomp`) would remove the need for the `DYLD_LIBRARY_PATH` workaround.
+4. Forecast 2026 onwards by refitting on all 10 years. This is not built yet.
+5. Still open from 2026-11-06: the briefing's US/Los Angeles context vs the memory bank's Mexico/Monterrey.
+
+## Update 2026-11-06 - Sales forecast: monthly revenue prediction model (XGBoost)
+
+Goals accomplished (tech lead's ticket `lead-instr.png`, worked through the phases of `stages-todo.png` with `contexts/company-sales.csv` and `contexts/trackflow-sales-briefing.md`; full write-up in `docs/SALES_FORECAST.md`):
+- Environment: `uv 0.12.17` is installed. `pyproject.toml` already declared `pandas`, `scikit-learn`, `xgboost` and `matplotlib`, so neither `uv init` nor `uv add` was needed.
+- Data (`scripts/sales_forecast.py`):
+  - Contract validation against the briefing's columns and markets.
+  - Explicit, counted cleaning (exact duplicates, derivation of one missing field from the other two, refusal of conflicts, gaps and non-positive revenue).
+  - A data profile checked against the briefing (alternating 9%/3% growth, Nov-Dec peak, February dip).
+- Split: calendar years 2016-2023 for training and 2024-2025 for testing. Anything that isn't exactly 10 full years is refused, and the split is asserted disjoint and ordered.
+- Model:
+  - sklearn `Pipeline` of `StandardScaler` and `XGBRegressor`, chosen over Random Forest for data size, explainability and tuning time.
+  - Detrended target `revenue / trailing 12-month mean`, because trees can't extrapolate growth. Causal lag, rolling, seasonal and calendar features.
+  - Parameters chosen by recursive walk-forward backtests (origins 2019-2021) inside the training years.
+  - The 24 test months are forecast recursively, with no measured test value fed back.
+- Evaluation:
+  - MSE (plus RMSE as % of mean revenue), K2 = R², normalized Gini, MAE and MAPE for the model and for a seasonal-naive baseline.
+  - PSI for the seasonal pattern train vs test, for fitted vs forecast ratios, and for the US/Spain mix when those rows exist.
+  - An 80% variability range from backtest errors, per horizon year.
+- CLI `scripts/train_sales_forecast.py`: writes `metrics.json`, `forecast_test_years.csv` and `forecast_test_years.png` to `data/eval/sales_forecast/`. Exit code 2 means a contract error.
+- Tests: `tests/pipelines/test_sales_forecast.py` (20, synthetic data).
+  - The 8/2 split.
+  - No leakage: features don't change when future values change, and the end-to-end forecast is identical when the test years are multiplied ×3.
+  - Cleaning and metrics.
+- Verification (synthetic briefing-shaped data, because the real CSV is under a Copilot content exclusion):
+  - 20/20 tests pass.
+  - MAPE 1.7% vs 5.1% for the baseline, R² 0.97, 100% of test months inside the 80% range.
+  - ruff format and check clean; mypy clean on the three files.
+
+Still missing / next goals:
+1. Run on the real `contexts/company-sales.csv` (`uv run python scripts/train_sales_forecast.py`) and replace the synthetic numbers in `docs/SALES_FORECAST.md → Results`.
+2. macOS needs `brew install libomp` for XGBoost to import in `.venv`. It was verified here only in a scratch venv linked to scikit-learn's bundled libomp.
+3. The briefing names the dataset `data/raw/trackflow_sales.csv` and describes a US/Los Angeles context, which differs from the memory bank's Mexico/Monterrey. To be confirmed with the tech lead.
+4. Possible follow-ups:
+   - Forecast the months after 2025 (refit on all 10 years).
+   - Per-market models, if the CSV carries US/Spain rows.
+   - External drivers (clients, pricing).
 
 ## Update 2026-10-25 (later) - DEV-53: nightly telemetry script, status control and cron trigger
 
