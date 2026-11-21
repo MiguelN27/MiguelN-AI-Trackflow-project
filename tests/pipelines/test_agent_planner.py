@@ -55,7 +55,7 @@ def sources(plan):
 # --- What the model is asked -------------------------------------------------------
 
 
-def test_the_model_must_choose_among_the_three_sources_and_the_update_marker(model):
+def test_the_model_must_choose_among_the_three_sources_and_the_two_markers(model):
     fake = model([call("search_knowledge_base")])
 
     planner.choose_sources("What's the standard return window?")
@@ -69,11 +69,61 @@ def test_the_model_must_choose_among_the_three_sources_and_the_update_marker(mod
         "lookup_stock",
         "search_knowledge_base",
         "note_team_update",
+        "note_small_talk",
     ]
+    # The question is data, enveloped (SEC-114), never an instruction to the planner.
     assert request["messages"] == [
         {"role": "system", "content": planner.PLANNER_PROMPT},
-        {"role": "user", "content": "What's the standard return window?"},
+        {
+            "role": "user",
+            "content": "<<untrusted kind=customer_message>>\n"
+            "What's the standard return window?\n<</untrusted>>",
+        },
     ]
+
+
+def test_a_customer_session_is_only_offered_the_knowledge_base(model):
+    fake = model([call("search_knowledge_base")])
+
+    planner.choose_sources("Where is my parcel?", audience="customer")
+
+    (request,) = fake.requests
+    assert [tool["function"]["name"] for tool in request["tools"]] == [
+        "search_knowledge_base",
+        "note_small_talk",
+    ]
+
+
+def test_a_lookup_planned_for_a_customer_is_dropped_whoever_planned_it():
+    planned = {
+        "decided_by": "model",
+        "steps": [
+            {"source": INCIDENT_MANAGER, "tool": "lookup_ticket", "arguments": {"reference": "12"}},
+            {"source": "inventory_manager", "tool": "lookup_stock", "arguments": {"product": "x"}},
+        ],
+        "ignored": [],
+        "user_update": True,
+    }
+
+    restricted, dropped = planner.restrict_plan(planned, "customer")
+
+    assert sources(restricted) == [KNOWLEDGE_BASE]
+    assert restricted["user_update"] is False
+    assert dropped == [
+        "lookup_ticket: not available to customer sessions",
+        "lookup_stock: not available to customer sessions",
+        "note_team_update: not available to customer sessions",
+    ]
+    assert restricted["ignored"] == dropped
+    assert planner.restrict_plan(planned, "staff") == (planned, [])
+
+
+def test_small_talk_is_marked_and_still_searches_the_knowledge_base():
+    plan = planner.plan_from_calls("Who won the World Cup?", [call("note_small_talk")])
+
+    assert plan.small_talk is True
+    assert [step.source for step in plan.steps] == [KNOWLEDGE_BASE]
+    assert plan.user_update is False
 
 
 def test_the_tool_schemas_are_the_contracts_with_every_reference_inlined():
@@ -107,6 +157,7 @@ def test_a_ticket_question_is_planned_as_a_ticket_lookup_only(model):
         ],
         "ignored": [],
         "user_update": False,
+        "small_talk": False,
     }
 
 
@@ -307,7 +358,7 @@ def test_a_team_update_alone_still_searches_the_knowledge_base_and_says_why():
     assert plan.decided_by == "fallback"
     assert [step.source for step in plan.steps] == ["knowledge_base"]
     assert plan.ignored == [
-        "only note_team_update was called: the knowledge base is searched for what it "
+        "only a marker was called: the knowledge base is searched for what it "
         "documents on the subject"
     ]
 

@@ -35,7 +35,7 @@ import math
 import re
 import sqlite3
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -928,7 +928,12 @@ class MemoryStore:
         return [_decision(row) for row in reversed(rows)]
 
     def recall(
-        self, question: str, *, k: int = RECALL_TOP_K, min_score: float = MIN_MEMORY_SCORE
+        self,
+        question: str,
+        *,
+        k: int = RECALL_TOP_K,
+        min_score: float = MIN_MEMORY_SCORE,
+        categories: Collection[str] | None = None,
     ) -> RecallResult:
         """The memories relevant to `question`: at most `k`, never the whole store.
 
@@ -936,9 +941,14 @@ class MemoryStore:
         when its embedding scores at least `min_score` against the question's.
         Expired memories are never recalled. Without embeddings (the model is
         down), only named memories come back and the outcome says
-        `unavailable`.
+        `unavailable`. With `categories`, only memories of those categories are
+        considered (a customer session is never told a client's preferences).
         """
-        memories = self.active_memories()
+        memories = [
+            memory
+            for memory in self.active_memories()
+            if categories is None or memory.category in categories
+        ]
         if not memories:
             return RecallResult("ok", (), "the memory holds no active entries")
         named = {memory.memory_id for memory in memories if self._named(memory, question)}

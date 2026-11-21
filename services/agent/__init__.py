@@ -10,6 +10,9 @@ manager, or both. Design notes: `docs/agent/agent-graph.md`.
 - `state.py`   the state the nodes share, the sources, and the fixed answers;
 - `planner.py` the model's choice of sources, validated before anything runs;
 - `tools/`     the read-only ticket and stock lookups, with their contracts;
+- `guardrails/` the protection harness (SEC-114): input guard, external-content
+               isolation, output guard, sessions by role, customer orders, and
+               the guardrail events (docs/agent/agent-harness.md);
 - `nodes.py`   one function per step, reusing `rag.retrieve` / `rag.generate_answer`;
 - `graph.py`   node contracts, edges, routing, compilation and its structural checks;
 - `tracing.py` the queryable run trace (SQLite);

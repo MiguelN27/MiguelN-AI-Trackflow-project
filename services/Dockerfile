@@ -15,6 +15,8 @@ COPY packages/shared ./packages/shared
 COPY data/__init__.py ./data/__init__.py
 COPY data/pipelines ./data/pipelines
 COPY data/process ./data/process
+# The customer orders the agent's harness checks (SEC-114, AGENT_ORDERS_PATH).
+COPY data/raw/incidents-trackflow.csv ./data/raw/incidents-trackflow.csv
 # The MCP server (the `mcp` Compose service runs it from this same image).
 COPY mcps ./mcps
 RUN uv pip install --system --no-deps --editable .

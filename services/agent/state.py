@@ -9,11 +9,18 @@ proposal (MEM-092), which the runner loads from the memory store into
 `pending_proposal`, so the user's next message is evaluated against it first.
 A new field has to come with the node that reads it.
 
+The harness (SEC-114) adds what its guards decided: who is asking
+(`session`), the input guard's verdict (`guard`) and the orders it verified
+(`order_access`), the model's own scope label (`model_scope`), the output
+guard's verdict (`output_guard`), and the guardrail events of the run
+(`guardrail_events`, the one field every guard appends to).
+
 Tool results are stored as JSON-mode dicts (`model_dump(mode="json")`), so the
 checkpointer and the run trace store them as they are.
 """
 
-from typing import Any, Final, Literal, NotRequired, TypedDict
+import operator
+from typing import Annotated, Any, Final, Literal, NotRequired, TypedDict
 
 
 class AgentState(TypedDict):
@@ -56,6 +63,24 @@ class AgentState(TypedDict):
     memory_candidate: NotRequired[dict[str, Any]]
     # `propose_memory` output (`memory.store.ProposalResult.to_state()`).
     memory_proposal: NotRequired[dict[str, Any]]
+    # --- The harness (SEC-114) ---
+    # Set by the runner: `guardrails.session.session_state()` - the audience
+    # (`staff` or `customer`) and the tracking numbers the customer owns. Never
+    # the email they were found by.
+    session: NotRequired[dict[str, Any]]
+    # `guard_input` output (`guardrails.input_guard.InputVerdict.to_state()`).
+    guard: NotRequired[dict[str, Any]]
+    # `guard_input` output: the orders the message may use as evidence (the
+    # customer's own, or any in the records for staff), without emails, and the
+    # country whose terms apply.
+    order_access: NotRequired[dict[str, Any]]
+    # `generate_answer` output: the scope the model labelled its reply with.
+    model_scope: NotRequired[str]
+    # `validate_output` output: what the output guard found, and what it did.
+    output_guard: NotRequired[dict[str, Any]]
+    # Every guard appends its events here (LangGraph adds the lists up); the
+    # runner records them when the run ends (`guardrails.events.record`).
+    guardrail_events: NotRequired[Annotated[list[dict[str, Any]], operator.add]]
 
 
 STATE_KEYS: Final = frozenset(AgentState.__required_keys__ | AgentState.__optional_keys__)
@@ -87,6 +112,11 @@ MEMORY_NODES: Final = frozenset(
         COMPOSE_RESPONSE,
     }
 )
+# The harness nodes (SEC-114).
+GUARD_INPUT: Final = "guard_input"
+REFUSE_REQUEST: Final = "refuse_request"
+VALIDATE_OUTPUT: Final = "validate_output"
+HARNESS_NODES: Final = frozenset({GUARD_INPUT, REFUSE_REQUEST, VALIDATE_OUTPUT})
 
 # The sources a question can need. Planned sources always run in this order -
 # live data first, then the knowledge base - so a trace reads the same way for
@@ -111,15 +141,67 @@ RESULT_FIELD_OF_SOURCE: Final = {
 # The tool lookups, in source order: (source, state field).
 LOOKUP_FIELDS: Final = ((INCIDENT_MANAGER, "ticket_lookup"), (INVENTORY_MANAGER, "stock_lookup"))
 
-Outcome = Literal["answered", "no_information", "rejected", "memory_reply"]
+Outcome = Literal["answered", "no_information", "rejected", "memory_reply", "refused"]
 
 EMPTY_QUESTION: Final = "The question is empty. Please type a question."
 
+# --- The harness (SEC-114): fixed texts, never written by the model ----------------------
+
+# How every off-domain answer ends: back to what the agent is for.
+SCOPE_REDIRECT: Final = (
+    "I'm TrackFlow's customer support assistant: I can help you track a shipment, explain "
+    "return policies and delivery times in the United States or Spain, or guide you through "
+    "an incident such as a lost parcel, a failed delivery or a wrong address. What can I "
+    "help you with?"
+)
+# Any attempt to change, remove or reveal the instructions, however it is phrased.
+INSTRUCTION_CHANGE_REFUSAL: Final = (
+    "I can't do that. My instructions come from TrackFlow and can't be changed, removed or "
+    "revealed in a conversation, however the request is phrased."
+)
+# Personal-chatbot use.
+PERSONAL_TASK_REFUSAL: Final = (
+    "I can't help with that: I only handle TrackFlow shipments, returns and delivery "
+    "incidents, not personal tasks such as essays, homework, code or personal advice."
+)
+# An order that is not the signed-in customer's. The same text whether the order
+# exists or not, so it cannot be used to find out which orders exist.
+ORDER_NOT_AUTHORIZED: Final = (
+    "I can't share any information about {references}: I can only give tracking, return "
+    "and incident details for orders linked to the account you're signed in with, and I "
+    "can't confirm anything about other orders. If the order is yours, please sign in with "
+    "the account that placed it."
+)
+# An unreadable or oversized message.
+UNREADABLE_MESSAGE: Final = (
+    "I couldn't read that message. Please write your question about a shipment, a return "
+    "or an incident in a few sentences."
+)
+# A request to apply another country's terms to an order.
+POLICY_COUNTRY_NOTICE: Final = (
+    "Return policies and delivery SLAs follow the country your order actually ships in, and "
+    "can't be swapped on request: your order ships in {country}, so the terms for {country} "
+    "apply, not those for {requested}."
+)
+POLICY_COUNTRY_UNKNOWN_NOTICE: Final = (
+    "Return policies and delivery SLAs follow the country your order actually ships in, and "
+    "can't be swapped on request. Tell me your tracking number, or whether the order ships "
+    "in the United States or Spain, and I'll give you the terms that apply to it."
+)
+# A generated answer the output guard refused to show.
+OUTPUT_WITHHELD: Final = (
+    "I can't share that answer: it included information TrackFlow doesn't allow me to give "
+    "in this conversation."
+)
+
 # Returned without calling the generation model when no chunk passes the
-# threshold. It says what the system prompt asks the model to say in that case.
+# threshold. It says what the system prompt asks the model to say in that case,
+# then steers back to the agent's purpose (SEC-114: no off-domain answer ends
+# without the redirect).
 NO_INFORMATION_ANSWER: Final = (
     "I don't have information about that in TrackFlow's knowledge base, so I can't "
-    "answer it reliably. Please confirm it with the responsible TrackFlow team."
+    "answer it reliably. Please confirm it with the responsible TrackFlow team.\n\n"
+    + SCOPE_REDIRECT
 )
 
 # The fallback answers for a lookup that failed. They are written here, never by
@@ -183,15 +265,24 @@ def derive_outcome(state: dict[str, Any]) -> Outcome:
     """How a finished run ended, read from its final state alone.
 
     `answered` means the answer was generated: from evidence (retrieved chunks,
-    a lookup that succeeded, a recalled team memory), or acknowledging an
-    update the user gave. A run that could only give a fixed answer - nothing
-    in the knowledge base, or a lookup that failed - is `no_information`. A
-    message that only answered a pending memory proposal is `memory_reply`.
+    a lookup that succeeded, a recalled team memory, a verified order), or
+    acknowledging an update the user gave, or a brief off-domain answer. A run
+    that could only give a fixed answer - nothing in the knowledge base, or a
+    lookup that failed - is `no_information`. A message that only answered a
+    pending memory proposal is `memory_reply`. A message a guard refused, or an
+    answer the output guard withheld, is `refused` (SEC-114).
     """
     if state.get("error"):
         return "rejected"
+    if (state.get("guard") or {}).get("action") in ("block", "refuse") or (
+        state.get("output_guard") or {}
+    ).get("action") in ("refuse", "withhold"):
+        return "refused"
     if "memory_resolution" in state and "plan" not in state:
         return "memory_reply"
+    if str(state.get("answer") or "").endswith(NO_INFORMATION_ANSWER):
+        # Also when every passage was quarantined as instruction-like text.
+        return "no_information"
     recalled = (state.get("memory_recall") or {}).get("items")
     if (
         "memory_candidate" in state

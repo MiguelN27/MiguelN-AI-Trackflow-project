@@ -381,5 +381,23 @@
   },
   "renamed_cases": {
     "fallback-mcp-server-down": "fallback-incident-service-down"
+  },
+  "harness_changes": {
+    "description": "SEC-114 (the agent's harness) changes the route of these cases on purpose; every other case must still make exactly the Part 2 decisions. The harness's own nodes (guard_input, refuse_request, validate_output) are set aside, as the memory nodes are.",
+    "cases": {
+      "route-no-information-unrelated": {
+        "why": "Trivia gets a brief answer and the redirect (the ticket's decision table), so the input guard routes it straight to generation instead of the knowledge base.",
+        "nodes": [
+          "receive_question",
+          "generate_answer"
+        ],
+        "decisions": [
+          [
+            "route_question",
+            "direct"
+          ]
+        ]
+      }
+    }
   }
 }

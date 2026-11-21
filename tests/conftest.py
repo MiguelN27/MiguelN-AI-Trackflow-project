@@ -13,6 +13,7 @@ from services.agent import config as agent_config
 from services.agent import graph as agent_graph
 from services.agent import planner as agent_planner
 from services.agent import tracing as agent_tracing
+from services.agent.guardrails import orders as agent_orders
 from services.agent.memory import classifier as agent_memory_classifier
 from services.agent.memory import store as agent_memory_store
 from services.agent.tools import mcp_client as agent_mcp_client
@@ -130,6 +131,7 @@ _CLASSIFIER_CLIENT_CACHE = agent_memory_classifier._classifier_client
 def _reset_agent_store() -> None:
     agent_graph.close_agent_graph()
     agent_config.get_agent_settings.cache_clear()
+    agent_orders.get_order_directory.cache_clear()
     agent_tracing.get_trace_store.cache_clear()
     agent_memory_store.get_memory_store.cache_clear()
     _PLANNER_CLIENT_CACHE.cache_clear()
@@ -160,6 +162,9 @@ def isolated_agent_store(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("AGENT_STORE_PATH", str(tmp_path / "agent_runs.sqlite"))
     monkeypatch.setenv("AGENT_MEMORY_PATH", str(tmp_path / "agent_memory.sqlite"))
+    # The order records the harness checks (SEC-114): the committed helpdesk
+    # export, read-only, whatever the developer's `.env` points at.
+    monkeypatch.setenv("AGENT_ORDERS_PATH", str(agent_config.DEFAULT_ORDERS_PATH))
     for name, value in AGENT_TOOL_SETTINGS.items():
         monkeypatch.setenv(name, value)
     _reset_agent_store()

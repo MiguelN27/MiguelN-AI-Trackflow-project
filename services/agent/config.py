@@ -25,6 +25,10 @@ DEFAULT_STORE_PATH: Final = ROOT_DIR / "data" / "agent" / "agent_runs.sqlite"
 # the run traces and far from the knowledge base (Qdrant `trackflow_knowledge`),
 # which the agent only ever reads.
 DEFAULT_MEMORY_PATH: Final = ROOT_DIR / "data" / "agent" / "agent_memory.sqlite"
+# Read-only. The customer orders the order-authorization guard checks (SEC-114):
+# TrackFlow's helpdesk export, one row per tracking number with its country,
+# customer type, carrier and the customer's email.
+DEFAULT_ORDERS_PATH: Final = ROOT_DIR / "data" / "raw" / "incidents-trackflow.csv"
 
 # The MCP server's endpoint (`npm run mcp`).
 DEFAULT_MCP_URL: Final = "http://localhost:8100/mcp"
@@ -41,6 +45,7 @@ MAX_TOOL_TIMEOUT_SECONDS: Final = 10.0
 _DEFAULTS: Final[dict[str, Any]] = {
     "agent_store_path": DEFAULT_STORE_PATH,
     "agent_memory_path": DEFAULT_MEMORY_PATH,
+    "agent_orders_path": DEFAULT_ORDERS_PATH,
     "agent_mcp_url": DEFAULT_MCP_URL,
     "agent_tool_timeout_seconds": DEFAULT_TOOL_TIMEOUT_SECONDS,
     "agent_oauth_token_url": None,
@@ -60,6 +65,7 @@ class AgentSettings(BaseSettings):
 
     agent_store_path: Path = DEFAULT_STORE_PATH
     agent_memory_path: Path = DEFAULT_MEMORY_PATH
+    agent_orders_path: Path = DEFAULT_ORDERS_PATH
     # The MCP server's Streamable HTTP endpoint.
     agent_mcp_url: str = DEFAULT_MCP_URL
     agent_tool_timeout_seconds: float = Field(
@@ -82,7 +88,7 @@ class AgentSettings(BaseSettings):
             return _DEFAULTS.get(info.field_name or "", value)
         return value
 
-    @field_validator("agent_store_path", "agent_memory_path", mode="after")
+    @field_validator("agent_store_path", "agent_memory_path", "agent_orders_path", mode="after")
     @classmethod
     def relative_to_the_repository(cls, value: Path) -> Path:
         # A relative path means the same file whichever directory a CLI runs from.

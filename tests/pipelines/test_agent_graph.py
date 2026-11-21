@@ -50,6 +50,7 @@ from services.agent.state import (
     COMPOSE_RESPONSE,
     EMPTY_QUESTION,
     GENERATE_ANSWER,
+    GUARD_INPUT,
     INCIDENTS_UNAVAILABLE_ANSWER,
     LOOKUP_STOCK,
     LOOKUP_TICKET,
@@ -58,12 +59,14 @@ from services.agent.state import (
     PROPOSE_MEMORY,
     RECALL_MEMORY,
     RECEIVE_QUESTION,
+    REFUSE_REQUEST,
     RESOLVE_MEMORY_PROPOSAL,
     RETRIEVE,
     STOCK_NOT_FOUND_ANSWER,
     STOCK_UNAVAILABLE_ANSWER,
     TICKET_NOT_FOUND_ANSWER,
     TICKET_UNAVAILABLE_ANSWER,
+    VALIDATE_OUTPUT,
     derive_outcome,
 )
 from services.agent.tools import mcp_lookups
@@ -118,6 +121,9 @@ def plan(*steps: dict[str, Any], decided_by: str = "model", ignored=()) -> dict[
 
 
 KNOWLEDGE_PLAN = plan(step("knowledge_base"))
+
+# The `session` a run without one gets: staff, owning no order (SEC-114).
+STAFF_SESSION: dict[str, Any] = {"audience": "staff", "owned_orders": []}
 
 # What `recall_memory` returns while the memory is empty (every test starts so).
 EMPTY_RECALL: dict[str, Any] = {
@@ -197,9 +203,15 @@ class FakeRag:
         self.memory_check = "nothing_to_remember"
         self.proposal: Any = None
         self.generate_memories: list[list[dict[str, Any]]] = []
+        # SEC-114: the scope label the fake model gives, what the planner was
+        # told about the session, and the SESSION lines generation received.
+        self.scope = "in_domain"
+        self.plan_audiences: list[str] = []
+        self.session_notes: list[list[str]] = []
 
-    def choose_sources(self, question: str) -> dict[str, Any]:
+    def choose_sources(self, question: str, *, audience: str = "staff") -> dict[str, Any]:
         self.plan_calls.append(question)
+        self.plan_audiences.append(audience)
         return dict(self.plan)
 
     def lookup_ticket(self, request: TicketLookupInput, **_: Any) -> TicketLookupResult:
@@ -223,13 +235,15 @@ class FakeRag:
         *,
         memories: list[dict[str, Any]] | None = None,
         user_update: bool = False,
+        session_notes: list[str] | None = None,
     ) -> respond.Response:
         self.generate_calls.append((question, context))
         self.generate_memories.append(list(memories or []))
+        self.session_notes.append(list(session_notes or []))
         if self.generate_error is not None:
             raise self.generate_error
         return respond.Response(
-            self.answer, self.memory_check, "fake self-evaluation", self.proposal, True
+            self.answer, self.memory_check, "fake self-evaluation", self.proposal, True, self.scope
         )
 
 
@@ -284,12 +298,15 @@ def with_node(spec: NodeSpec) -> tuple[NodeSpec, ...]:
 # --- Compilation -----------------------------------------------------------------------
 
 
-def test_the_shipped_graph_compiles_with_its_thirteen_nodes():
+def test_the_shipped_graph_compiles_with_its_sixteen_nodes():
     drawn = build_agent_graph().get_graph()
 
     assert set(drawn.nodes) == {
         START,
         RECEIVE_QUESTION,
+        GUARD_INPUT,
+        REFUSE_REQUEST,
+        VALIDATE_OUTPUT,
         CLASSIFY_MEMORY_REPLY,
         RESOLVE_MEMORY_PROPOSAL,
         RECALL_MEMORY,
@@ -307,9 +324,11 @@ def test_the_shipped_graph_compiles_with_its_thirteen_nodes():
 
 
 DECISIONS = {
-    (RECEIVE_QUESTION, RECALL_MEMORY),
-    (RECEIVE_QUESTION, CLASSIFY_MEMORY_REPLY),
-    (RECEIVE_QUESTION, END),
+    (GUARD_INPUT, RECALL_MEMORY),
+    (GUARD_INPUT, CLASSIFY_MEMORY_REPLY),
+    (GUARD_INPUT, END),
+    (GUARD_INPUT, REFUSE_REQUEST),
+    (GUARD_INPUT, GENERATE_ANSWER),
     (RESOLVE_MEMORY_PROPOSAL, RECALL_MEMORY),
     (RESOLVE_MEMORY_PROPOSAL, COMPOSE_RESPONSE),
     (PLAN_SOURCES, LOOKUP_TICKET),
@@ -325,8 +344,8 @@ DECISIONS = {
     (RETRIEVE, GENERATE_ANSWER),
     (RETRIEVE, ANSWER_LOOKUP_FAILED),
     (RETRIEVE, ANSWER_NO_INFORMATION),
-    (GENERATE_ANSWER, PROPOSE_MEMORY),
-    (GENERATE_ANSWER, COMPOSE_RESPONSE),
+    (VALIDATE_OUTPUT, PROPOSE_MEMORY),
+    (VALIDATE_OUTPUT, COMPOSE_RESPONSE),
 }
 
 
@@ -335,6 +354,9 @@ def test_the_compiled_graph_has_exactly_the_declared_transitions():
 
     assert {(edge.source, edge.target) for edge in drawn.edges} == DECISIONS | {
         (START, RECEIVE_QUESTION),
+        (RECEIVE_QUESTION, GUARD_INPUT),
+        (REFUSE_REQUEST, COMPOSE_RESPONSE),
+        (GENERATE_ANSWER, VALIDATE_OUTPUT),
         (CLASSIFY_MEMORY_REPLY, RESOLVE_MEMORY_PROPOSAL),
         (RECALL_MEMORY, PLAN_SOURCES),
         (PROPOSE_MEMORY, COMPOSE_RESPONSE),
@@ -475,7 +497,11 @@ def test_retrieve_calls_the_rag_retrieve_once_with_the_question(fake_rag):
 def test_generate_answer_uses_the_context_it_is_given(fake_rag):
     update = nodes.generate_answer({"question": "Return window?", "context": [CHUNK]})
 
-    assert update == {"answer": ANSWER, "memory_candidate": NOTHING_TO_REMEMBER}
+    assert update == {
+        "answer": ANSWER,
+        "memory_candidate": NOTHING_TO_REMEMBER,
+        "model_scope": "in_domain",
+    }
     assert fake_rag.generate_calls == [("Return window?", [CHUNK])]
     assert fake_rag.retrieve_calls == []
 
@@ -514,6 +540,10 @@ def test_the_routers_decide_from_the_state_alone():
 
     assert route_question({"question": "q"}) == "plan"
     assert route_question({"question": "", "error": EMPTY_QUESTION}) == "rejected"
+    assert route_question({"question": "q", "guard": {"action": "block"}}) == "refused"
+    assert route_question({"question": "q", "guard": {"action": "refuse"}}) == "refused"
+    small_talk = {"action": "redirect", "category": "small_talk"}
+    assert route_question({"question": "q", "guard": small_talk}) == "direct"
     assert route_after_plan({"question": "q", "plan": KNOWLEDGE_PLAN}) == "knowledge_base"
     assert route_after_plan({"question": "q", "plan": both}) == "incident_manager"
     assert route_after_ticket({"question": "q", "plan": both, "ticket_lookup": gone}) == (
@@ -564,7 +594,7 @@ def test_an_empty_question_ends_the_run_before_retrieval(fake_rag, graph, store,
     assert fake_rag.retrieve_calls == []
     assert fake_rag.plan_calls == [], "an empty question is never planned"
     trace = store.get_trace(result.run_id)
-    assert trace.node_names() == [RECEIVE_QUESTION]
+    assert trace.node_names() == [RECEIVE_QUESTION, GUARD_INPUT]
     (decision,) = trace.edge_events()
     assert decision.output["to"] == END
 
@@ -572,7 +602,9 @@ def test_an_empty_question_ends_the_run_before_retrieval(fake_rag, graph, store,
 def test_no_context_routes_to_the_honest_answer_without_generating(fake_rag, graph, store):
     fake_rag.context = []
 
-    result = ask("Who won the last football World Cup?", graph, store)
+    # A TrackFlow question the knowledge base cannot answer. (Trivia such as "who
+    # won the World Cup?" now gets a brief answer and the redirect: SEC-114.)
+    result = ask("What is the parental leave policy for TrackFlow employees?", graph, store)
 
     assert result.outcome == "no_information"
     assert result.answer == NO_INFORMATION_ANSWER
@@ -580,6 +612,7 @@ def test_no_context_routes_to_the_honest_answer_without_generating(fake_rag, gra
     trace = store.get_trace(result.run_id)
     assert trace.node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         RECALL_MEMORY,
         PLAN_SOURCES,
         RETRIEVE,
@@ -613,12 +646,14 @@ def test_every_transition_is_checkpointed(fake_rag, graph, store):
     assert steps == [
         (-1, (START,)),
         (0, (RECEIVE_QUESTION,)),
-        (1, (RECALL_MEMORY,)),
-        (2, (PLAN_SOURCES,)),
-        (3, (RETRIEVE,)),
-        (4, (GENERATE_ANSWER,)),
-        (5, (COMPOSE_RESPONSE,)),
-        (6, ()),
+        (1, (GUARD_INPUT,)),
+        (2, (RECALL_MEMORY,)),
+        (3, (PLAN_SOURCES,)),
+        (4, (RETRIEVE,)),
+        (5, (GENERATE_ANSWER,)),
+        (6, (VALIDATE_OUTPUT,)),
+        (7, (COMPOSE_RESPONSE,)),
+        (8, ()),
     ]
     assert history[0].values["context"] == [CHUNK]
     assert history[0].values["answer"] == ANSWER
@@ -634,10 +669,12 @@ def test_checkpoints_and_traces_outlive_the_process(fake_rag):
     trace = TraceStore(get_agent_settings().agent_store_path).get_trace(result.run_id)
     assert trace.node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         RECALL_MEMORY,
         PLAN_SOURCES,
         RETRIEVE,
         GENERATE_ANSWER,
+        VALIDATE_OUTPUT,
         COMPOSE_RESPONSE,
     ]
 
@@ -670,11 +707,13 @@ def test_a_failed_run_resumes_from_the_failed_node_without_retrieving_again(fake
     assert resumed.error_node is None
     assert [(e.attempt, e.name, e.status) for e in resumed.events if e.kind == "node"] == [
         (1, RECEIVE_QUESTION, "ok"),
+        (1, GUARD_INPUT, "ok"),
         (1, RECALL_MEMORY, "ok"),
         (1, PLAN_SOURCES, "ok"),
         (1, RETRIEVE, "ok"),
         (1, GENERATE_ANSWER, "error"),
         (2, GENERATE_ANSWER, "ok"),
+        (2, VALIDATE_OUTPUT, "ok"),
         (2, COMPOSE_RESPONSE, "ok"),
     ]
 
@@ -689,7 +728,13 @@ def test_a_retrieval_failure_stops_the_run_at_retrieve(fake_rag, graph, store):
     assert failure.value.retryable is True
     assert fake_rag.generate_calls == []
     trace = store.get_trace(failure.value.run_id)
-    assert trace.node_names() == [RECEIVE_QUESTION, RECALL_MEMORY, PLAN_SOURCES, RETRIEVE]
+    assert trace.node_names() == [
+        RECEIVE_QUESTION,
+        GUARD_INPUT,
+        RECALL_MEMORY,
+        PLAN_SOURCES,
+        RETRIEVE,
+    ]
     assert trace.edge_events()[-1].name == "route_after_plan"  # no decision after the failure
 
 
@@ -744,18 +789,21 @@ def test_the_trace_records_nodes_and_decisions_in_order(fake_rag, graph, store):
     assert trace.graph_version == graph_fingerprint()
     assert [(e.seq, e.kind, e.name) for e in trace.events] == [
         (1, "node", RECEIVE_QUESTION),
-        (2, "edge", "route_question"),
-        (3, "node", RECALL_MEMORY),
-        (4, "node", PLAN_SOURCES),
-        (5, "edge", "route_after_plan"),
-        (6, "node", RETRIEVE),
-        (7, "edge", "route_after_retrieve"),
-        (8, "node", GENERATE_ANSWER),
-        (9, "edge", "route_after_answer"),
-        (10, "node", COMPOSE_RESPONSE),
+        (2, "node", GUARD_INPUT),
+        (3, "edge", "route_question"),
+        (4, "node", RECALL_MEMORY),
+        (5, "node", PLAN_SOURCES),
+        (6, "edge", "route_after_plan"),
+        (7, "node", RETRIEVE),
+        (8, "edge", "route_after_retrieve"),
+        (9, "node", GENERATE_ANSWER),
+        (10, "node", VALIDATE_OUTPUT),
+        (11, "edge", "route_after_answer"),
+        (12, "node", COMPOSE_RESPONSE),
     ]
     (
         receive,
+        guarded,
         decide_question,
         recalled,
         planned,
@@ -763,18 +811,21 @@ def test_the_trace_records_nodes_and_decisions_in_order(fake_rag, graph, store):
         retrieved,
         decide_answer,
         generated,
+        validated,
         decide_memory,
         composed,
     ) = trace.events
     assert receive.input == {"question": "  Return window? "}
     assert receive.output == {"question": "Return window?"}
+    assert guarded.output["guard"]["action"] == "allow"
+    assert guarded.output["guard"]["category"] == "in_domain"
     assert decide_question.output == {
         "decision": "plan",
         "to": RECALL_MEMORY,
         "reason": "the question is not empty",
     }
     assert recalled.output == {"memory_recall": EMPTY_RECALL}
-    assert planned.input == {"question": "Return window?"}
+    assert planned.input == {"question": "Return window?", "session": STAFF_SESSION}
     assert planned.output == {"plan": KNOWLEDGE_PLAN}
     assert decide_plan.output == {
         "decision": "knowledge_base",
@@ -791,9 +842,19 @@ def test_the_trace_records_nodes_and_decisions_in_order(fake_rag, graph, store):
         "memory_recall": EMPTY_RECALL,
         "plan": KNOWLEDGE_PLAN,
         "question": "Return window?",
+        "guard": guarded.output["guard"],
+        "session": STAFF_SESSION,
     }
     assert trace.sources() == ["knowledge_base"]
-    assert generated.output == {"answer": ANSWER, "memory_candidate": NOTHING_TO_REMEMBER}
+    assert generated.output == {
+        "answer": ANSWER,
+        "memory_candidate": NOTHING_TO_REMEMBER,
+        "model_scope": "in_domain",
+    }
+    assert validated.output == {
+        "answer": ANSWER,
+        "output_guard": {"action": "pass", "model_scope": "in_domain", "findings": []},
+    }
     assert decide_memory.output == {
         "decision": "respond",
         "to": COMPOSE_RESPONSE,
@@ -813,10 +874,12 @@ def test_traces_are_queryable_after_the_run(fake_rag, graph, store):
     assert [run.run_id for run in reopened.list_runs(user_id="user-1")] == [first.run_id]
     assert reopened.get_trace(first.run_id).node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         RECALL_MEMORY,
         PLAN_SOURCES,
         RETRIEVE,
         GENERATE_ANSWER,
+        VALIDATE_OUTPUT,
         COMPOSE_RESPONSE,
     ]
 
@@ -859,10 +922,12 @@ def test_a_ticket_question_is_answered_from_the_live_ticket_without_the_rag(fake
     trace = store.get_trace(result.run_id)
     assert trace.node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         RECALL_MEMORY,
         PLAN_SOURCES,
         LOOKUP_TICKET,
         GENERATE_ANSWER,
+        VALIDATE_OUTPUT,
         COMPOSE_RESPONSE,
     ]
     assert trace.sources() == ["incident_manager"]
@@ -901,6 +966,7 @@ def test_a_failed_ticket_lookup_gets_an_honest_fixed_answer(fake_rag, graph, sto
     trace = store.get_trace(outcome.run_id)
     assert trace.node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         RECALL_MEMORY,
         PLAN_SOURCES,
         LOOKUP_TICKET,
@@ -929,11 +995,13 @@ def test_a_question_needing_both_consults_the_ticket_then_the_knowledge_base(
     trace = store.get_trace(result.run_id)
     assert trace.node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         RECALL_MEMORY,
         PLAN_SOURCES,
         LOOKUP_TICKET,
         RETRIEVE,
         GENERATE_ANSWER,
+        VALIDATE_OUTPUT,
         COMPOSE_RESPONSE,
     ]
     assert trace.sources() == ["incident_manager", "knowledge_base"]
@@ -985,10 +1053,12 @@ def test_a_stock_question_is_answered_from_the_live_inventory(fake_rag, graph, s
     trace = store.get_trace(result.run_id)
     assert trace.node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         RECALL_MEMORY,
         PLAN_SOURCES,
         LOOKUP_STOCK,
         GENERATE_ANSWER,
+        VALIDATE_OUTPUT,
         COMPOSE_RESPONSE,
     ]
     assert trace.sources() == ["inventory_manager"]
@@ -1027,12 +1097,14 @@ def test_every_planned_source_runs_once_in_the_fixed_order(fake_rag, graph, stor
     trace = store.get_trace(result.run_id)
     assert trace.node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         RECALL_MEMORY,
         PLAN_SOURCES,
         LOOKUP_TICKET,
         LOOKUP_STOCK,
         RETRIEVE,
         GENERATE_ANSWER,
+        VALIDATE_OUTPUT,
         COMPOSE_RESPONSE,
     ]
     assert trace.sources() == ["incident_manager", "inventory_manager", "knowledge_base"]

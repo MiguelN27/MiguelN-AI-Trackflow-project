@@ -34,6 +34,7 @@ from services.agent.memory import policy
 from services.agent.state import (
     CLASSIFY_MEMORY_REPLY,
     GENERATE_ANSWER,
+    GUARD_INPUT,
     MEMORY_QUESTION,
     PLAN_SOURCES,
     PROPOSE_MEMORY,
@@ -169,7 +170,9 @@ def test_the_reply_is_classified_and_decided_explicitly(cases, case_id, index, t
     reply = node_output(run, CLASSIFY_MEMORY_REPLY)
 
     assert reply is not None, "a pending proposal is evaluated before anything else"
-    assert nodes(run)[1] == CLASSIFY_MEMORY_REPLY
+    # Only the input guard (SEC-114) runs first: a jailbreak is refused before a
+    # pending proposal can be touched.
+    assert nodes(run)[1:3] == [GUARD_INPUT, CLASSIFY_MEMORY_REPLY]
     assert reply["memory_reply"]["classification"] is not None, "an explicit label was given"
     assert run["memory"]["decision"]["outcome"] == turn["checks"]["decision"], reply
 

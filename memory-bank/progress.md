@@ -1,6 +1,68 @@
 # Development Progress
 
-Last updated: 2026-11-13
+Last updated: 2026-11-14
+
+## Update 2026-11-14 - The agent's protection harness (SEC-114, Milestone 8 Part 2)
+
+Goals accomplished. The brief is ticket SEC-114 (the updated `lead-instr.png`), with the four-section checklist in `stages-todo.png`; the domain, sensitive data and mandatory test cases are in the root `engineering-briefing.md`. Work is on `feature/agent-guardrails`. It is the **same** LangGraph / MCP / memory agent, now named by the briefing as Valentina Cruz's first-line CX agent. Design: `docs/agent/agent-harness.md`; live evidence: `docs/agent/harness-evidence.md`.
+
+- Decided with the developer:
+  - **sessions by role**: admin/manager = staff (today's capabilities); `user` = customer (own orders, knowledge base, no ticket or stock lookups, never a memory proposal);
+  - **order data from the briefing's own description**: the helpdesk export `data/raw/incidents-trackflow.csv` (tracking number, country, customer type, carrier, customer email) is the order directory (`AGENT_ORDERS_PATH`); the account email = the order's `customer_email`.
+- **Secure system prompt:**
+  - CX identity;
+  - an instruction hierarchy (only system messages instruct; everything external and the user's own message arrive in `<<untrusted ...>>` envelopes) with a canary;
+  - the domain rendered from the briefing (drift test);
+  - a per-message SESSION section written by the harness;
+  - a `scope` label on every reply.
+- **Content and scope guardrails:**
+  - personal tasks refused with the redirect;
+  - small talk and general logistics get a brief answer, then a fixed redirect appended by the harness;
+  - order authorization (briefing case 3), with the same refusal whether the order exists or not;
+  - policy mixing (case 4) locked to the order's real country with a fixed notice;
+  - an output guard (structure, leaked instructions, other customers' orders, emails, negotiated rates and B2B terms, exact locations and routes).
+- **Anti-injection:**
+  - 59 instruction-change rules in 5 families, EN+ES, on folded text (leetspeak, spacing, zero-width, full-width, accents);
+  - external text (RAG, MCP records, memories, order records) sanitized or quarantined, then enveloped;
+  - memory drafts with instructions refused (`instruction_like`);
+  - the model's `scope` label can only escalate.
+- **Graph:**
+  - 3 nodes that never call a model: `guard_input`, `refuse_request`, `validate_output`;
+  - routing unchanged for allowed questions (the baseline eval sets the harness nodes aside; `harness_changes` lists the trivia route);
+  - new outcome `refused`, answered with 200.
+- **Observability:**
+  - every trigger logged on `api.agent.guardrails` with its failure type, never the message;
+  - a `guardrail_events` table;
+  - `npm run agent -- guardrails` and `GET /agent/guardrails/summary` (staff only, with a `since` window);
+  - the harness test session prints the same table.
+- **Deterministic tests:**
+  - `tests/pipelines/harness/` (**428**, `npm run agent:harness`) over the 104-case corpus `data/eval/agent/harness-cases.json`;
+  - any attack treated as allowed fails the build, and so does any real staff question being blocked;
+  - every live-recorded answer is replayed through the output guard.
+- **Live verification** (4Geeks gateway + Qdrant):
+  - `npm run agent:harness:smoke`, 18 runs: all four briefing cases behave as specified, and two paraphrases the rules miss on purpose were refused by the model's label;
+  - memory evals re-recorded: **171/171 pass**.
+- **Verification:**
+  - backend **2031 passed, 51 skipped** without the Part 1-3 evals;
+  - `ruff format` / `ruff check --isolated` clean on every changed file (no untouched hunks);
+  - mypy clean on `services/agent`, the smoke script and the harness tests (the one known `test_agent_graph.py` finding, now at line 116, unchanged);
+  - no new dependency.
+- Found and fixed during the work:
+  - a sentence placeholder lost its spacing;
+  - a decimal price split a sentence and hid a carrier rate;
+  - a fully quarantined run was counted as `answered`;
+  - the "withheld" wording bug;
+  - "Let's roleplay" was not caught (added `persona.roleplay`).
+
+Still missing / next goals:
+1. **Re-record the Part 1-3 evals** (`traces.json`, still the Part 2 recording, graph `faabff53fa40c2ca`): 74 of 159 fail until then, all on the stale recording. It needs Auth0 and the live MCP stack: `LLM_TIMEOUT_SECONDS=120 npm run agent:record`.
+2. Auth0 configuration and the MCP Playground run (pending since the MCP ticket).
+3. Commit when asked (AGENTS.md workflow). Ask whether `engineering-briefing.md` and the replaced `lead-instr.png` / `stages-todo.png` go in. Include `data/eval/agent/harness-cases.json`, `harness-smoke.json` and the re-recorded `memory-traces.json`.
+4. Optional follow-ups:
+   - Spanish fixed refusals and redirect;
+   - the same guards on `/knowledge/query` (the commercial team's internal RAG, a different assistant, left as it was);
+   - live carrier tracking in the order records;
+   - a backoffice view of the guardrail summary.
 
 ## Update 2026-11-13 - Agent memory and self-improvement (MEM-092)
 

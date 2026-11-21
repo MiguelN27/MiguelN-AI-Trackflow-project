@@ -18,11 +18,14 @@ from services.agent import graph as agent_graph
 from services.agent import nodes, runner
 from services.agent.errors import AgentGraphBuildError
 from services.agent.graph import NodeSpec
+from services.agent.guardrails.session import Session
 from services.agent.state import EMPTY_QUESTION, NO_INFORMATION_ANSWER, TICKET_UNAVAILABLE_ANSWER
 from services.agent.tracing import get_trace_store
 from services.core import security
 from services.knowledge.models import MAX_QUESTION_LENGTH
 from services.main import app
+from services.users import service as users_service
+from services.users.models import Role, UserUpdate
 from tests.pipelines.test_agent_graph import (
     ANSWER,
     CHUNK,
@@ -37,19 +40,27 @@ from tests.test_knowledge_api import code_identifiers
 ROUTER_SOURCE = (Path(__file__).resolve().parents[1] / "services/agent/router.py").read_text()
 
 
-def sign_in(client: TestClient, email: str) -> tuple[dict[str, str], str]:
-    """Register and log in; returns the bearer header and the user's id."""
+def sign_in(
+    client: TestClient, email: str, *, role: str | None = None
+) -> tuple[dict[str, str], str]:
+    """Register and log in; returns the bearer header and the user's id.
+
+    Self-registration gives the `user` role: a customer session (SEC-114). With
+    `role` ("manager" or "admin") the account is TrackFlow staff.
+    """
     credentials = {"email": email, "password": "commercial-password-42"}
     user_id = client.post("/users", json=credentials).json()["id"]
+    if role is not None:
+        users_service.update_user(user_id, UserUpdate(role=Role(role)))
     token = client.post("/auth/login", json=credentials).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}, user_id
 
 
 @pytest.fixture
 def api(client, monkeypatch):
-    """A signed-in client."""
+    """A signed-in TrackFlow staff client (a manager)."""
     monkeypatch.setattr(security, "BCRYPT_ROUNDS", 4)
-    headers, _ = sign_in(client, "sales@trackflow.com")
+    headers, _ = sign_in(client, "sales@trackflow.com", role="manager")
     return client, headers
 
 
@@ -93,7 +104,9 @@ def test_no_context_is_answered_honestly(api, fake_rag):
     client, headers = api
     fake_rag.context = []
 
-    response = ask(client, headers, {"question": "Who won the last football World Cup?"})
+    response = ask(
+        client, headers, {"question": "What is the parental leave policy for TrackFlow staff?"}
+    )
 
     assert response.status_code == 200
     assert response.json()["answer"] == NO_INFORMATION_ANSWER
@@ -103,12 +116,16 @@ def test_no_context_is_answered_honestly(api, fake_rag):
 def test_the_endpoint_only_invokes_the_graph(client, monkeypatch):
     monkeypatch.setattr(security, "BCRYPT_ROUNDS", 4)
     headers, user_id = sign_in(client, "sales@trackflow.com")
-    calls: list[tuple[str, str | None, str | None]] = []
+    calls: list[tuple[str, str | None, str | None, Session | None]] = []
 
     def fake_run_agent(
-        question: str, *, user_id: str | None = None, conversation_id: str | None = None
+        question: str,
+        *,
+        user_id: str | None = None,
+        conversation_id: str | None = None,
+        session: Session | None = None,
     ) -> runner.AgentResult:
-        calls.append((question, user_id, conversation_id))
+        calls.append((question, user_id, conversation_id, session))
         return runner.AgentResult(
             run_id="run-1", outcome="answered", answer="From the graph.", conversation_id="c-1"
         )
@@ -123,7 +140,9 @@ def test_the_endpoint_only_invokes_the_graph(client, monkeypatch):
         "answer": "From the graph.",
         "memory": None,
     }
-    assert calls == [(" as typed ", user_id, None)]  # unchanged: the graph normalises it
+    # Unchanged: the graph normalises it. The session is the account's: a
+    # self-registered account is a customer, found by its email (SEC-114).
+    assert calls == [(" as typed ", user_id, None, Session("customer", "sales@trackflow.com"))]
 
 
 def test_router_holds_no_rag_or_graph_logic():
@@ -188,7 +207,7 @@ def test_an_empty_question_is_refused_by_the_graph_with_422(api, fake_rag, quest
     assert detail["message"] == EMPTY_QUESTION
     trace = get_trace_store().get_trace(detail["run_id"])
     assert trace.outcome == "rejected"
-    assert trace.node_names() == ["receive_question"]
+    assert trace.node_names() == ["receive_question", "guard_input"]
     assert fake_rag.retrieve_calls == []
 
 
@@ -260,6 +279,7 @@ def test_the_trace_of_a_run_is_readable_by_its_owner(api, fake_rag):
     assert trace["sources"] == ["knowledge_base"]
     assert [(e["kind"], e["name"]) for e in trace["events"]] == [
         ("node", "receive_question"),
+        ("node", "guard_input"),
         ("edge", "route_question"),
         ("node", "recall_memory"),
         ("node", "plan_sources"),
@@ -267,18 +287,19 @@ def test_the_trace_of_a_run_is_readable_by_its_owner(api, fake_rag):
         ("node", "retrieve"),
         ("edge", "route_after_retrieve"),
         ("node", "generate_answer"),
+        ("node", "validate_output"),
         ("edge", "route_after_answer"),
         ("node", "compose_response"),
     ]
-    assert trace["events"][5]["output"] == {"context": [CHUNK]}
-    assert trace["events"][6]["output"]["to"] == "generate_answer"
+    assert trace["events"][6]["output"] == {"context": [CHUNK]}
+    assert trace["events"][7]["output"]["to"] == "generate_answer"
     uuid.UUID(trace["conversation_id"])
 
 
 def test_another_users_run_is_not_found(api, fake_rag):
     client, headers = api
     run_id = ask(client, headers, {"question": "Return window?"}).json()["run_id"]
-    other, _ = sign_in(client, "other@trackflow.com")
+    other, _ = sign_in(client, "other@trackflow.com", role="manager")
 
     response = client.get(f"/agent/runs/{run_id}", headers=other)
 

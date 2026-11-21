@@ -151,6 +151,38 @@ This repository currently contains two website implementations related to TrackF
     - `tests/pipelines/test_agent_memory_{policy,store,classifier,graph,evals}.py` and `test_agent_respond.py`;
     - the autouse fixtures pin `AGENT_MEMORY_PATH` to `tmp_path` and forbid `classifier._classifier_client`;
     - the fakes patch `respond.generate_response`, not `rag.generate_answer`.
+- Agent harness (since 2026-11-14, Milestone 8 Part 2, ticket SEC-114; brief in the root `engineering-briefing.md`, checklist `stages-todo.png`; design in `docs/agent/agent-harness.md`, live results in `docs/agent/harness-evidence.md`):
+  - What it is: the **same** agent behind guards, before customers use it. The briefing names it Valentina Cruz's first-line CX agent (B2B brands, B2C recipients, United States and Spain).
+  - Three graph nodes that never call a model:
+    - `guard_input`, after `receive_question` (`route_question` now leaves from it, with the extra decisions `refused` and `direct`);
+    - `refuse_request` -> `compose_response`;
+    - `validate_output`, between `generate_answer` and `route_after_answer`.
+  - `HARNESS_NODES` are set aside by the routing-baseline eval, like the memory nodes; `routing-baseline.json` has `harness_changes` (trivia now goes `direct`). New outcome `refused`, answered with 200 by the API.
+  - `services/agent/guardrails/`:
+    - `normalize.fold`: NFKC, invisible characters, accents, casefold, leetspeak, spaced letters;
+    - `input_guard`: 59 instruction-change rules in 5 families (override, persona, identity, extraction, authority), EN+ES; personal-task, small-talk and general-logistics rules; order-number extraction; policy mixing. Precedence structural > security > content;
+    - `isolation`: sanitizes RAG/MCP/memory/order text, quarantines a text that is at least half instructions, `<<untrusted kind=...>>` envelopes;
+    - `output_guard`: structure; canary `TF-GUARD-7Q2X-91LM`; 10-word overlap with `respond.confidential_prompt()`; self-disclosure; other customers' orders, emails, carrier/negotiated rates, percentage discounts, `policy.location_findings`;
+    - `orders`: read-only `OrderDirectory` over the helpdesk export, `AGENT_ORDERS_PATH` (default `data/raw/incidents-trackflow.csv`, copied into the API image), validated with `validate_csv_row`; the account email = the order's `customer_email`;
+    - `session`: by role, admin/manager = staff, user = customer;
+    - `scope`: the briefing's domain verbatim, with a drift test;
+    - `events`: the `api.agent.guardrails` log and the session counter.
+  - Customers:
+    - own orders only; an unowned number is refused with the same text whether it exists or not;
+    - the planner offers only `search_knowledge_base` + `note_small_talk`, and `planner.restrict_plan` drops lookups after the choice;
+    - never a memory proposal; recall limited to `carrier_rule` / `recurring_incident`;
+    - `GET /agent/memory`, `GET /agent/runs/{id}` and the summary are 403.
+  - The CLI is staff by default: `--as-customer EMAIL`.
+  - Prompt (`respond.py`): CX identity, `INSTRUCTION_HIERARCHY`, `scope.scope_prompt()`, the unchanged RAG rules, memory, output rules, then a per-message SESSION section in the same system message. The user message holds only enveloped data. The `respond` tool gains `scope`, which can only escalate. `Response.scope` defaults to `in_domain`.
+  - Planner: the question is enveloped; marker `note_small_talk` (`Plan.small_talk`). `choose_sources(question, *, audience)`, and test fakes must accept the keyword.
+  - `generate_response(..., session_notes=)`.
+  - Memory policy: `instruction_like` refusal.
+  - Observability:
+    - the `guardrail_events` table in the trace store (`add_guardrail_events` is idempotent per run and position);
+    - `TraceStore.guardrail_summary(since, until, conversation_id)`, where `utc_iso` normalises times;
+    - `npm run agent -- guardrails [--since] [--recent N] [--json]`, and `GET /agent/guardrails/summary` (staff).
+  - Tests: `tests/pipelines/harness/` (428, `npm run agent:harness`, prints the trigger table), with the corpus `data/eval/agent/harness-cases.json` (104 cases). The live smoke run (optional) is `npm run agent:harness:smoke` -> `data/eval/agent/harness-smoke.json`.
+  - API tests: `sign_in(..., role="manager")` makes a staff account; self-registered accounts are customers.
 - `packages/shared/trackflow_shared/` is a Python package mapped into the wheel from `pyproject.toml` next to `services` and `scripts`. It carries rules that both the API and the `/scripts` tooling must agree on and that neither owns: the incident enumerations and lifecycle (`incidents.py`) and the helpdesk-CSV validation plus CSV -> model maps (`incidents_csv.py`). It imports no framework.
 - Error translation lives in `services/core/http_errors.py`. Domain errors (`ValidationFailed`, `IncidentNotFound`) are translated there, so the service layer stays HTTP-agnostic, and a bare `Exception` handler turns any unhandled failure into a 500 that names nothing about the exception, with the traceback going to the `trackflow.errors` logger. Every incident error body has the same `{detail: {field, message}}` shape. See `docs/INCIDENTS.md`.
 - **The 422 -> 400 remapping is scoped to `/api/incidents`, and must stay that way.** Starlette's exception handlers are global, so `make_validation_error_handler(prefixes)` takes the prefix (read off `incidents_router.prefix`) and hands everything else to FastAPI's own handler. Applying it app-wide breaks password recovery: `resetPassword` in `uis/*/services/auth-service.ts` reads **any** 400 as a spent reset token and replaces the form with "request a new link", so a too-short password would tell the user their link had expired. `changePassword` reads a 400 as "current password is wrong". `tests/test_error_contract.py` pins both halves.
@@ -212,9 +244,10 @@ This repository currently contains two website implementations related to TrackF
   - Public on purpose (the plan accepts anonymous pre-login events): `POST /telemetry/events`.
   - Token-protected reporting (per-client volumes are commercially sensitive): `GET /reporting/weekly-warehouse-client-performance?week_start=` (BRIEFING section 6 shape; defaults to the latest `weeks_to` of a completed run; 404 for a week never computed, 422 for a non-Monday or future week), `GET /reporting/pipeline-runs/latest` (adds derived `last_closed_week` and `stale`; hides `flow_run_id`, `triggered_by`, `error_message`), `POST /reporting/pipeline-runs` (202, 409 while a run row is `running`, 503 without Prefect).
   - Token-protected knowledge assistant: `POST /knowledge/query` (`{question}` -> `{answer}`, the generated text only; 422 for a blank, over-long or extra-field body; 503 when Qdrant or a model is unavailable or not configured).
-  - Token-protected knowledge agent (LangGraph, coexists with the above):
+  - Token-protected knowledge agent (LangGraph, coexists with the above). Since SEC-114 an admin/manager account is a staff session and any other account a customer session; a refusal is a 200 with the refusal as the answer:
     - `POST /agent/query`: `{question}` -> `{run_id, answer}`. 422 `{detail: {message, run_id}}` when the graph refuses an empty question; 422 for an over-long or extra-field body; 503 (retryable node failure) or 500 (other) with the failed step's name and the `run_id`, never exception text.
-    - `GET /agent/runs/{run_id}`: the run's trace, for the user who ran it only (404 otherwise).
+    - `GET /agent/runs/{run_id}`: the run's trace, for the staff user who ran it only (404 otherwise; 403 for customers).
+    - `GET /agent/memory` (staff; 403 for customers) and `GET /agent/guardrails/summary?since=&until=&conversation_id=` (staff): how many times each guardrail was triggered.
     - The router only calls `runner.run_agent`.
   - Unauthenticated at this stage: `POST /api/incidents`, `GET /api/incidents` (filters `status`, `origin`, `branch`, `category`, `reference`), `GET /api/incidents/summary`, `GET /api/incidents/{id}`, `PATCH /api/incidents/{id}/status`. Anyone in the company reports incidents, and no incident route exposes the commercially sensitive data that makes `/suppliers` token-only. Revisit when the panel lands.
 - The TrackFlow MCP server (:8100, separate process) exposes the incident routes and inventory reads to OAuth-authorized MCP clients: `POST /mcp` (Streamable HTTP, bearer token validated by MCP Auth) and the public `GET /.well-known/oauth-protected-resource/mcp` and `GET /healthz`. See `docs/mcp/mcp-server.md`.

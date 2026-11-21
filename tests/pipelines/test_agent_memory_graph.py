@@ -29,6 +29,7 @@ from services.agent.state import (
     CLASSIFY_MEMORY_REPLY,
     COMPOSE_RESPONSE,
     GENERATE_ANSWER,
+    GUARD_INPUT,
     MEMORY_DISCARDED_TOPIC,
     MEMORY_DISCARDED_UNCLEAR,
     MEMORY_QUESTION,
@@ -42,6 +43,7 @@ from services.agent.state import (
     RECEIVE_QUESTION,
     RESOLVE_MEMORY_PROPOSAL,
     RETRIEVE,
+    VALIDATE_OUTPUT,
 )
 from services.agent.tracing import TraceStore
 from tests.pipelines.rag_support import offline_rag  # noqa: F401
@@ -96,17 +98,24 @@ class ScriptedModel(FakeRag):
         self.replies: dict[str, ReplyClassification] = {}
         self.user_updates: list[bool] = []
 
-    def choose_sources(self, question: str) -> dict[str, Any]:
+    def choose_sources(self, question: str, *, audience: str = "staff") -> dict[str, Any]:
         self.plan_calls.append(question)
+        self.plan_audiences.append(audience)
         return {**plan(step("knowledge_base")), "user_update": question in self.updates}
 
-    def generate_response(self, question, context, *, memories=None, user_update=False):
+    def generate_response(
+        self, question, context, *, memories=None, user_update=False, session_notes=None
+    ):
         self.user_updates.append(user_update)
         draft = self.proposals.get(question)
         self.memory_check = "propose" if draft else self.checks.get(question, "nothing_to_remember")
         self.proposal = draft
         return super().generate_response(
-            question, context, memories=memories, user_update=user_update
+            question,
+            context,
+            memories=memories,
+            user_update=user_update,
+            session_notes=session_notes,
         )
 
     def classify(self, message: str, proposal: dict[str, Any]) -> ReplyClassification:
@@ -173,10 +182,12 @@ def test_a_correction_is_proposed_in_the_response_and_nothing_is_stored(
     trace = traces.get_trace(result.run_id)
     assert trace.node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         RECALL_MEMORY,
         PLAN_SOURCES,
         RETRIEVE,
         GENERATE_ANSWER,
+        VALIDATE_OUTPUT,
         PROPOSE_MEMORY,
         COMPOSE_RESPONSE,
     ]
@@ -223,7 +234,7 @@ def test_without_evidence_and_without_an_update_the_answer_stays_the_fixed_one(
 ):
     model.context = []
 
-    result = say("Who won the last football World Cup?", graph, traces)
+    result = say("What is the parental leave policy for TrackFlow employees?", graph, traces)
 
     assert result.answer == NO_INFORMATION_ANSWER
     assert model.generate_calls == []
@@ -260,6 +271,7 @@ def test_cycle_a_an_approved_memory_is_used_in_a_new_conversation(model, graph, 
     assert approved.memory["decision"]["outcome"] == "approved"
     assert traces.get_trace(approved.run_id).node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         CLASSIFY_MEMORY_REPLY,
         RESOLVE_MEMORY_PROPOSAL,
         COMPOSE_RESPONSE,
@@ -323,8 +335,9 @@ def test_changing_the_topic_discards_the_proposal_and_answers_the_new_question(
     assert result.memory["decision"]["outcome"] == "discarded"
     assert memory.active_memories() == []
     assert model.plan_calls[-1] == question
-    assert traces.get_trace(result.run_id).node_names()[:4] == [
+    assert traces.get_trace(result.run_id).node_names()[:5] == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         CLASSIFY_MEMORY_REPLY,
         RESOLVE_MEMORY_PROPOSAL,
         RECALL_MEMORY,
@@ -454,7 +467,8 @@ def test_the_api_carries_the_conversation_and_the_memory(client, monkeypatch, mo
     from tests.test_agent_api import sign_in
 
     monkeypatch.setattr(security, "BCRYPT_ROUNDS", 4)
-    headers, user_id = sign_in(client, "cx@trackflow.com")
+    # A CX staff member (SEC-114: only staff sessions propose and approve team memory).
+    headers, user_id = sign_in(client, "cx@trackflow.com", role="manager")
     model.proposals[SEUR_CORRECTION] = SEUR_DRAFT
     model.replies["yes"] = approve()
 
@@ -474,7 +488,7 @@ def test_the_api_carries_the_conversation_and_the_memory(client, monkeypatch, mo
         (SEUR_MEMORY, user_id, "SEUR, ES")
     ]
 
-    other, _ = sign_in(client, "other@trackflow.com")
+    other, _ = sign_in(client, "other@trackflow.com", role="manager")
     stolen = client.post(
         "/agent/query",
         json={"question": "no", "conversation_id": first["conversation_id"]},
