@@ -17,5 +17,12 @@ This folder is for **evaluation and validation**: evaluation datasets, golden se
   - for each question, the expected document and a phrase the correct chunk contains;
   - 6 out-of-scope questions, two of them business-sounding (revenue, refrigerated storage), used to choose the similarity threshold and never counted in Recall@3.
 - `rag/retrieval_eval.json` (versioned, rewritten by `npm run rag:eval`): Recall@3 on the ranking alone and with `MIN_SCORE` applied (the ≥ 80% gate), each question's rank and score, and the threshold evidence. It needs the indexed collection and the embeddings model. See `docs/rag/rag-design.md`.
+- `rfp_intake/smoke.json` (versioned, rewritten by `npm run rfp:smoke`): the RFP intake's live check (Milestone 9 Part 1). It holds, for each of the briefing's three sample PDFs (`PDF-examples/`):
+  - the expected and actual outcome: accepted or discarded, departments, country, currency, monthly volume;
+  - the classifier's label and reasons;
+  - the metadata, department sections and Sales brief;
+  - the run time and the model tokens spent;
+  - and, over all three, the correct-classification rate (briefing §3).
+  It uses the real models and a temporary SQLite database, so it leaves no ticket behind. See `docs/rfp/rfp-intake.md`.
 
 > _Spanish version: [README.es.md](./README.es.md)._

@@ -15,6 +15,12 @@ This repository currently contains two website implementations related to TrackF
   - Inventory has four protected, literal `/backoffice/inventory/...` routes: `products`, `orders/inbound`, `orders/outbound`, and read-only `orders`. `lib/inventory.ts` owns every inventory call using the existing authenticated transport; live movement endpoints remain `/inventory/products/inbound` and `/inventory/products/outbound`. The shared form fetches selected outbound stock, ignores stale responses, and preserves API quantity errors during refresh. See `docs/INVENTORY.md`.
   - Leadership dashboard: the protected `/reporting` route ("Weekly report") renders the four BRIEFING KPIs for one ISO week, per warehouse and client, from `GET /reporting/weekly-warehouse-client-performance`, plus freshness notices from `GET /reporting/pipeline-runs/latest`. `lib/reporting.ts` validates both responses and holds the KPI names and plain-language descriptions; `components/reporting/WeeklyPerformanceDashboard.tsx` follows the incident panel's data-viz rules (one hue, table with bars, a full table view). The route is not in the telemetry section catalogue yet.
   - Knowledge assistant (Milestone 7, RAG): the protected `/knowledge` route ("Knowledge assistant" in the nav). `lib/knowledge.ts` posts `{question}` to `POST /knowledge/query` and refuses any reply without a non-empty `answer`, so a failure never looks like an empty answer. `components/knowledge/KnowledgeAssistantPage.tsx` has the question box, the briefing's example questions, and distinct loading, failure and answer states. The route is not in the telemetry section catalogue.
+  - RFP intake (Milestone 9 Part 1, since 2026-11-21): the protected `/rfp` ("RFP intake" in the nav) and `/rfp/[id]`.
+    - `lib/rfp.ts` owns the three calls: a multipart `POST /rfp/tickets` with no Content-Type (the browser sets the boundary), `GET /rfp/tickets`, and `GET /rfp/tickets/{id}`.
+    - It validates every reply before rendering it, and maps 403, 404, 413 and 415 to its own copy.
+    - `components/rfp/`: the upload zone (several PDFs, one ticket each) and the ticket list, which polls every 3 s while a ticket is `analyzing`.
+    - The Sales view: the brief, one "Ask <owner>" card per department, the request with any missing value stated plainly, the processing cost, and stage progress.
+    - Not in the telemetry section catalogue. UUID path segments are already templated.
   - Dark mode (since 2026-11-08) for the whole backoffice, following `prefers-color-scheme`, with no toggle. `app/globals.css` does two things in dark mode:
     - gives the backoffice tokens dark values, plus a new `--on-brand` token (text on brand fills, which replaces `text-white` on buttons);
     - re-points the Tailwind palette variables the screens use (slate, red, orange, amber, emerald, blue), so existing classes keep their role with no `dark:` variants.
@@ -183,6 +189,28 @@ This repository currently contains two website implementations related to TrackF
     - `npm run agent -- guardrails [--since] [--recent N] [--json]`, and `GET /agent/guardrails/summary` (staff).
   - Tests: `tests/pipelines/harness/` (428, `npm run agent:harness`, prints the trigger table), with the corpus `data/eval/agent/harness-cases.json` (104 cases). The live smoke run (optional) is `npm run agent:harness:smoke` -> `data/eval/agent/harness-smoke.json`.
   - API tests: `sign_in(..., role="manager")` makes a staff account; self-registered accounts are customers.
+- RFP intake and routing (since 2026-11-21, Milestone 9 Part 1; brief `lead-instr.png` + `stages-todo.png`, briefing the root `agentic-workflow-context.md`; design in `docs/rfp/rfp-intake.md`, Part 2 contract in `docs/rfp/handoff-contract.md`):
+  - What it is: a dedicated LangGraph graph `rfp_intake` in `data/pipelines/rfp_intake/`. It is not part of the CX/knowledge agent, and it imports nothing from `services/`.
+  - Graph: `convert_to_markdown` -> `classify_document` -> (`discard_ticket` | `measure_readability` -> `extract_metadata` -> `plan_departments` -> `Send` one `analyze_department` per department -> `synthesize_brief` -> `complete_intake`).
+    - Engine, agents and settings come through `context_schema=IntakeContext` (LangGraph `Runtime`), so tests run this same graph with fake agents.
+    - Each node runs in `graph._step`: it sets `current_stage`, writes an `rfp_ticket_events` row (duration, tokens), and turns any failure into `StageFailed`.
+    - `MODEL_RETRY` gives an `InvalidModelReply` one more attempt. There is no checkpointer.
+  - `runner.run_intake(ticket_id, engine)` never raises: a ticket always ends `intake_complete`, `discarded` or `failed` (`failed` is added to the briefing's statuses, with `error_stage`).
+    - `store.sweep_abandoned` closes runs that died with their process. It runs at start-up and on list.
+    - `reprocess` re-runs `failed` / `discarded` tickets.
+  - The five agents: one forced tool call each (`llm.call_tool`, `GENERATION_MODEL` through the RAG settings, `RFP_LLM_TIMEOUT_SECONDS` default 120, client `max_retries=1`), the RFP in an `<<untrusted>>` envelope, then deterministic guards (`text.appears_in`, `unsupported_figures`, where "15.000" = "15,000"):
+    - classifier: recall-first; a ticket is discarded only on a confident, consistent "not an RFP";
+    - metadata: every value must have a verbatim quote; a volume must be orders per month (a SKU count is not); a date needs its year; the currency comes from the country;
+    - orchestrator: its departments are reconciled with the requested services, and non-verbatim extracts dropped;
+    - workers: they receive only the metadata and their own extracts; aspects with invented figures are dropped; a missing volume becomes an open question;
+    - synthesizer: owners come from the briefing; every department gets an ask.
+  - Conversion: MarkItDown's `PdfConverter`, called directly (`MarkItDown.convert` returns a corrupt PDF's raw bytes as text); `(cid:N)` glyphs become bullets; no OCR.
+  - Readability: `py-readability-metrics` (needs at least 100 words, and NLTK `punkt`/`punkt_tab`: `npm run rfp:setup`, the Dockerfile downloads them) plus characters/4 token estimates and a cost tier.
+  - Dependencies: `markitdown[pdf]` 0.1.9 and `py-readability-metrics` 1.4.5, added with `uv add`; `requirements.txt` re-exported.
+  - HTTP: `services/rfp/` (router, models, `lifecycle.initialize` called by the lifespan). It runs the graph as a FastAPI `BackgroundTasks` in the API process.
+  - CLI: `npm run rfp -- run|reprocess|show|list|handoff|graph|handoff-schema`.
+  - Live check: `npm run rfp:smoke` runs the three briefing PDFs on a temporary SQLite and writes `data/eval/rfp_intake/smoke.json`.
+  - Tests: `tests/pipelines/rfp_intake/` (88), `tests/test_rfp_api.py` (20), opt-in `tests/test_rfp_postgres.py` (5), Jest `rfp.test.ts` (15). The autouse `isolated_rfp_intake` fixture points `RFP_UPLOAD_DIR` at `tmp_path` and forbids `llm._client`.
 - `packages/shared/trackflow_shared/` is a Python package mapped into the wheel from `pyproject.toml` next to `services` and `scripts`. It carries rules that both the API and the `/scripts` tooling must agree on and that neither owns: the incident enumerations and lifecycle (`incidents.py`) and the helpdesk-CSV validation plus CSV -> model maps (`incidents_csv.py`). It imports no framework.
 - Error translation lives in `services/core/http_errors.py`. Domain errors (`ValidationFailed`, `IncidentNotFound`) are translated there, so the service layer stays HTTP-agnostic, and a bare `Exception` handler turns any unhandled failure into a 500 that names nothing about the exception, with the traceback going to the `trackflow.errors` logger. Every incident error body has the same `{detail: {field, message}}` shape. See `docs/INCIDENTS.md`.
 - **The 422 -> 400 remapping is scoped to `/api/incidents`, and must stay that way.** Starlette's exception handlers are global, so `make_validation_error_handler(prefixes)` takes the prefix (read off `incidents_router.prefix`) and hands everything else to FastAPI's own handler. Applying it app-wide breaks password recovery: `resetPassword` in `uis/*/services/auth-service.ts` reads **any** 400 as a spent reset token and replaces the form with "request a new link", so a too-short password would tell the user their link had expired. `changePassword` reads a 400 as "current password is wrong". `tests/test_error_contract.py` pins both halves.
@@ -225,6 +253,12 @@ This repository currently contains two website implementations related to TrackF
   - `weekly_warehouse_client_performance_revisions` (append-only), `pipeline_run_collection_stats` and `pipeline_run_exclusions`.
   - RLS is on everywhere, with no policies. Unique constraints are matched by columns, because a hand-made BRIEFING table has PostgreSQL's truncated name.
   - The load is one transaction: `set_config` run id, `pg_advisory_xact_lock`, stale-snapshot check, upsert that skips unchanged rows, stale-key delete, stats, exclusions, then `completed`. Extraction runs in `READ ONLY` transactions.
+- RFP intake tables (since 2026-11-21, `data/pipelines/rfp_intake/models.py`), in the public schema:
+  - `rfp_tickets`, `rfp_metadata`, `rfp_department_sections` (the Part 2/3 columns already exist, nullable), `rfp_handoffs` (the Part 2 queue: `next_stage`, `status`, a JSONB payload `rfp-intake/1`), and `rfp_ticket_events`.
+  - JSON columns are JSONB on PostgreSQL and JSON elsewhere; every check is a portable `IN (...)`. RLS is on, with no policies.
+  - They have their own SQLModel registry (`RfpModel.metadata`), separate from the inventory tables' `SQLModel.metadata`.
+  - Created by `store.initialize_schema` at API start-up.
+  - Uploaded PDFs are in `data/raw/rfp/<ticket_id>.pdf` (git-ignored). The converted Markdown is stored on the ticket.
 - `job_runs` (public, `services/job_runner/models.py`, created by `ensure_schema` before every nightly run, reviewable SQL in `services/job_runner/migrations/001_create_job_runs.sql`):
   - Columns: `id` uuid (Python-generated), `job_name`, `target_date` date NOT NULL, `status` pending/processing/completed/failed, `started_at`, `finished_at`, `error_message`, `created_at default now()`.
   - Checks `job_runs_{status,started,finished,error_message}_ck`.
@@ -249,6 +283,10 @@ This repository currently contains two website implementations related to TrackF
     - `GET /agent/runs/{run_id}`: the run's trace, for the staff user who ran it only (404 otherwise; 403 for customers).
     - `GET /agent/memory` (staff; 403 for customers) and `GET /agent/guardrails/summary?since=&until=&conversation_id=` (staff): how many times each guardrail was triggered.
     - The router only calls `runner.run_agent`.
+  - Staff-only RFP intake (admin/manager through `services/auth/dependencies.py::StaffUser`; a `user` account gets 403):
+    - `POST /rfp/tickets`: multipart `file`, 202; 415 not a PDF, 413 over `RFP_MAX_UPLOAD_MB`, 422 empty, 503 storage failure;
+    - `GET /rfp/tickets`: the 50 newest;
+    - `GET /rfp/tickets/{id}`: the full Sales view, no Markdown.
   - Unauthenticated at this stage: `POST /api/incidents`, `GET /api/incidents` (filters `status`, `origin`, `branch`, `category`, `reference`), `GET /api/incidents/summary`, `GET /api/incidents/{id}`, `PATCH /api/incidents/{id}/status`. Anyone in the company reports incidents, and no incident route exposes the commercially sensitive data that makes `/suppliers` token-only. Revisit when the panel lands.
 - The TrackFlow MCP server (:8100, separate process) exposes the incident routes and inventory reads to OAuth-authorized MCP clients: `POST /mcp` (Streamable HTTP, bearer token validated by MCP Auth) and the public `GET /.well-known/oauth-protected-resource/mcp` and `GET /healthz`. See `docs/mcp/mcp-server.md`.
 - `uis/backoffice` consumes the `/suppliers` routes with `Authorization: Bearer <token>` on every call.

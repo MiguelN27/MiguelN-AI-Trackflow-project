@@ -8,6 +8,9 @@ RUN pip install --no-cache-dir uv
 
 COPY requirements.txt pyproject.toml ./
 RUN uv pip install --system -r requirements.txt
+# The tokenizers py-readability-metrics needs for the RFP intake metrics, in a
+# directory NLTK searches by default.
+RUN python -m nltk.downloader -d /usr/local/share/nltk_data punkt punkt_tab
 
 COPY services ./services
 COPY scripts ./scripts

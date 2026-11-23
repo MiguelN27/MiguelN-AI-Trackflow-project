@@ -18,6 +18,9 @@ data/raw/.telemetry_*.csv.partial
 # which hold the questions people asked. Recorded eval traces live in
 # data/eval/agent/ and are committed.
 data/agent/
+# RFP intake (Milestone 9): the uploaded PDFs, a runtime artifact of the
+# process. The tickets, metadata and key aspects live in PostgreSQL.
+data/raw/rfp/
 logs/
 .DS_Store
 .env

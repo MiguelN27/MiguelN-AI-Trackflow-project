@@ -9,6 +9,8 @@ incidents leak into the next and into `data/suppliers.json`.
 import pytest
 from fastapi.testclient import TestClient
 
+from data.pipelines.rfp_intake import config as rfp_config
+from data.pipelines.rfp_intake import llm as rfp_llm
 from services.agent import config as agent_config
 from services.agent import graph as agent_graph
 from services.agent import planner as agent_planner
@@ -23,6 +25,7 @@ from services.core import db as core_db
 from services.incidents.read_cache import clear_read_cache
 from services.inventory import database as inventory_database
 from services.main import app
+from services.rfp import lifecycle as rfp_lifecycle
 from services.tasks.celery_app import celery_app
 from services.telemetry import database as telemetry_database
 
@@ -108,6 +111,7 @@ def isolated_postgres(monkeypatch):
     monkeypatch.setattr(inventory_database, "check_connection", lambda: None)
     monkeypatch.setattr(inventory_database, "initialize_schema", lambda: None)
     monkeypatch.setattr(telemetry_database, "initialize_schema", lambda: None)
+    monkeypatch.setattr(rfp_lifecycle, "initialize", lambda: None)
     yield
     monkeypatch.setattr(inventory_database, "get_engine", engine_factory)
     dispose()
@@ -200,6 +204,23 @@ def isolated_agent_tools(monkeypatch):
     monkeypatch.setattr(agent_mcp_client, "http_client_factory", forbid_mcp)
     monkeypatch.setattr(agent_planner, "_planner_client", forbid_planner)
     monkeypatch.setattr(agent_memory_classifier, "_classifier_client", forbid_classifier)
+
+
+@pytest.fixture(autouse=True)
+def isolated_rfp_intake(tmp_path, monkeypatch):
+    """Uploaded PDFs go to the test's directory, and no intake agent reaches a model.
+
+    Tests fake the agents (`IntakeAgents`) or `llm._client` explicitly.
+    """
+    monkeypatch.setenv("RFP_UPLOAD_DIR", str(tmp_path / "rfp-uploads"))
+    rfp_config.get_rfp_settings.cache_clear()
+
+    def forbid_model():
+        raise AssertionError("Unit tests must not call the RFP intake model")
+
+    monkeypatch.setattr(rfp_llm, "_client", forbid_model)
+    yield
+    rfp_config.get_rfp_settings.cache_clear()
 
 
 @pytest.fixture

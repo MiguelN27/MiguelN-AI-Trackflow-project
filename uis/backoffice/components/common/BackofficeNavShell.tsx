@@ -11,6 +11,8 @@ const NAV_LINKS = [
   // The commercial team's assistant: questions about SLAs, returns, carriers
   // and storage pricing, answered from the indexed policies.
   { href: "/knowledge", label: "Knowledge assistant" },
+  // Sales uploads client RFPs and reads what each department needs (Milestone 9).
+  { href: "/rfp", label: "RFP intake" },
   { href: "/incidents", label: "Incidents" },
   // Its own entry rather than a button buried in the list: the people the
   // incident manager is for are reporting from a warehouse terminal, and the

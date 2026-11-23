@@ -1,6 +1,78 @@
 # Development Progress
 
-Last updated: 2026-11-14
+Last updated: 2026-11-21
+
+## Update 2026-11-21 - RFP intake and routing (Milestone 9 Part 1)
+
+Goals accomplished. The brief is the updated `lead-instr.png`, with the checklist in `stages-todo.png`. The briefing is the root `agentic-workflow-context.md` (the ticket's `company-BRIEFING.md`). The sample PDFs are in the root `PDF-examples/`, not the briefing's `rfp-requests/trackflow/`. Branch `feature/rfp-intake`. Design: `docs/rfp/rfp-intake.md`; Part 2 contract: `docs/rfp/handoff-contract.md`.
+
+- Decided with the developer: the RFP routes are **staff only** (admin/manager; a `user` account gets 403), and verification uses `PDF-examples/`.
+- **Monorepo layout:**
+  - no new API service: `services/rfp/` (router, models, lifespan hook) on the existing backend;
+  - the dedicated `rfp_intake` LangGraph graph in `data/pipelines/rfp_intake/` (nothing imports `services/`; the existing guard covers it);
+  - the CLI `scripts/rfp_intake.py` (`npm run rfp`).
+- **Persistence:** five PostgreSQL tables through SQLModel, with their own registry (`RfpModel.metadata`) so the inventory metadata stays exactly its own:
+  - `rfp_tickets`, `rfp_metadata`;
+  - `rfp_department_sections`, with `key_aspects` and the Part 2/3 columns already in place;
+  - `rfp_handoffs`, `rfp_ticket_events`.
+- **Intake interface:**
+  - `/rfp` in the backoffice: upload several PDFs (one ticket each); the list polls while a ticket is `analyzing`;
+  - `/rfp/[id]`, the Sales view: the brief, "Ask <owner>" per department, the request with missing values stated plainly, the processing cost, and progress.
+  - `POST /rfp/tickets` validates the file, stores it under `data/raw/rfp/`, and answers 202. The graph runs as a background task in the API process.
+- **Ingestion:**
+  - MarkItDown's `PdfConverter`, called directly: `MarkItDown.convert` returns a corrupt PDF's raw bytes as text, which was found and fixed;
+  - metadata from the briefing's fields with verbatim evidence;
+  - readability (`py-readability-metrics`, plus token estimates and a cost tier), stored with the ticket.
+- **Classifier agent:** the briefing's criteria; recall-first; a discard needs a confident, consistent verdict. The flow then stops at `discarded` with its reason.
+- **Orchestrator-worker-synthesizer:**
+  - the orchestrator's departments are reconciled with the requested services;
+  - the workers (`Send`, in parallel) get only the metadata and their own extracts;
+  - the guards drop invented figures and unverified quotes, and a missing volume becomes an open question;
+  - the synthesizer says what to ask whom, with the owners taken from the briefing.
+- **Routing:** an `rfp_handoffs` row (`ticket_id` + an `IntakeHandoff` payload, `rfp-intake/1`, `next_stage = drafting`). Part 2 takes work with `claim_next` (`FOR UPDATE SKIP LOCKED`), which moves the ticket to `drafting`.
+- **Never silent:**
+  - a `failed` status (an addition to the briefing's list) with the failed stage;
+  - a per-node event trace;
+  - a stale sweep for runs that died with the API;
+  - `npm run rfp -- reprocess`.
+- **Dependencies** (`uv add`): `markitdown[pdf]` 0.1.9 and `py-readability-metrics` 1.4.5 (they bring nltk, pdfminer and onnxruntime). `requirements.txt` re-exported; the Dockerfile downloads NLTK `punkt`/`punkt_tab`; `npm run rfp:setup` does it locally.
+- **Live verification** (4Geeks `gpt-6-luna`):
+  - `npm run rfp:smoke` passed 3/3, correct-classification rate 1.0 (`data/eval/rfp_intake/smoke.json`):
+    - ModaViva: warehouse + reverse, ES/EUR, volume null with an open question;
+    - Luna Cosmetics: warehouse + lastmile, US/USD, 5,000 a month, go-live date left without a year;
+    - RapidShip: discarded.
+  - **Through the UI** (Chrome via playwright-core, a manager account), with the API on a throwaway `postgres:17-alpine` because the Supabase pooler timed out again:
+    - all three PDFs uploaded in 185 ms;
+    - the list reached its final states in 28 s without a reload, with the same outcomes;
+    - Sales views checked in light, dark and mobile (no horizontal overflow), with no console errors;
+    - a `user` account sees the staff-only message;
+    - the PDFs were stored in `data/raw/rfp/`.
+  - The first live runs caught real issues, fixed before the final run:
+    - workers' quotes carried the extract numbering, so real requirements were dropped;
+    - a SKU count could pass as a monthly volume;
+    - quotes kept PDF line breaks;
+    - asks keyed by owner name were not matched;
+    - client questions were repeated.
+- **Verification:**
+  - RFP suites: 88 pipeline + 20 API tests, and 5 opt-in PostgreSQL tests on the throwaway server;
+  - backoffice Jest 306 (15 new), `tsc` and ESLint clean;
+  - `ruff format` / `ruff check --isolated` clean on every changed Python file (only added hunks in pre-existing files);
+  - mypy clean on the RFP modules and tests;
+  - full backend suite: **1970 passed, 56 skipped, 0 failed**, without the two recorded-eval files (the 56 skips include the 5 opt-in PostgreSQL tests);
+  - the memory evals pass 171/171. The Part 1-3 agent evals are still stale, as before.
+  - The full suite caught one regression, fixed: the RFP tables had joined the shared `SQLModel.metadata` that the inventory tests pin. They now have their own registry, and a test guards it.
+
+Still missing / next goals:
+1. **Supabase:** the pooler timed out again (paused project?). Once it is back, inspect the live schema for `rfp_*` tables before the first API start against it, then upload the three PDFs again there.
+2. **Part 2:** proposal drafting and evaluation (readability, relevance, the §5 compliance rules: currency, SLA, returns no faster than 48 h, discount tiers, no carrier rates). Take work with `handoff.claim_next` and write the `draft_content` / `evaluation_results` columns.
+3. Commit when asked (AGENTS.md workflow). Ask whether `agentic-workflow-context.md`, `PDF-examples/` (the tests read them) and the updated PNGs go in. Include `data/eval/rfp_intake/smoke.json`.
+4. Optional:
+   - duplicate-upload detection by SHA-256;
+   - a "Retry" button for staff on failed tickets;
+   - a queue worker (the existing Celery) if volume grows;
+   - OCR for scanned RFPs;
+   - pairing table columns after conversion.
+5. Still open from earlier: re-recording the Part 1-3 agent evals; Auth0 and the MCP Playground.
 
 ## Update 2026-11-14 - The agent's protection harness (SEC-114, Milestone 8 Part 2)
 
