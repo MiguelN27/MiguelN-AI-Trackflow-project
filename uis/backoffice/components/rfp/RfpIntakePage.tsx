@@ -8,13 +8,14 @@ import {
   COUNTRY_NAMES,
   DEPARTMENT_NAMES,
   MAX_UPLOAD_MB,
-  POLL_INTERVAL_MS,
   RFP_PATH,
   STAFF_ONLY_MESSAGE,
   checkPdf,
   describeRfpError,
   isAnalyzing,
   isStaffOnlyError,
+  isWorking,
+  listPollDelay,
   listRfpTickets,
   stageLabel,
   uploadRfp,
@@ -60,9 +61,10 @@ export function RfpIntakePage() {
         if (!active) return;
         setTickets(items);
         setListError(null);
-        // Keep reading while anything is still being analysed.
-        if (items.some((ticket) => isAnalyzing(ticket.status))) {
-          timer = setTimeout(() => setRefresh((value) => value + 1), POLL_INTERVAL_MS);
+        // Keep reading while anything is being analysed or drafted.
+        const delay = listPollDelay(items);
+        if (delay !== null) {
+          timer = setTimeout(() => setRefresh((value) => value + 1), delay);
         }
       })
       .catch((failure: unknown) => {
@@ -254,7 +256,7 @@ export function RfpIntakePage() {
                         <td className="min-w-0 sm:px-3 sm:py-4">
                           <span className="mb-1 block text-xs text-slate-600 sm:hidden">Status</span>
                           <RfpStatusBadge status={ticket.status} />
-                          {isAnalyzing(ticket.status) ? (
+                          {isWorking(ticket.status) ? (
                             <span className="mt-1 block text-xs text-slate-600">{stageLabel(ticket.current_stage)}</span>
                           ) : null}
                         </td>

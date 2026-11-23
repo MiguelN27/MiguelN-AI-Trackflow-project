@@ -3,16 +3,21 @@
 import Link from "next/link";
 import { type ReactNode, useEffect, useState } from "react";
 import { StateMessage } from "@/components/common/StateMessage";
+import { ProposalSectionCard } from "@/components/rfp/ProposalSectionCard";
 import { RfpStatusBadge } from "@/components/rfp/RfpStatusBadge";
 import {
   COUNTRY_NAMES,
-  POLL_INTERVAL_MS,
+  DEPARTMENT_NAMES,
   RFP_PATH,
   SERVICE_LABELS,
   describeRfpError,
+  failedWhileDrafting,
   formatBytes,
   getRfpTicket,
   isAnalyzing,
+  isDrafting,
+  isQueuedForDrafting,
+  pollDelay,
   stageLabel,
   stageProgress,
   type RfpMetadata,
@@ -245,6 +250,82 @@ function Progress({ ticket }: { ticket: RfpTicketDetail }) {
   );
 }
 
+function ProposalArea({ ticket }: { ticket: RfpTicketDetail }) {
+  const drafted = ticket.sections.filter((section) => section.draft_status !== null);
+  const queued = isQueuedForDrafting(ticket);
+  if (drafted.length === 0 && !queued && !isDrafting(ticket.status)) return null;
+  const proposal = ticket.proposal;
+  const review = ticket.sections.filter((section) => section.needs_human_review);
+  const maxIterations = proposal?.max_iterations ?? drafted.find((section) => section.max_iterations)?.max_iterations;
+  const rateCard = proposal?.rate_card_version ?? drafted.find((section) => section.rate_card_version)?.rate_card_version;
+  let outcome: ReactNode;
+  if (queued) {
+    outcome = "Queued for proposal drafting: it starts on its own. This page updates on its own.";
+  } else if (isDrafting(ticket.status)) {
+    outcome = (
+      <>
+        Drafting and checking each department&apos;s section: {stageLabel(ticket.current_stage)}. This page updates on its
+        own.
+      </>
+    );
+  } else if (ticket.status === "needs_human_review") {
+    outcome = (
+      <>
+        <span className="font-semibold text-orange-700">
+          {review.length} of {ticket.sections.length} section{ticket.sections.length === 1 ? "" : "s"} did not pass within{" "}
+          {maxIterations ?? "the"} attempts and need{review.length === 1 ? "s" : ""} a person&apos;s review.
+        </span>{" "}
+        They are still in the proposal, with their last draft and its review:{" "}
+        {review.map((section) => DEPARTMENT_NAMES[section.department_id] ?? section.department_id).join(", ")}.
+      </>
+    );
+  } else if (ticket.status === "waiting_for_approval") {
+    outcome = (
+      <>
+        <span className="font-semibold text-emerald-800">Every section passed its automatic review.</span> Each department
+        owner can now approve their own section.
+      </>
+    );
+  } else {
+    outcome = "The drafts below are from the last drafting run.";
+  }
+  return (
+    <section aria-labelledby="proposal-heading">
+      <div className={cardClass}>
+        <h2 id="proposal-heading" className="text-lg font-semibold">
+          Proposal draft
+        </h2>
+        <p className="mt-2 text-sm leading-relaxed">{outcome}</p>
+        {proposal?.average_iterations_per_section != null || rateCard ? (
+          <dl className="mt-3 grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
+            {proposal?.average_iterations_per_section != null ? (
+              <div>
+                <dt className={labelClass}>Attempts per section</dt>
+                <dd className="mt-0.5 tabular-nums">
+                  {proposal.average_iterations_per_section} on average (target: fewer than 2)
+                </dd>
+              </div>
+            ) : null}
+            {rateCard ? (
+              <div>
+                <dt className={labelClass}>Prices</dt>
+                <dd className="mt-0.5">Rate card {rateCard}: indicative, to be confirmed by Commercial</dd>
+              </div>
+            ) : null}
+          </dl>
+        ) : null}
+      </div>
+      {drafted.length > 0 ? (
+        <div className="mt-5 grid gap-5 lg:grid-cols-2">
+          {drafted.map((section) => (
+            <ProposalSectionCard key={section.department_id} section={section} currentStage={ticket.current_stage} />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 /** One RFP ticket, as Sales reads it: what is needed from each department and who to ask. */
 export function RfpTicketPage({ ticketId }: { ticketId: string }) {
   const [ticket, setTicket] = useState<RfpTicketDetail | null>(null);
@@ -259,8 +340,9 @@ export function RfpTicketPage({ ticketId }: { ticketId: string }) {
         if (!active) return;
         setTicket(detail);
         setError(null);
-        if (isAnalyzing(detail.status)) {
-          timer = setTimeout(() => setRefresh((value) => value + 1), POLL_INTERVAL_MS);
+        const delay = pollDelay(detail);
+        if (delay !== null) {
+          timer = setTimeout(() => setRefresh((value) => value + 1), delay);
         }
       })
       .catch((failure: unknown) => {
@@ -341,7 +423,18 @@ export function RfpTicketPage({ ticketId }: { ticketId: string }) {
               </StateMessage>
             ) : null}
 
-            {ticket.status === "failed" ? (
+            {failedWhileDrafting(ticket) ? (
+              <StateMessage tone="error">
+                <p className="font-semibold">The proposal drafting stopped at “{stageLabel(ticket.error_stage)}”.</p>
+                <p className="mt-1">{ticket.error_message}</p>
+                <p className="mt-2 text-xs">
+                  The analysis below is intact. TrackFlow Tech can draft it again with{" "}
+                  <code className="font-mono">npm run rfp -- redraft {ticket.ticket_id}</code>.
+                </p>
+              </StateMessage>
+            ) : null}
+
+            {ticket.status === "failed" && !failedWhileDrafting(ticket) ? (
               <StateMessage tone="error">
                 <p className="font-semibold">The analysis stopped at “{stageLabel(ticket.error_stage)}”.</p>
                 <p className="mt-1">{ticket.error_message}</p>
@@ -354,6 +447,8 @@ export function RfpTicketPage({ ticketId }: { ticketId: string }) {
             ) : null}
 
             {classification?.review_note ? <StateMessage tone="info">{classification.review_note}</StateMessage> : null}
+
+            <ProposalArea ticket={ticket} />
 
             {ticket.sales_brief ? <BriefCard brief={ticket.sales_brief} /> : null}
 

@@ -178,6 +178,25 @@ class ClaimedHandoff(BaseModel):
     claimed_by: str
 
 
+def _claim_row(session: Session, row: RfpHandoff, claimed_by: str) -> ClaimedHandoff:
+    """Mark `row` claimed and move its ticket from `intake_complete` to `drafting`."""
+    now = utcnow()
+    row.status = "claimed"
+    row.claimed_at = now
+    row.claimed_by = claimed_by[:100]
+    session.execute(
+        update(RfpTicket)
+        .where(
+            col(RfpTicket.id) == row.ticket_id,
+            col(RfpTicket.status) == TicketStatus.INTAKE_COMPLETE.value,
+        )
+        .values(status=TicketStatus.DRAFTING.value, current_stage="queued", updated_at=now)
+    )
+    handoff = IntakeHandoff.model_validate(row.payload)
+    session.commit()
+    return ClaimedHandoff(handoff=handoff, claimed_at=as_utc(now) or now, claimed_by=claimed_by)
+
+
 def claim_next(
     engine: Engine, *, claimed_by: str, next_stage: str = NEXT_STAGE
 ) -> ClaimedHandoff | None:
@@ -197,18 +216,21 @@ def claim_next(
         ).scalar_one_or_none()
         if row is None:
             return None
-        now = utcnow()
-        row.status = "claimed"
-        row.claimed_at = now
-        row.claimed_by = claimed_by[:100]
-        session.execute(
-            update(RfpTicket)
+        return _claim_row(session, row, claimed_by)
+
+
+def claim(engine: Engine, ticket_id: UUID | str, *, claimed_by: str) -> ClaimedHandoff | None:
+    """Claim one ticket's pending handoff; None when it has none pending (or it is locked)."""
+    with Session(engine) as session:
+        row = session.execute(
+            select(RfpHandoff)
             .where(
-                col(RfpTicket.id) == row.ticket_id,
-                col(RfpTicket.status) == TicketStatus.INTAKE_COMPLETE.value,
+                col(RfpHandoff.ticket_id) == as_uuid(ticket_id),
+                col(RfpHandoff.status) == "pending",
+                col(RfpHandoff.next_stage) == NEXT_STAGE,
             )
-            .values(status=TicketStatus.DRAFTING.value, updated_at=now)
-        )
-        handoff = IntakeHandoff.model_validate(row.payload)
-        session.commit()
-    return ClaimedHandoff(handoff=handoff, claimed_at=as_utc(now) or now, claimed_by=claimed_by)
+            .with_for_update(skip_locked=True)
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        return _claim_row(session, row, claimed_by)

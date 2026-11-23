@@ -33,6 +33,23 @@ class RfpIntakeSettings(BaseSettings):
     stale_after_minutes: int = Field(default=30, ge=1, le=24 * 60)
     max_document_chars: int = Field(default=60_000, ge=1_000, le=1_000_000)
 
+    # --- Part 2: proposal drafting and evaluation ---
+    # Drafts per section before it ships as `needs_human_review` (briefing §3
+    # targets fewer than 2 on average).
+    max_draft_iterations: int = Field(default=3, ge=1, le=6)
+    # Draft right after a successful intake (API background task).
+    auto_draft: bool = True
+    # How many queued handoffs one drain claims at most.
+    draft_batch_size: int = Field(default=5, ge=1, le=50)
+    # Readability of a section's prose: Flesch reading ease at least this...
+    readability_min_ease: float = Field(default=30.0, ge=0, le=100)
+    # ...and a Flesch-Kincaid grade at most this.
+    readability_max_grade: float = Field(default=14.0, ge=1, le=30)
+    # A second, model-based compliance reviewer that can only add violations.
+    compliance_reviewer: bool = True
+    # Knowledge-base passages per department query.
+    knowledge_top_k: int = Field(default=4, ge=1, le=10)
+
     @field_validator("*", mode="before")
     @classmethod
     def blank_is_default(cls, value: Any) -> Any:

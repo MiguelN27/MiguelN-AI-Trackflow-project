@@ -211,6 +211,40 @@ This repository currently contains two website implementations related to TrackF
   - CLI: `npm run rfp -- run|reprocess|show|list|handoff|graph|handoff-schema`.
   - Live check: `npm run rfp:smoke` runs the three briefing PDFs on a temporary SQLite and writes `data/eval/rfp_intake/smoke.json`.
   - Tests: `tests/pipelines/rfp_intake/` (88), `tests/test_rfp_api.py` (20), opt-in `tests/test_rfp_postgres.py` (5), Jest `rfp.test.ts` (15). The autouse `isolated_rfp_intake` fixture points `RFP_UPLOAD_DIR` at `tmp_path` and forbids `llm._client`.
+- Proposal drafting and self-evaluation (since 2026-11-23, Milestone 9 Part 2; brief `lead-instr.png` + `stages-todo.png` + `visual-ref.png`; design `docs/rfp/proposal-drafting.md`, Part 3 contract `docs/rfp/proposal-handoff-contract.md`):
+  - What it is: the subpackage `data/pipelines/rfp_intake/proposal/`, which imports nothing from `services/`. It has two LangGraph graphs:
+    - `rfp_proposal`: `plan_assignments` (the deterministic assignment orchestrator) -> `Send` one `draft_section` per department -> `synthesize_proposal` -> `complete_drafting`;
+    - `rfp_proposal_section`, the generator-evaluator loop: `retrieve_knowledge` -> `generate_section` -> {`check_readability`, `check_relevance`, `check_compliance`} in parallel -> `merge_evaluation` -> revise | `accept_section` | `escalate_section`.
+    - `draft_section` invokes the compiled subgraph with `context=runtime.context`. It turns a `StageFailed` into an outcome: the last evaluated draft as `needs_human_review`, or `failed` when none was evaluated.
+    - Stages carry the department and attempt (`generate_section:reverse#2`). Shared plumbing is in `rfp_intake/steps.py`: `run_step(statuses=)`, `StageFailed`, `MODEL_RETRY`, moved out of `graph.py`, which re-exports them.
+  - Input: only the claimed `IntakeHandoff` (`rfp-intake/1`), never the PDF or its Markdown.
+  - Decided with the developer:
+    - prices come from `proposal/rate_card.py` (`RATE_CARD_VERSION`): the knowledge base's real figures, each quoting its document (test-checked), plus Commercial's **indicative** list prices and discount tiers;
+    - the §5 SLA rule is checked on one designated section (`lastmile`, else the first active);
+    - the Sales view shows the drafts.
+  - Generators: one per department (`write_warehouse_section` / `write_lastmile_section` / `write_returns_section`), each with its own output model (`sections.DRAFT_MODELS`; the department fields are §2.1's contributions and §7's structured state).
+    - The deterministic guard `generators.check` drops and notes, never corrects: off-card prices or tiers, invented figures (`text.unsupported_figures` against handoff + card + KB), wrong SLA, capacity or carriers. A wrong currency or an under-48 h turnaround is left for compliance to fail.
+    - `render.py` writes the Markdown under fixed headings and adds the knowledge base's fixed sentences (SLA caveats, storage terms, "negotiated only by Miguel Torres").
+  - Evaluators, merged into `results.EvaluationResult`, which is served with the ticket's `pass` names (separate validation and serialization aliases keep `passed=` for mypy):
+    - readability: `readability.measure` on the prose only; ease ≥ 30, grade ≤ 14; under 100 words fails;
+    - relevance: §2.1 required elements (drift test) plus the model judge `judge_section_relevance`. Its evidence quotes must appear in the section (layout ignored, sentence by sentence), and ids it leaves out are asked for once more.
+    - compliance: `guidelines.py`, the five §5 rules verbatim (drift test), deterministic and authoritative, plus an optional reviewer `report_guideline_violations` that can only add violations.
+    - `feedback_for_generator` is deterministic. `decide`: accept, revise, or escalate (at `RFP_MAX_DRAFT_ITERATIONS`, default 3, or at once on a non-retryable violation, such as an unknown client country).
+  - Knowledge: `knowledge.retrieve_for`, `rag.retrieve` per department query, falling back to the `docs/company-knowledge-base/` files (`knowledge_source` qdrant | local | none).
+  - Statuses: `claim_next` sets `drafting`, the first saved draft sets `under_evaluation` (never back), then `waiting_for_approval` (all passed) or `needs_human_review` (at least one did not), or `failed`. The stale sweep now also covers `drafting` and `under_evaluation`.
+  - Persistence:
+    - `rfp_department_sections` gained `draft_status`, `draft_iterations`, `draft_data`, `draft_run_id` and `ready_at`. `initialize_schema` adds them with `ALTER TABLE … ADD COLUMN IF NOT EXISTS` plus the `ck_rfp_section_draft_status` check on PostgreSQL.
+    - New tables `rfp_section_drafts` (every attempt and its evaluation; the §3 KPI) and `rfp_proposal_handoffs` (the Part 3 queue `rfp-proposal/1`, `next_stage = approval`, `claim_next` with SKIP LOCKED).
+    - `handoff.claim` claims one ticket.
+  - Trigger: `POST /rfp/tickets` schedules `proposal.runner.run_pending` after `run_intake` when `RFP_AUTO_DRAFT` (default true). There is no new API process.
+  - Settings: `RFP_MAX_DRAFT_ITERATIONS`, `RFP_AUTO_DRAFT`, `RFP_DRAFT_BATCH_SIZE`, `RFP_READABILITY_MIN_EASE`, `RFP_READABILITY_MAX_GRADE`, `RFP_COMPLIANCE_REVIEWER`, `RFP_KNOWLEDGE_TOP_K`.
+  - CLI: `npm run rfp -- run [--no-draft] | draft [id] | redraft <id> | proposal <id> | kpi | graph --part 2 | proposal-schema [--write]`. `rfp:smoke` runs intake and then drafting, and records per-attempt failures and the iterations KPI.
+  - API and UI: `GET /rfp/tickets/{id}` adds the Part 2 section fields and a `proposal` block. `/rfp/[id]` has a "Proposal draft" area with `components/rfp/ProposalSectionCard.tsx`, which renders the fixed Markdown subset as React elements. Polling uses `isWorking` / `pollDelay` / `listPollDelay`.
+  - Tests:
+    - `tests/pipelines/rfp_intake/proposal/`, including the checklist's compliance-failure case in `test_guidelines.py`;
+    - `test_rfp_api.py` drafting tests; `test_rfp_postgres.py` Part 2 tests;
+    - Jest `rfp.test.ts`.
+    - The autouse `isolated_rfp_intake` fixture sets `RFP_AUTO_DRAFT=false` and makes `proposal.knowledge.search` raise `KnowledgeBaseError`, so the local fallback is used.
 - `packages/shared/trackflow_shared/` is a Python package mapped into the wheel from `pyproject.toml` next to `services` and `scripts`. It carries rules that both the API and the `/scripts` tooling must agree on and that neither owns: the incident enumerations and lifecycle (`incidents.py`) and the helpdesk-CSV validation plus CSV -> model maps (`incidents_csv.py`). It imports no framework.
 - Error translation lives in `services/core/http_errors.py`. Domain errors (`ValidationFailed`, `IncidentNotFound`) are translated there, so the service layer stays HTTP-agnostic, and a bare `Exception` handler turns any unhandled failure into a 500 that names nothing about the exception, with the traceback going to the `trackflow.errors` logger. Every incident error body has the same `{detail: {field, message}}` shape. See `docs/INCIDENTS.md`.
 - **The 422 -> 400 remapping is scoped to `/api/incidents`, and must stay that way.** Starlette's exception handlers are global, so `make_validation_error_handler(prefixes)` takes the prefix (read off `incidents_router.prefix`) and hands everything else to FastAPI's own handler. Applying it app-wide breaks password recovery: `resetPassword` in `uis/*/services/auth-service.ts` reads **any** 400 as a spent reset token and replaces the form with "request a new link", so a too-short password would tell the user their link had expired. `changePassword` reads a 400 as "current password is wrong". `tests/test_error_contract.py` pins both halves.
@@ -255,6 +289,7 @@ This repository currently contains two website implementations related to TrackF
   - The load is one transaction: `set_config` run id, `pg_advisory_xact_lock`, stale-snapshot check, upsert that skips unchanged rows, stale-key delete, stats, exclusions, then `completed`. Extraction runs in `READ ONLY` transactions.
 - RFP intake tables (since 2026-11-21, `data/pipelines/rfp_intake/models.py`), in the public schema:
   - `rfp_tickets`, `rfp_metadata`, `rfp_department_sections` (the Part 2/3 columns already exist, nullable), `rfp_handoffs` (the Part 2 queue: `next_stage`, `status`, a JSONB payload `rfp-intake/1`), and `rfp_ticket_events`.
+  - Since Part 2 (2026-11-23): `rfp_section_drafts` and `rfp_proposal_handoffs` (the Part 3 queue, `rfp-proposal/1`). The section columns `draft_status`, `draft_iterations`, `draft_data`, `draft_run_id` and `ready_at` are added to an existing table by `store.initialize_schema`.
   - JSON columns are JSONB on PostgreSQL and JSON elsewhere; every check is a portable `IN (...)`. RLS is on, with no policies.
   - They have their own SQLModel registry (`RfpModel.metadata`), separate from the inventory tables' `SQLModel.metadata`.
   - Created by `store.initialize_schema` at API start-up.
@@ -286,7 +321,8 @@ This repository currently contains two website implementations related to TrackF
   - Staff-only RFP intake (admin/manager through `services/auth/dependencies.py::StaffUser`; a `user` account gets 403):
     - `POST /rfp/tickets`: multipart `file`, 202; 415 not a PDF, 413 over `RFP_MAX_UPLOAD_MB`, 422 empty, 503 storage failure;
     - `GET /rfp/tickets`: the 50 newest;
-    - `GET /rfp/tickets/{id}`: the full Sales view, no Markdown.
+    - `GET /rfp/tickets/{id}`: the full Sales view, without the RFP's Markdown. Since Part 2 it includes each section's draft (`draft_content`, `draft`), its `EvaluationResult` and the `proposal` handoff status.
+    - Since Part 2, the upload also schedules drafting (`RFP_AUTO_DRAFT`).
   - Unauthenticated at this stage: `POST /api/incidents`, `GET /api/incidents` (filters `status`, `origin`, `branch`, `category`, `reference`), `GET /api/incidents/summary`, `GET /api/incidents/{id}`, `PATCH /api/incidents/{id}/status`. Anyone in the company reports incidents, and no incident route exposes the commercially sensitive data that makes `/suppliers` token-only. Revisit when the panel lands.
 - The TrackFlow MCP server (:8100, separate process) exposes the incident routes and inventory reads to OAuth-authorized MCP clients: `POST /mcp` (Streamable HTTP, bearer token validated by MCP Auth) and the public `GET /.well-known/oauth-protected-resource/mcp` and `GET /healthz`. See `docs/mcp/mcp-server.md`.
 - `uis/backoffice` consumes the `/suppliers` routes with `Authorization: Bearer <token>` on every call.

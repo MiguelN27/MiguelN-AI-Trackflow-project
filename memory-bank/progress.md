@@ -1,6 +1,79 @@
 # Development Progress
 
-Last updated: 2026-11-21
+Last updated: 2026-11-23
+
+## Update 2026-11-23 - RFP proposal drafting and self-evaluation (Milestone 9 Part 2)
+
+Goals accomplished.
+- **Brief:** the new `lead-instr.png` (ticket "RFP response generation and evaluation"), with the checklist in `stages-todo.png` and the visual reference in `visual-ref.png`. The briefing is the root `agentic-workflow-context.md`.
+- **Branch:** `feature/rfp-response-generation`.
+- **Design:** `docs/rfp/proposal-drafting.md`. **Part 3 contract:** `docs/rfp/proposal-handoff-contract.md`.
+
+Decided with the developer:
+- **Prices:** a versioned rate card (`proposal/rate_card.py`) with the knowledge base's real figures plus indicative list prices and discount tiers owned by Commercial. A guard rejects any figure from no source.
+- **SLA:** the §5 SLA rule is checked on one designated section: last mile, otherwise the first active section.
+- **UI:** the Sales view shows the drafts.
+
+What was built:
+- **Consumes Part 1's routing:**
+  - `proposal.runner.run_pending` drains the `rfp_handoffs` queue (`claim_next`, SKIP LOCKED); `handoff.claim` claims one ticket.
+  - The API schedules it right after each intake (`RFP_AUTO_DRAFT`).
+  - The generators read only the `IntakeHandoff`, never the PDF or its Markdown. A test deletes both and patches the converter to fail.
+- **Graphs** (`data/pipelines/rfp_intake/proposal/`, no `services/` import):
+  - `rfp_proposal`: the deterministic assignment orchestrator → `Send` per department → the final synthesis into per-department "for approval" tickets → the Part 3 handoff;
+  - `rfp_proposal_section`: the generator-evaluator loop, with readability, relevance and compliance **in parallel**, then a merge into one `EvaluationResult`, then revise / accept / escalate.
+- **Per-department generators:**
+  - one tool and output model per department, carrying §2.1's contributions as structured fields (also §7's conflict state);
+  - knowledge-base access (Qdrant, falling back to the documents);
+  - a deterministic guard that drops off-card prices and tiers and invented figures, and never corrects a currency or a fast returns promise, so compliance sees them;
+  - fixed Markdown rendering with the knowledge base's SLA and storage caveats.
+- **Evaluators:**
+  - readability: `py-readability-metrics` on the prose, ease ≥ 30, grade ≤ 14;
+  - relevance: the §2.1 required elements plus a judge with verbatim evidence;
+  - compliance: the five §5 rules verbatim (drift test), deterministic and authoritative, plus a reviewer that can only add.
+  - `feedback_for_generator` is concrete and ordered; the iteration limit defaults to 3 (`RFP_MAX_DRAFT_ITERATIONS`).
+  - A section that never passes ships `needs_human_review` with its last draft and evaluation. An unfixable violation (unknown country) escalates at once.
+- **Statuses and persistence:**
+  - `drafting` → `under_evaluation` → `waiting_for_approval` or `needs_human_review`, or `failed` (the stale sweep now covers Part 2 too);
+  - new section columns, added by an idempotent ALTER on a Part 1 database;
+  - `rfp_section_drafts` (every attempt and the iterations KPI) and `rfp_proposal_handoffs` (`rfp-proposal/1`, Part 3's queue).
+- **CLI:** `draft`, `redraft`, `proposal`, `kpi`, `graph --part 2`, `proposal-schema`. `run` drafts too. `smoke` runs both parts and logs each attempt's failures.
+- **API and UI:** the ticket detail carries every section's draft, evaluation and attempts. `/rfp/[id]` has a "Proposal draft" area with one card per department (owner, status, the three checks, what is still wrong, the draft), and polls through drafting.
+
+Verification:
+- **Offline tests:**
+  - `tests/pipelines/rfp_intake/` **213** (125 new, in `proposal/`) plus `tests/test_rfp_api.py` **24** (4 new), including the checklist cases:
+    - a generator test;
+    - an evaluator test with failing cases;
+    - the compliance failure "Returns are processed within 24 hours of arrival." → `compliance.pass == False`;
+    - the limit reached → `needs_human_review` and still in the handoff.
+  - Opt-in `tests/test_rfp_postgres.py` **8/8** on a throwaway `postgres:17-alpine`: JSONB, RLS, the column upgrade and its check, a whole drafting, SKIP LOCKED on the proposal queue.
+- **Full backend suite:** **2269 passed, 59 skipped, 0 failed** without `test_agent_evals.py`. That file alone is still 74 failed / 85 passed, the known stale recording, unchanged.
+- **Backoffice:** Jest **314** (8 new); `tsc` and ESLint clean.
+- **Static checks:** `ruff format` / `ruff check --isolated` clean, with only added hunks in pre-existing files; mypy clean on the RFP modules, CLI, services and tests.
+- **Live, 4Geeks `gpt-6-luna` + Qdrant:**
+  - `npm run rfp:smoke`, final code: **3/3 passed** (`data/eval/rfp_intake/smoke.json`):
+    - correct-classification rate 1.0, every §5 check passing on every section, **1.75 attempts per section** (target < 2);
+    - ModaViva → `waiting_for_approval` (1 and 2 attempts);
+    - Luna → `needs_human_review`. The last-mile section escalated after 3 attempts because the RFP asks for per-carrier SLAs and a carrier recommendation, while TrackFlow's knowledge base says the system assigns carriers and gives SLAs per service.
+  - Earlier runs, during calibration: 2.75 → 2.0 → 2.5 → 2.0 → 1.75. **The KPI hovers around 2; relevance drives it.** Compliance never failed once the country was known.
+  - **Through the UI** (Chrome via playwright-core, a manager account, the API on the throwaway Postgres):
+    - three PDFs uploaded;
+    - the list went Analyzing → Drafting → Under evaluation → Waiting for approval without a reload, in about 2 minutes;
+    - both RFPs ended `waiting_for_approval`, with each owner's card and the three checks;
+    - no console errors;
+    - light and dark checked; mobile at 390 px fits after a fix (the card needed `min-w-0`).
+- **Found and fixed live:**
+  - the relevance judge rejected quotes of table rows, and counted another department's needs or owner-confirmations as gaps. It now gets the section's scope plus the "pending information" and "priced differently by policy" rules;
+  - the generator now answers every key aspect and need, and the go-live date;
+  - a country-less ticket spent 3 attempts per section for nothing.
+
+Still missing / next goals:
+1. **Part 1 variance seen live:** in one run the metadata agent's quote for Luna's country was not verbatim, so the country (and the currency) was dropped. Part 2 then correctly shipped `needs_human_review`. A retry or a second-chance quote check in Part 1's metadata agent would make this rarer.
+2. **Commercial must confirm the indicative rate card,** plus two briefing-versus-knowledge-base points: storage is priced per m³ rather than per pallet/SKU, and the SLA sentence in proposals without last mile.
+3. **Part 3:** per-owner approval from `rfp_proposal_handoffs` (accepting both `waiting_for_approval` and `needs_human_review`), §7 arbitration on the `facts`, and the final document.
+4. **Commit when asked** (AGENTS.md workflow). Include `data/eval/rfp_intake/smoke.json` and the three staged PNGs.
+5. **Still open from earlier:** Supabase (inspect the `rfp_*` schema before the first start against it; the new columns are added automatically); re-recording the agent evals; Auth0 and the MCP Playground.
 
 ## Update 2026-11-21 - RFP intake and routing (Milestone 9 Part 1)
 

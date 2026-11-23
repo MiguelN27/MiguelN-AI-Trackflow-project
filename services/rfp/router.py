@@ -2,9 +2,14 @@
 
 HTTP only (briefing §2.4: "Routers import and trigger; they do not own agent
 logic"). The upload validates and stores the PDF under `data/raw/rfp/`,
-creates the ticket (`analyzing`) and answers 202 at once; the `rfp_intake`
-graph then runs as a background task in this same API process
-(`runner.run_intake`, which never raises). The UI polls the ticket.
+creates the ticket (`analyzing`) and answers 202 at once. Two background
+tasks then run in this same API process, in order:
+- the `rfp_intake` graph (`runner.run_intake`);
+- with `RFP_AUTO_DRAFT` on, the proposal drafting queue
+  (`proposal.runner.run_pending`), which picks up the handoff the intake has
+  just queued.
+
+Neither ever raises. The UI polls the ticket.
 
 Staff only (admin or manager): RFPs carry client budgets and volumes, and a
 self-registered account is a customer. Database failures are a 503 that names
@@ -23,6 +28,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from data.pipelines.rfp_intake import runner, store
 from data.pipelines.rfp_intake.config import ROOT_DIR, get_rfp_settings
+from data.pipelines.rfp_intake.proposal import runner as proposal_runner
 from services.auth.dependencies import StaffUser
 from services.inventory.database import get_engine
 from services.rfp.models import (
@@ -135,6 +141,9 @@ def upload_rfp(
 
     logger.info("rfp ticket %s created (%d bytes); analysis scheduled", ticket_id, len(data))
     background.add_task(runner.run_intake, ticket_id, engine)
+    if settings.auto_draft:
+        # Runs after the intake: drafting starts from the handoff it queues.
+        background.add_task(proposal_runner.run_pending, engine)
     return RfpTicketAccepted(
         ticket_id=ticket.id,
         rfp_id=ticket.rfp_id,

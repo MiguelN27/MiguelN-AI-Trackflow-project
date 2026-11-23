@@ -13,15 +13,14 @@
   results for `synthesize_brief`.
 - The database engine, the agents and the settings come through the runtime
   context (`IntakeContext`), so tests run this same graph with fakes.
-- Every node runs inside `_step`: it moves `current_stage` (live progress for
-  the UI), writes an `rfp_ticket_events` row with its duration and tokens, and
-  turns any failure into `StageFailed`, which the runner records as `failed`.
+- Every node runs inside `_step` (`steps.run_step`): it moves `current_stage`
+  (live progress for the UI), writes an `rfp_ticket_events` row with its
+  duration and tokens, and turns any failure into `StageFailed`, which the
+  runner records as `failed`.
 - No checkpointer: a reprocess starts from scratch (`store.reset_ticket`).
 """
 
 import operator
-import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -30,14 +29,20 @@ from typing import Annotated, Any, Final, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
-from langgraph.types import RetryPolicy, Send
+from langgraph.types import Send
 from sqlalchemy.engine import Engine
 
 from data.pipelines.rfp_intake import conversion, handoff, readability, store
 from data.pipelines.rfp_intake.agents import AgentReply, IntakeAgents
 from data.pipelines.rfp_intake.briefing import DEPARTMENT_IDS
 from data.pipelines.rfp_intake.config import ROOT_DIR, RfpIntakeSettings
-from data.pipelines.rfp_intake.llm import IntakeModelError, InvalidModelReply
+from data.pipelines.rfp_intake.steps import (  # noqa: F401 - re-exported for Part 1 callers
+    MODEL_RETRY,
+    StageFailed,
+    StepWork,
+    run_step,
+    safe_message,
+)
 
 GRAPH_NAME: Final = "rfp_intake"
 
@@ -93,69 +98,8 @@ class IntakeContext:
     settings: RfpIntakeSettings
 
 
-class StageFailed(RuntimeError):
-    """A node failed. `message` is safe to store and show."""
-
-    def __init__(self, stage: str, message: str) -> None:
-        super().__init__(f"{stage}: {message}")
-        self.stage = stage
-        self.message = message
-
-
-# Errors whose own message is written by this package and safe to show.
-_SAFE_ERRORS: Final = (
-    conversion.ConversionError,
-    IntakeModelError,
-    store.TicketNotFound,
-)
-
-
-def safe_message(error: BaseException) -> str:
-    if isinstance(error, _SAFE_ERRORS):
-        return str(error)
-    # A driver or library message can quote a connection URL or a document.
-    return f"unexpected {type(error).__name__}"
-
-
-def _is_invalid_reply(error: BaseException) -> bool:
-    return isinstance(error, StageFailed) and isinstance(error.__cause__, InvalidModelReply)
-
-
-# One more attempt when the model's reply did not match its schema. Gateway
-# errors are already retried by the OpenAI client.
-MODEL_RETRY: Final = RetryPolicy(max_attempts=2, initial_interval=1.0, retry_on=_is_invalid_reply)
-
-StepWork = Callable[[], tuple[dict[str, Any], dict[str, Any] | None, int]]
-
-
 def _step(context: IntakeContext, ticket_id: str, stage: str, work: StepWork) -> dict[str, Any]:
-    store.set_stage(context.engine, ticket_id, stage)
-    started = time.perf_counter()
-    try:
-        update, detail, tokens = work()
-    except store.TicketStateError:
-        raise
-    except Exception as error:
-        message = safe_message(error)
-        store.record_event(
-            context.engine,
-            ticket_id,
-            stage,
-            "failed",
-            {"error": type(error).__name__, "message": message},
-            duration_ms=int((time.perf_counter() - started) * 1000),
-        )
-        raise StageFailed(stage, message) from error
-    store.record_event(
-        context.engine,
-        ticket_id,
-        stage,
-        "completed",
-        detail,
-        duration_ms=int((time.perf_counter() - started) * 1000),
-        tokens=tokens,
-    )
-    return update
+    return run_step(context.engine, ticket_id, stage, work)
 
 
 def _tokens(reply: AgentReply) -> int:

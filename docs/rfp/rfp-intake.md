@@ -74,10 +74,10 @@ They are the briefing's (§2.3), plus one:
 | `discarded` | `discard_ticket`: the classifier said the document is not an RFP, or no TrackFlow service is requested |
 | `intake_complete` | `complete_intake` |
 | `failed` | Any stage failing, or the stale sweep. **Not in the briefing:** a technical failure is not a classification, and calling it `discarded` would distort the "correct classification rate" KPI (§3). |
-| `drafting` … `done` | Parts 2 and 3. `handoff.claim_next` sets `drafting`. |
+| `drafting` … `done` | Parts 2 and 3. `handoff.claim_next` sets `drafting`; see [proposal-drafting.md](proposal-drafting.md). |
 
 **"Don't fail silently."**
-- Every node runs inside `graph._step`, which:
+- Every node runs inside `graph._step` (`steps.run_step`, shared with Part 2), which:
   - moves `current_stage` (the UI shows it live);
   - appends an `rfp_ticket_events` row with the duration and the model tokens;
   - turns a failure into `StageFailed`. The runner records it as `failed` with `error_stage` and a safe message: our own text, or `unexpected <Class>`, never a driver or library message.
@@ -185,7 +185,7 @@ The SQLModel tables are in `models.py`. JSON is JSONB on PostgreSQL and JSON on 
 | `rfp_ticket_events` | One row per node completed or failed: the run's trace. |
 
 `store.initialize_schema` runs at API start-up:
-- it creates these five tables only (initialization, not migration);
+- it creates these five tables plus Part 2's two (`rfp_section_drafts`, `rfp_proposal_handoffs`), and adds Part 2's section columns to an existing table (initialization, not migration; see [proposal-drafting.md](proposal-drafting.md));
 - it turns RLS on with no policies, like inventory.
 
 **Before the first start against Supabase,** check the live schema for existing `rfp_*` tables: the dashboard is also edited by hand.
@@ -198,6 +198,8 @@ On `intake_complete`, the `rfp_handoffs` row holds:
 - an `IntakeHandoff` payload (`contract_version = "rfp-intake/1"`): client, currency, scope, and per department the owner, ask, key aspects, needs and open questions.
 
 Part 2 takes work with `handoff.claim_next`, which uses `FOR UPDATE SKIP LOCKED` and moves the ticket to `drafting`. There is no second API. The contract and its JSON Schema are in [`handoff-contract.md`](handoff-contract.md).
+
+Since Part 2 (2026-11-23), the upload also schedules the drafting queue right after the intake (`RFP_AUTO_DRAFT`). Drafting and evaluation are described in [proposal-drafting.md](proposal-drafting.md).
 
 ## HTTP API
 
@@ -243,7 +245,7 @@ These settings are in `.env.example`. The model settings are the RAG ones: `GENE
 npm run rfp:setup                                   # NLTK tokenizer data, once per machine
 npm run api                                         # creates the rfp_* tables at start-up
 npm run dev:backoffice                              # http://localhost:3001/rfp (staff account)
-npm run rfp -- run PDF-examples/trackflow-request-1.pdf
+npm run rfp -- run PDF-examples/trackflow-request-1.pdf   # intake, then drafting (Part 2)
 npm run rfp -- show <ticket_id> [--json]
 npm run rfp -- reprocess <ticket_id>                # failed or discarded tickets only
 npm run rfp -- handoff <ticket_id>                  # the Part 2 payload

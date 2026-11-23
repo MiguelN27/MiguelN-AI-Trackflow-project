@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 
 from data.pipelines.rfp_intake import config as rfp_config
 from data.pipelines.rfp_intake import llm as rfp_llm
+from data.pipelines.rfp_intake.proposal import knowledge as rfp_knowledge
+from data.process.knowledge_base import KnowledgeBaseError
 from services.agent import config as agent_config
 from services.agent import graph as agent_graph
 from services.agent import planner as agent_planner
@@ -208,17 +210,25 @@ def isolated_agent_tools(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolated_rfp_intake(tmp_path, monkeypatch):
-    """Uploaded PDFs go to the test's directory, and no intake agent reaches a model.
+    """Uploaded PDFs go to the test's directory, and no RFP agent reaches a model or Qdrant.
 
-    Tests fake the agents (`IntakeAgents`) or `llm._client` explicitly.
+    Tests fake the agents (`IntakeAgents`, `ProposalAgents`) or `llm._client`
+    explicitly. Drafting after an upload is off unless a test turns it on
+    (`RFP_AUTO_DRAFT`), and a knowledge-base search always falls back to the
+    local documents.
     """
     monkeypatch.setenv("RFP_UPLOAD_DIR", str(tmp_path / "rfp-uploads"))
+    monkeypatch.setenv("RFP_AUTO_DRAFT", "false")
     rfp_config.get_rfp_settings.cache_clear()
 
     def forbid_model():
         raise AssertionError("Unit tests must not call the RFP intake model")
 
+    def no_vector_search(queries, top_k):
+        raise KnowledgeBaseError("unit tests never search Qdrant")
+
     monkeypatch.setattr(rfp_llm, "_client", forbid_model)
+    monkeypatch.setattr(rfp_knowledge, "search", no_vector_search)
     yield
     rfp_config.get_rfp_settings.cache_clear()
 

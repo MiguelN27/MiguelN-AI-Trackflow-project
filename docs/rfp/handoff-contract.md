@@ -37,6 +37,11 @@ if claimed is not None:
 
 It returns `None` when the queue is empty. To read a handoff without claiming it, use `load_handoff(engine, ticket_id)`. From the command line, use `npm run rfp -- handoff <ticket_id>`.
 
+Part 2 is implemented (2026-11-23, [proposal-drafting.md](proposal-drafting.md)):
+- `proposal.runner.run_pending` drains this queue with `claim_next`, and the API runs it right after each intake;
+- `claim(engine, ticket_id, claimed_by=...)` claims one specific ticket (`npm run rfp -- draft <ticket_id>`);
+- Part 2 reads only this payload, never the PDF or its Markdown.
+
 ## What the payload guarantees
 
 - **`departments` lists only the departments the requested scope needs** (briefing §2.1), in the briefing's order (`warehouse`, `lastmile`, `reverse`), and holds at least one. `owner` is the briefing's owner, who approves that section in Part 3.

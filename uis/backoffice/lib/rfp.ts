@@ -1,12 +1,13 @@
 /**
- * RFP intake, as the backoffice reads it (Milestone 9 Part 1).
+ * RFP intake and proposal drafting, as the backoffice reads them (Milestone 9 Parts 1-2).
  *
  * Three calls, all with the session token and staff-only on the API:
  * `POST /rfp/tickets` (multipart PDF upload, answers 202 at once),
- * `GET /rfp/tickets` and `GET /rfp/tickets/{id}`. The analysis runs in the
- * background, so the pages poll while a ticket is `analyzing`. Every reply is
- * validated before it is rendered: a reply the page cannot read is an error,
- * never an empty ticket. Shapes mirror `services/rfp/models.py`.
+ * `GET /rfp/tickets` and `GET /rfp/tickets/{id}`. The analysis and then the
+ * proposal drafting run in the background, so the pages poll while a ticket
+ * is being worked on (`isWorking`). Every reply is validated before it is
+ * rendered: a reply the page cannot read is an error, never an empty ticket.
+ * Shapes mirror `services/rfp/models.py`.
  */
 
 import { ApiError, parseResponseJson, requestAuthenticatedApi } from "@/lib/api-client";
@@ -18,8 +19,10 @@ const TICKETS_API = "/rfp/tickets";
 /** Matches `RFP_MAX_UPLOAD_MB`'s default in `data/pipelines/rfp_intake/config.py`. */
 export const MAX_UPLOAD_MB = 20;
 export const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
-/** How often an `analyzing` ticket is re-read. */
+/** How often a ticket being worked on is re-read. */
 export const POLL_INTERVAL_MS = 3000;
+/** How often a ticket waiting in the drafting queue is re-read. */
+export const QUEUED_POLL_INTERVAL_MS = 10000;
 
 export type RfpStatus =
   | "analyzing"
@@ -57,6 +60,40 @@ export const SERVICE_LABELS: Record<string, string> = {
 };
 
 export const COUNTRY_NAMES: Record<string, string> = { US: "United States", ES: "Spain" };
+
+/** Part 2's stages (`data/pipelines/rfp_intake/proposal/graph.py`), as Sales reads them. */
+export const PROPOSAL_STAGES: readonly { key: string; label: string }[] = [
+  { key: "plan_assignments", label: "Assign the sections" },
+  { key: "retrieve_knowledge", label: "Look up TrackFlow's policies" },
+  { key: "generate_section", label: "Write the draft" },
+  { key: "check_readability", label: "Check readability" },
+  { key: "check_relevance", label: "Check it answers the RFP" },
+  { key: "check_compliance", label: "Check the company guidelines" },
+  { key: "merge_evaluation", label: "Combine the checks" },
+  { key: "accept_section", label: "Section passed" },
+  { key: "escalate_section", label: "Sent for human review" },
+  { key: "synthesize_proposal", label: "Assemble the approval tickets" },
+  { key: "complete_drafting", label: "Hand off for approval" },
+];
+
+/** A section's place in the generator-evaluator loop. */
+export const SECTION_STATUS_LABELS: Record<string, string> = {
+  pending: "Waiting to be drafted",
+  drafting: "Writing the draft",
+  under_evaluation: "Checking the draft",
+  passed: "Passed every check",
+  needs_human_review: "Needs human review",
+  failed: "Could not be drafted",
+};
+
+/** Briefing §5, one plain sentence per rule id (`proposal/guidelines.py`). */
+export const RULE_LABELS: Record<string, string> = {
+  "currency-by-country": "Prices in the client's currency (USD for the US, EUR for Spain)",
+  "on-time-sla-stated": "States the on-time delivery SLA (%)",
+  "returns-min-48h": "Never promises returns processing in under 48 hours",
+  "volume-discount-table": "Includes a volume discount tier table",
+  "no-carrier-rates": "Never discloses rates negotiated with carriers",
+};
 
 /** The graph's stages, in run order, as Sales reads them (`data/pipelines/rfp_intake/graph.py`). */
 export const STAGES: readonly { key: string; label: string }[] = [
@@ -122,6 +159,63 @@ export type RfpMetadata = {
 
 export type RfpKeyAspect = { aspect: string; detail: string; source_quote: string };
 
+export type RfpReadabilityCheck = {
+  pass: boolean;
+  score: number | null;
+  details: {
+    scored?: boolean;
+    flesch_reading_ease?: number | null;
+    flesch_kincaid_grade?: number | null;
+    word_count?: number;
+    words_per_sentence?: number | null;
+    min_ease?: number;
+    max_grade?: number;
+    note?: string | null;
+  };
+};
+
+export type RfpRelevanceCheck = {
+  pass: boolean;
+  missing_aspects: string[];
+  covered_aspects: string[];
+  not_applicable: string[];
+};
+
+export type RfpViolation = { rule_id: string; message: string; quote: string | null; source: string };
+
+export type RfpComplianceCheck = {
+  pass: boolean;
+  rule_ids: string[];
+  violations: RfpViolation[];
+  checked_rule_ids: string[];
+  reviewer: string;
+};
+
+/** The ticket's `EvaluationResult` for a section's current draft. */
+export type RfpEvaluation = {
+  section_id: string;
+  department_id: string;
+  iteration: number;
+  readability: RfpReadabilityCheck;
+  relevance: RfpRelevanceCheck;
+  compliance: RfpComplianceCheck;
+  overall_pass: boolean;
+  feedback_for_generator: string;
+  evaluated_at: string;
+};
+
+export type RfpPriceLine = { item_id: string; amount: number; currency: string; note: string };
+
+export type RfpSectionDraft = {
+  summary: string;
+  narrative: string[];
+  price_lines: RfpPriceLine[];
+  discount_tiers: { min_monthly_volume: number; max_monthly_volume: number | null; discount_pct: number }[];
+  on_time_sla_pct: number | null;
+  assumptions: string[];
+  open_questions: string[];
+};
+
 export type RfpSection = {
   department_id: string;
   department_name: string;
@@ -132,6 +226,37 @@ export type RfpSection = {
   needed_from_department: string[];
   open_questions: string[];
   validation_notes: string[];
+  // Part 2: null until the section is drafted.
+  draft_status: string | null;
+  draft_iterations: number;
+  max_iterations: number | null;
+  is_sla_section: boolean;
+  needs_human_review: boolean;
+  draft_content: string | null;
+  draft: RfpSectionDraft | null;
+  guard_notes: string[];
+  knowledge_source: string | null;
+  rate_card_version: string | null;
+  review_note: string | null;
+  evaluation: RfpEvaluation | null;
+  approval_status: string | null;
+  ready_at: string | null;
+};
+
+/** The Part 3 handoff (`rfp-proposal/1`), once Part 2 has finished. */
+export type RfpProposal = {
+  contract_version: string;
+  next_stage: string;
+  status: string;
+  needs_human_review: boolean;
+  sla_department: string | null;
+  currency: string | null;
+  rate_card_version: string | null;
+  max_iterations: number | null;
+  average_iterations_per_section: number | null;
+  passed_first_attempt: number | null;
+  created_at: string;
+  claimed_at: string | null;
 };
 
 export type RfpBriefDepartment = {
@@ -188,6 +313,7 @@ export type RfpTicketDetail = Omit<RfpTicketSummary, "client_name" | "client_cou
   sections: RfpSection[];
   sales_brief: RfpSalesBrief | null;
   handoff: { contract_version: string; next_stage: string; status: string; created_at: string; claimed_at: string | null } | null;
+  proposal: RfpProposal | null;
   events: RfpEvent[];
 };
 
@@ -231,6 +357,49 @@ export function isRfpTicketSummary(value: unknown): value is RfpTicketSummary {
   );
 }
 
+function isNullableNumber(value: unknown): value is number | null {
+  return value === null || typeof value === "number";
+}
+
+export function isEvaluation(value: unknown): value is RfpEvaluation {
+  if (!isRecord(value)) return false;
+  const { readability, relevance, compliance } = value;
+  return (
+    isString(value.section_id) &&
+    isString(value.department_id) &&
+    typeof value.iteration === "number" &&
+    isRecord(readability) &&
+    typeof readability.pass === "boolean" &&
+    isNullableNumber(readability.score) &&
+    isRecord(readability.details) &&
+    isRecord(relevance) &&
+    typeof relevance.pass === "boolean" &&
+    isStringArray(relevance.missing_aspects) &&
+    isRecord(compliance) &&
+    typeof compliance.pass === "boolean" &&
+    isStringArray(compliance.rule_ids) &&
+    Array.isArray(compliance.violations) &&
+    compliance.violations.every((item) => isRecord(item) && isString(item.rule_id) && isString(item.message)) &&
+    typeof value.overall_pass === "boolean" &&
+    isString(value.feedback_for_generator)
+  );
+}
+
+export function isDraft(value: unknown): value is RfpSectionDraft {
+  return (
+    isRecord(value) &&
+    isString(value.summary) &&
+    isStringArray(value.narrative) &&
+    Array.isArray(value.price_lines) &&
+    value.price_lines.every(
+      (line) => isRecord(line) && isString(line.item_id) && typeof line.amount === "number" && isString(line.currency),
+    ) &&
+    Array.isArray(value.discount_tiers) &&
+    isStringArray(value.assumptions) &&
+    isStringArray(value.open_questions)
+  );
+}
+
 function isSection(value: unknown): value is RfpSection {
   return (
     isRecord(value) &&
@@ -242,7 +411,24 @@ function isSection(value: unknown): value is RfpSection {
       (aspect) => isRecord(aspect) && isString(aspect.aspect) && isString(aspect.detail) && isString(aspect.source_quote),
     ) &&
     isStringArray(value.needed_from_department) &&
-    isStringArray(value.open_questions)
+    isStringArray(value.open_questions) &&
+    isNullableString(value.draft_status) &&
+    typeof value.draft_iterations === "number" &&
+    typeof value.is_sla_section === "boolean" &&
+    typeof value.needs_human_review === "boolean" &&
+    isNullableString(value.draft_content) &&
+    (value.draft === null || isDraft(value.draft)) &&
+    (value.evaluation === null || isEvaluation(value.evaluation))
+  );
+}
+
+function isProposal(value: unknown): value is RfpProposal {
+  return (
+    isRecord(value) &&
+    isString(value.contract_version) &&
+    isString(value.status) &&
+    typeof value.needs_human_review === "boolean" &&
+    isNullableNumber(value.average_iterations_per_section)
   );
 }
 
@@ -288,6 +474,7 @@ export function isRfpTicketDetail(value: unknown): value is RfpTicketDetail {
     Array.isArray(value.sections) &&
     value.sections.every(isSection) &&
     (value.sales_brief === null || isBrief(value.sales_brief)) &&
+    (value.proposal === null || isProposal(value.proposal)) &&
     Array.isArray(value.events) &&
     value.events.every((event) => isRecord(event) && isString(event.node) && isString(event.outcome))
   );
@@ -299,6 +486,45 @@ export function isAnalyzing(status: RfpStatus): boolean {
   return status === "analyzing";
 }
 
+/** Part 2 is writing or checking drafts. */
+export function isDrafting(status: RfpStatus): boolean {
+  return status === "drafting" || status === "under_evaluation";
+}
+
+/** A background run is working on the ticket (Part 1 or Part 2): keep polling. */
+export function isWorking(status: RfpStatus): boolean {
+  return isAnalyzing(status) || isDrafting(status);
+}
+
+/** The intake is done and its handoff waits in the drafting queue. */
+export function isQueuedForDrafting(detail: Pick<RfpTicketDetail, "status" | "handoff">): boolean {
+  return detail.status === "intake_complete" && detail.handoff?.status === "pending";
+}
+
+/** How long after an intake completes the list keeps watching for drafting to start. */
+const DRAFTING_START_WINDOW_MS = 5 * 60 * 1000;
+
+/** The list's re-read delay: fast while a run works, slower just after an intake; else null. */
+export function listPollDelay(tickets: Pick<RfpTicketSummary, "status" | "updated_at">[], now = Date.now()): number | null {
+  if (tickets.some((ticket) => isWorking(ticket.status))) return POLL_INTERVAL_MS;
+  const justCompleted = tickets.some(
+    (ticket) => ticket.status === "intake_complete" && now - Date.parse(ticket.updated_at) < DRAFTING_START_WINDOW_MS,
+  );
+  return justCompleted ? QUEUED_POLL_INTERVAL_MS : null;
+}
+
+/** A failed ticket whose intake had finished: it failed while drafting (Part 2). */
+export function failedWhileDrafting(detail: Pick<RfpTicketDetail, "status" | "handoff">): boolean {
+  return detail.status === "failed" && detail.handoff?.status === "claimed";
+}
+
+/** How long to wait before re-reading a ticket; null when nothing will change by itself. */
+export function pollDelay(detail: Pick<RfpTicketDetail, "status" | "handoff">): number | null {
+  if (isWorking(detail.status)) return POLL_INTERVAL_MS;
+  if (isQueuedForDrafting(detail)) return QUEUED_POLL_INTERVAL_MS;
+  return null;
+}
+
 /** Plain-language check before a file is sent; null when it can be uploaded. */
 export function checkPdf(file: { name: string; type: string; size: number }): string | null {
   const looksLikePdf = file.name.toLowerCase().endsWith(".pdf") || file.type === "application/pdf";
@@ -308,12 +534,30 @@ export function checkPdf(file: { name: string; type: string; size: number }): st
   return null;
 }
 
-/** "analyze_department:warehouse" -> "Department analysis: Warehouse Operations". */
+/**
+ * "analyze_department:warehouse" -> "Department analysis: Warehouse Operations";
+ * "generate_section:reverse#2" -> "Write the draft: Reverse Logistics (attempt 2)".
+ */
 export function stageLabel(stage: string | null): string {
   if (!stage || stage === "queued") return "Queued";
-  const [key, department] = stage.split(":");
-  const label = STAGES.find((item) => item.key === key)?.label ?? key.replaceAll("_", " ");
-  return department ? `${label}: ${DEPARTMENT_NAMES[department] ?? department}` : label;
+  const [key, target = ""] = stage.split(":");
+  const [department, attempt] = target.split("#");
+  const label =
+    STAGES.find((item) => item.key === key)?.label ??
+    PROPOSAL_STAGES.find((item) => item.key === key)?.label ??
+    key.replaceAll("_", " ");
+  if (!department) return label;
+  const suffix = attempt ? ` (attempt ${attempt})` : "";
+  return `${label}: ${DEPARTMENT_NAMES[department] ?? department}${suffix}`;
+}
+
+/** A section's progress through the loop, in one plain line. */
+export function sectionStatusLine(section: Pick<RfpSection, "draft_status" | "draft_iterations" | "max_iterations">): string {
+  const status = section.draft_status ?? "pending";
+  const label = SECTION_STATUS_LABELS[status] ?? status;
+  if (!section.draft_iterations) return label;
+  const of = section.max_iterations ? ` of ${section.max_iterations}` : "";
+  return `${label} · attempt ${section.draft_iterations}${of}`;
 }
 
 export type StageProgress = { key: string; label: string; state: "done" | "current" | "pending" | "failed" };

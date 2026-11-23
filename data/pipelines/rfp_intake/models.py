@@ -2,12 +2,15 @@
 
 PostgreSQL (Supabase) is the source of truth, through the same SQLModel stack
 as inventory: TinyDB and JSON files are not acceptable for these entities.
-`store.initialize_schema` creates exactly these five tables.
+`store.initialize_schema` creates exactly these seven tables: the five of
+Part 1, plus `rfp_section_drafts` and `rfp_proposal_handoffs` for Part 2.
 
 Portability: JSON columns are JSONB on PostgreSQL and JSON elsewhere, and every
 check is a plain `IN (...)` list, so the offline tests run the same models on
-SQLite. The Part 2/3 columns of `rfp_department_sections` exist from the start
-(nullable), because `create_all` never alters a table that already exists.
+SQLite. The briefing's Part 2/3 columns of `rfp_department_sections` existed
+from the start (nullable). The columns Part 2 added later (`PART_2_SECTION_COLUMNS`)
+are added to an existing table by `store.initialize_schema`, because
+`create_all` never alters a table that already exists.
 
 The tables have their own registry (`RfpModel.metadata`), not the global
 `SQLModel.metadata` the inventory tables use: a bare `SQLModel.metadata.create_all()`
@@ -18,7 +21,16 @@ from datetime import date, datetime, timezone
 from typing import Any, Final
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, CheckConstraint, Column, DateTime, Index, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Column,
+    DateTime,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import registry
 from sqlmodel import Field, SQLModel
@@ -34,6 +46,24 @@ JSON_TYPE: Final = JSON().with_variant(JSONB(), "postgresql")
 HANDOFF_STATUSES: Final = ("pending", "claimed")
 EVENT_OUTCOMES: Final = ("completed", "failed", "decision", "warning")
 PROCESSING_COST_TIERS: Final = ("low", "medium", "high")
+# A department section through Part 2 (our own vocabulary; the ticket keeps the
+# briefing's statuses). `pending` = not drafted in the current run yet.
+SECTION_DRAFT_STATUSES: Final = (
+    "pending",
+    "drafting",
+    "under_evaluation",
+    "passed",
+    "needs_human_review",
+    "failed",
+)
+# The section columns Part 2 added after Part 1's tables existed.
+PART_2_SECTION_COLUMNS: Final = (
+    "draft_status",
+    "draft_iterations",
+    "draft_data",
+    "draft_run_id",
+    "ready_at",
+)
 
 
 class RfpModel(SQLModel, registry=registry()):
@@ -62,6 +92,12 @@ def _json(*, nullable: bool = True) -> Any:
 
 def _text() -> Any:
     return Field(default=None, sa_column=Column(Text, nullable=True))
+
+
+DRAFT_STATUS_CHECK: Final = (
+    f"draft_status IS NULL OR {_one_of('draft_status', SECTION_DRAFT_STATUSES)}"
+)
+DRAFT_STATUS_CHECK_NAME: Final = "ck_rfp_section_draft_status"
 
 
 class RfpTicket(RfpModel, table=True):
@@ -157,6 +193,7 @@ class RfpDepartmentSection(RfpModel, table=True):
     __table_args__ = (
         UniqueConstraint("ticket_id", "department_id", name="uq_rfp_section_department"),
         CheckConstraint(_one_of("department_id", DEPARTMENT_IDS), name="ck_rfp_section_dept"),
+        CheckConstraint(DRAFT_STATUS_CHECK, name=DRAFT_STATUS_CHECK_NAME),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -180,12 +217,25 @@ class RfpDepartmentSection(RfpModel, table=True):
         default_factory=list, sa_column=Column(JSON_TYPE, nullable=False)
     )
     # Part 2 (drafting, evaluation) and Part 3 (approval). Empty in Part 1.
+    # `draft_content`: the latest draft as Markdown; `evaluation_results`: its
+    # EvaluationResult. Every attempt is kept in `rfp_section_drafts`.
     draft_content: str | None = _text()
     evaluation_results: dict[str, Any] | None = _json()
     approval_status: str | None = Field(default=None, max_length=32)
     approver: str | None = Field(default=None, max_length=100)
     approved_at: datetime | None = _timestamp(nullable=True)
     created_at: datetime = _timestamp()
+    # Added by Part 2 (`PART_2_SECTION_COLUMNS`).
+    draft_status: str | None = Field(default=None, max_length=32)
+    draft_iterations: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, server_default="0")
+    )
+    # The structured draft the Markdown was rendered from, plus how it was made
+    # (knowledge sources, guard notes, SLA designation, rate-card version).
+    draft_data: dict[str, Any] | None = _json()
+    draft_run_id: UUID | None = Field(default=None)
+    # When the section left Part 2 for approval (starts the §3 approval-time KPI).
+    ready_at: datetime | None = _timestamp(nullable=True)
 
 
 class RfpHandoff(RfpModel, table=True):
@@ -224,4 +274,63 @@ class RfpTicketEvent(RfpModel, table=True):
     created_at: datetime = _timestamp(index=True)
 
 
-TABLES: Final = (RfpTicket, RfpMetadata, RfpDepartmentSection, RfpHandoff, RfpTicketEvent)
+class RfpSectionDraft(RfpModel, table=True):
+    """One attempt of the generator-evaluator loop: the draft and its evaluation.
+
+    The audit trail of Part 2 and the source of the "average iterations per
+    section" KPI (briefing §3). Saving is an upsert on (section, run, iteration).
+    """
+
+    __tablename__ = "rfp_section_drafts"
+    __table_args__ = (
+        UniqueConstraint("section_id", "run_id", "iteration", name="uq_rfp_section_draft_attempt"),
+        CheckConstraint(_one_of("department_id", DEPARTMENT_IDS), name="ck_rfp_draft_dept"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    ticket_id: UUID = Field(foreign_key="rfp_tickets.id", nullable=False, index=True)
+    section_id: UUID = Field(foreign_key="rfp_department_sections.id", nullable=False, index=True)
+    department_id: str = Field(max_length=16, nullable=False)
+    run_id: UUID = Field(nullable=False)
+    iteration: int = Field(nullable=False)
+    draft_data: dict[str, Any] = Field(sa_column=Column(JSON_TYPE, nullable=False))
+    draft_content: str = Field(sa_column=Column(Text, nullable=False))
+    guard_notes: list[str] = Field(
+        default_factory=list, sa_column=Column(JSON_TYPE, nullable=False)
+    )
+    evaluation: dict[str, Any] | None = _json()
+    overall_pass: bool | None = Field(default=None)
+    tokens: int = Field(default=0, nullable=False)
+    created_at: datetime = _timestamp()
+    evaluated_at: datetime | None = _timestamp(nullable=True)
+
+
+class RfpProposalHandoff(RfpModel, table=True):
+    """The Part 3 queue: every department's draft and EvaluationResult, for approval."""
+
+    __tablename__ = "rfp_proposal_handoffs"
+    __table_args__ = (
+        CheckConstraint(_one_of("status", HANDOFF_STATUSES), name="ck_rfp_proposal_status"),
+        Index("rfp_proposal_handoffs_pending_idx", "next_stage", "status"),
+    )
+
+    ticket_id: UUID = Field(primary_key=True, foreign_key="rfp_tickets.id")
+    contract_version: str = Field(max_length=32, nullable=False)
+    next_stage: str = Field(max_length=32, nullable=False)
+    status: str = Field(default="pending", max_length=16, nullable=False)
+    needs_human_review: bool = Field(default=False, nullable=False)
+    payload: dict[str, Any] = Field(sa_column=Column(JSON_TYPE, nullable=False))
+    created_at: datetime = _timestamp()
+    claimed_at: datetime | None = _timestamp(nullable=True)
+    claimed_by: str | None = Field(default=None, max_length=100)
+
+
+TABLES: Final = (
+    RfpTicket,
+    RfpMetadata,
+    RfpDepartmentSection,
+    RfpHandoff,
+    RfpTicketEvent,
+    RfpSectionDraft,
+    RfpProposalHandoff,
+)

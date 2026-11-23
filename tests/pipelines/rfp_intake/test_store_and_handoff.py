@@ -32,7 +32,7 @@ def age(engine, ticket_id, minutes):
 # --- Store ---------------------------------------------------------------------------
 
 
-def test_the_schema_is_the_five_rfp_tables_and_initializing_twice_is_harmless(engine):
+def test_the_schema_is_the_seven_rfp_tables_and_initializing_twice_is_harmless(engine):
     store.initialize_schema(engine)
 
     assert set(inspect(engine).get_table_names()) == {
@@ -41,6 +41,9 @@ def test_the_schema_is_the_five_rfp_tables_and_initializing_twice_is_harmless(en
         "rfp_department_sections",
         "rfp_handoffs",
         "rfp_ticket_events",
+        # Part 2
+        "rfp_section_drafts",
+        "rfp_proposal_handoffs",
     }
 
 
