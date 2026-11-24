@@ -256,7 +256,7 @@ export function RfpIntakePage() {
                         <td className="min-w-0 sm:px-3 sm:py-4">
                           <span className="mb-1 block text-xs text-slate-600 sm:hidden">Status</span>
                           <RfpStatusBadge status={ticket.status} />
-                          {isWorking(ticket.status) ? (
+                          {isWorking(ticket.status) || ticket.status === "waiting_for_approval" ? (
                             <span className="mt-1 block text-xs text-slate-600">{stageLabel(ticket.current_stage)}</span>
                           ) : null}
                         </td>

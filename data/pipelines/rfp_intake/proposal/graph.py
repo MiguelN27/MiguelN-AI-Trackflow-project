@@ -29,8 +29,14 @@ Every node runs inside `steps.run_step`, which moves `current_stage`, writes an
 `rfp_ticket_events` row with timing and tokens, and fails safely. Loop stages
 carry the department and attempt: `generate_section:reverse#2`. The engine,
 agents and settings come through the runtime context (`ProposalContext`), so
-tests run these same graphs with scripted agents. No checkpointer: a redraft
-starts from scratch.
+tests run these same graphs with scripted agents. No checkpointer of its own:
+a redraft starts from scratch.
+
+Part 3 reuses the section subgraph to revise a section an owner (or an
+arbitration ruling) sent back. It passes `active_statuses = {waiting_for_approval}`
+so the loop's writes accept the ticket's Part 3 status, and the assignment
+carries a `revision_request` (the draft under review and what to change). Run
+inside the checkpointed approval graph, its steps are checkpointed too.
 """
 
 import operator
@@ -129,10 +135,32 @@ class ProposalContext:
     engine: Engine
     agents: ProposalAgents
     settings: RfpIntakeSettings
+    # The ticket statuses the loop may write under: Part 2's, or Part 3's
+    # `waiting_for_approval` when it revises a section during approval.
+    active_statuses: frozenset[str] = store.PART_2_ACTIVE
 
 
 def _step(context: ProposalContext, ticket_id: str, stage: str, work: StepWork) -> dict[str, Any]:
-    return run_step(context.engine, ticket_id, stage, work, statuses=store.PART_2_ACTIVE)
+    return run_step(context.engine, ticket_id, stage, work, statuses=context.active_statuses)
+
+
+def _previous(state: SectionState, iteration: int) -> dict[str, Any] | None:
+    """What the generator revises: its last attempt and the feedback, or the reviewed draft."""
+    if iteration > 1:
+        return {
+            "iteration": iteration - 1,
+            "draft": state.get("draft"),
+            "feedback": (state.get("evaluation") or {}).get("feedback_for_generator", ""),
+        }
+    revision = state["assignment"].get("revision_request")
+    if revision:
+        # Part 3: the first attempt of a revision starts from the draft under review.
+        return {
+            "iteration": f"under review, round {revision['round']}",
+            "draft": revision["draft"],
+            "feedback": "Apply the changes requested in review (see CHANGES REQUESTED).",
+        }
+    return None
 
 
 def _stage(node: str, state: SectionState, iteration: int | None = None) -> str:
@@ -166,14 +194,13 @@ def generate_section(state: SectionState, runtime: Runtime[ProposalContext]) -> 
     iteration = state.get("iteration", 0) + 1
 
     def work() -> tuple[dict[str, Any], dict[str, Any], int]:
-        proposal_store.mark_drafting(context.engine, state["ticket_id"], assignment["section_id"])
-        previous = None
-        if iteration > 1:
-            previous = {
-                "iteration": iteration - 1,
-                "draft": state.get("draft"),
-                "feedback": (state.get("evaluation") or {}).get("feedback_for_generator", ""),
-            }
+        proposal_store.mark_drafting(
+            context.engine,
+            state["ticket_id"],
+            assignment["section_id"],
+            statuses=context.active_statuses,
+        )
+        previous = _previous(state, iteration)
         reply = context.agents.generators[dept](assignment, state.get("knowledge") or [], previous)
         draft = reply.result["draft"]
         notes = list(reply.result.get("guard_notes") or [])
@@ -199,8 +226,14 @@ def generate_section(state: SectionState, runtime: Runtime[ProposalContext]) -> 
                 "max_iterations": assignment["max_iterations"],
                 "rate_card_version": assignment["rate_card_version"],
                 "run_id": state["run_id"],
+                **(
+                    {"revision_round": assignment["revision_request"]["round"]}
+                    if assignment.get("revision_request")
+                    else {}
+                ),
             },
             tokens=reply.usage.total_tokens,
+            statuses=context.active_statuses,
         )
         detail = {
             "department_id": dept,
@@ -303,6 +336,7 @@ def merge_evaluation(state: SectionState, runtime: Runtime[ProposalContext]) -> 
             iteration=iteration,
             evaluation=result.as_json(),
             overall_pass=result.overall_pass,
+            statuses=context.active_statuses,
         )
         detail = {
             "overall_pass": result.overall_pass,
@@ -326,7 +360,11 @@ def _finish(state: SectionState, runtime: Runtime[ProposalContext], node: str, s
 
     def work() -> tuple[dict[str, Any], dict[str, Any], int]:
         proposal_store.finish_section(
-            context.engine, state["ticket_id"], assignment["section_id"], status=status
+            context.engine,
+            state["ticket_id"],
+            assignment["section_id"],
+            status=status,
+            statuses=context.active_statuses,
         )
         detail = {
             "department_id": assignment["department_id"],

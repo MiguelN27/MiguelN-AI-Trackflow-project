@@ -20,6 +20,14 @@ This repository currently contains two website implementations related to TrackF
     - It validates every reply before rendering it, and maps 403, 404, 413 and 415 to its own copy.
     - `components/rfp/`: the upload zone (several PDFs, one ticket each) and the ticket list, which polls every 3 s while a ticket is `analyzing`.
     - The Sales view: the brief, one "Ask <owner>" card per department, the request with any missing value stated plainly, the processing cost, and stage progress.
+    - Since Part 3 (2026-11-23):
+      - an "Approval by department" card (progress, who it waits for, §7 rulings, failure with its resume command, why a rejected proposal closed);
+      - the "Final document" card (rendered with the section renderer's `MarkdownBlocks`, `**bold**` as `<strong>`, `.md` download);
+      - `components/rfp/ApprovalControl.tsx` at the end of each section card: the decision form (approve / request changes / reject, comment required for the last two, `noValidate` with its own alert) shown only when the API says `can_decide`, plus the decision history;
+      - a lazily loaded "Run history" table (Parts 1-3, with agents).
+      - `lib/rfp.ts` adds `submitDecision`, `getFinalDocument`, `downloadFinalDocument` (reads the file name from `Content-Disposition`, which the API exposes via CORS), `getRfpTrace`, approval and trigger labels, and strict validators for every approval field.
+      - Polling: 3 s while a section is revised or a decision is being applied; 15 s while owners decide.
+      - Badges: `waiting_for_approval` amber, `done` green, `rejected` slate.
     - Not in the telemetry section catalogue. UUID path segments are already templated.
   - Dark mode (since 2026-11-08) for the whole backoffice, following `prefers-color-scheme`, with no toggle. `app/globals.css` does two things in dark mode:
     - gives the backoffice tokens dark values, plus a new `--on-brand` token (text on brand fills, which replaces `text-white` on buttons);
@@ -245,6 +253,55 @@ This repository currently contains two website implementations related to TrackF
     - `test_rfp_api.py` drafting tests; `test_rfp_postgres.py` Part 2 tests;
     - Jest `rfp.test.ts`.
     - The autouse `isolated_rfp_intake` fixture sets `RFP_AUTO_DRAFT=false` and makes `proposal.knowledge.search` raise `KnowledgeBaseError`, so the local fallback is used.
+- Human approval and document completion (since 2026-11-23, Milestone 9 Part 3; brief `lead-instr.png` + `stages-todo.png` + `visual-ref.png`; design `docs/rfp/approval-completion.md`):
+  - What it is: the subpackage `data/pipelines/rfp_intake/approval/`, which imports nothing from `services/`.
+  - Graphs:
+    - `rfp_approval`: `open_approval` -> `arbitrate` (hub, `Command` routing) -> `Send` one `review_department` per department to review -> back to `arbitrate` -> `compose_final_document` -> `complete_approval`, or `close_rejected`;
+    - `rfp_department_review`, invoked inside `review_department`: [`start_revision` -> `revise_section`] -> `open_review` -> `await_decision` (only `interrupt()`, never in `run_step`, no side effect) -> `validate_decision` -> `sign_off` | `record_rejection` | `withdraw` | back to `start_revision` | (refused) back to `await_decision`.
+  - Checkpointer: decided with the developer, PostgreSQL `PostgresSaver` in the same DB (`langgraph-checkpoint-postgres` 3.2.1 + `psycopg[binary]` 3.3.9 added with `uv add`).
+    - It lives in schema `RFP_CHECKPOINT_SCHEMA` (default `rfp_graph`), using a psycopg pool with `prepare_threshold=None` and the `search_path` option; RLS is on for the 4 tables.
+    - SQLite engines use `SqliteSaver`, in `<db>-checkpoints.sqlite`.
+    - `checkpoint.get_checkpointer(engine, schema)` is cached per engine; `close_checkpointers()` runs on shutdown and in tests.
+    - Thread `rfp-<ticket_id>`; each branch gets its own namespace.
+    - A paused branch's state is not visible through `get_state(subgraphs=True)`, because the subgraph is invoked inside a node. `runner.state_trace` reads it with `checkpoint_ns = "review_department:<task.id>"`.
+  - Approvers: decided with the developer, `RFP_APPROVERS` JSON (department -> owner email). Only that account decides (403 otherwise, admins included).
+  - Reject: decided with the developer, it ends the proposal. The new ticket status `rejected` (`briefing.ADDED_STATUSES` with `failed`) is set, and the other open requests are withdrawn by system decisions.
+  - Arbitration (`arbitration.py`):
+    - the §7 table verbatim (drift test);
+    - `detect` on structured drafts and text, reusing `guidelines.currency_violations` / `returns_violations`;
+    - `rule_on` applies the rule deterministically, in the arbiter's name: Miguel Torres; Sofía Ramos for `reverse` returns;
+    - `volume-vs-capacity` caps the lastmile assignment's `monthly_volume`;
+    - an unknown country, or still unresolved at `RFP_MAX_ARBITRATION_ROUNDS` (2) or with no revision left, means reject.
+  - Revisions reuse Part 2's `rfp_proposal_section`:
+    - `ProposalContext.active_statuses = {waiting_for_approval}`; the Part 2 store writes take `statuses=`;
+    - `assignment["revision_request"]` (draft under review, instruction, enveloped comment) becomes `previous` on attempt 1;
+    - the run id is fixed in `start_revision`;
+    - a broken revision restores the last evaluated attempt or the old draft;
+    - `RFP_MAX_REVISION_ROUNDS` (3).
+    - `iteration_kpi` now counts only Part 2 runs (`draft_run_id`) and reports revisions separately.
+  - Runner:
+    - `start_pending` / `start` (refuses an existing thread);
+    - `submit_decision` (validates with `decisions.check_decision`, records `recorded`; a partial unique index blocks a second live owner decision per round);
+    - `apply_decisions` (per-ticket lease on `rfp_approval_runs`; maps decisions to interrupt ids by department, round and draft SHA; `Command(resume={id: value})`; withdraws after a rejection; loops);
+    - `resume` (`invoke(None)` after a failure: the ticket stays `waiting_for_approval` with `error_stage`);
+    - `recover` (lifespan thread).
+  - Final document (`document.py`): deterministic, the approved sections verbatim; the "For approval by" line becomes "Approved by X on date"; headings demoted; Approvals table; Notes. Stored with `done` in one transaction.
+  - Trace:
+    - every Part 3 node runs in `graph._run`, which adds a state `trace` entry (node, agent, department, input, output, outcome, timestamps) and an event with the same detail (`part: 3`);
+    - `trace.ticket_trace` merges Parts 1-3 with a node -> agent map, and labels Part 2 nodes after `open_approval` as Part 3 revision steps.
+  - Settings: `RFP_APPROVERS`, `RFP_MAX_REVISION_ROUNDS`, `RFP_MAX_ARBITRATION_ROUNDS`, `RFP_AUTO_REQUEST_APPROVAL`, `RFP_CHECKPOINT_SCHEMA`.
+  - API (`services/rfp/`, staff-only):
+    - the detail adds approval fields per section plus `approval` and `final_document`;
+    - `POST /rfp/tickets/{id}/sections/{department}/decision` (202; 403/404/409/422 from `decisions.REFUSAL_STATUS`);
+    - `GET .../document`, `.../document.md`, `.../trace`;
+    - the upload chains `approval_runner.start_pending`;
+    - `lifecycle.initialize` prepares the checkpointer (`ConfigurationError` on failure) and starts `recover`; `shutdown` closes it.
+    - CORS exposes `Content-Disposition`.
+  - CLI: `npm run rfp -- request-approval | approvals | decide <id> <dept> <action> --as <email> [--comment] | resume | document [--output] | trace [--state] [--json] | graph --part 3`. `kpi` adds the approval and build times. `run` opens the approvals (`--no-approval`). `smoke` runs Part 3 with simulated owners and one live change request. `npm run rfp:e2e` runs the offline end-to-end tests.
+  - Tests:
+    - `tests/pipelines/rfp_intake/approval/` (48), `tests/test_rfp_approval_api.py` (15), and opt-in Postgres (3 more: `PostgresSaver`, the status-check upgrade, the lease);
+    - Jest `rfp.test.ts` (+8).
+    - The autouse `isolated_rfp_intake` fixture sets `RFP_AUTO_REQUEST_APPROVAL=false` and `RFP_APPROVERS` to `RFP_TEST_APPROVERS`, and clears graphs and closes checkpointers.
 - `packages/shared/trackflow_shared/` is a Python package mapped into the wheel from `pyproject.toml` next to `services` and `scripts`. It carries rules that both the API and the `/scripts` tooling must agree on and that neither owns: the incident enumerations and lifecycle (`incidents.py`) and the helpdesk-CSV validation plus CSV -> model maps (`incidents_csv.py`). It imports no framework.
 - Error translation lives in `services/core/http_errors.py`. Domain errors (`ValidationFailed`, `IncidentNotFound`) are translated there, so the service layer stays HTTP-agnostic, and a bare `Exception` handler turns any unhandled failure into a 500 that names nothing about the exception, with the traceback going to the `trackflow.errors` logger. Every incident error body has the same `{detail: {field, message}}` shape. See `docs/INCIDENTS.md`.
 - **The 422 -> 400 remapping is scoped to `/api/incidents`, and must stay that way.** Starlette's exception handlers are global, so `make_validation_error_handler(prefixes)` takes the prefix (read off `incidents_router.prefix`) and hands everything else to FastAPI's own handler. Applying it app-wide breaks password recovery: `resetPassword` in `uis/*/services/auth-service.ts` reads **any** 400 as a spent reset token and replaces the form with "request a new link", so a too-short password would tell the user their link had expired. `changePassword` reads a 400 as "current password is wrong". `tests/test_error_contract.py` pins both halves.
@@ -290,6 +347,11 @@ This repository currently contains two website implementations related to TrackF
 - RFP intake tables (since 2026-11-21, `data/pipelines/rfp_intake/models.py`), in the public schema:
   - `rfp_tickets`, `rfp_metadata`, `rfp_department_sections` (the Part 2/3 columns already exist, nullable), `rfp_handoffs` (the Part 2 queue: `next_stage`, `status`, a JSONB payload `rfp-intake/1`), and `rfp_ticket_events`.
   - Since Part 2 (2026-11-23): `rfp_section_drafts` and `rfp_proposal_handoffs` (the Part 3 queue, `rfp-proposal/1`). The section columns `draft_status`, `draft_iterations`, `draft_data`, `draft_run_id` and `ready_at` are added to an existing table by `store.initialize_schema`.
+  - Since Part 3 (2026-11-23):
+    - new tables `rfp_approval_runs` (thread, graph version, status, lease, rulings), `rfp_approval_decisions` (append-only, with the partial unique index `uq_rfp_decision_live_owner`) and `rfp_final_documents` (the briefing's FinalDocument);
+    - section columns `approved_by` and `review_rounds`.
+    - `initialize_schema` `_ensure_checks` adds or replaces `ck_rfp_section_draft_status`, `ck_rfp_section_approval_status` and `ck_rfp_status` (now allowing `rejected`) on PostgreSQL.
+    - LangGraph's checkpoint tables are in `rfp_graph`.
   - JSON columns are JSONB on PostgreSQL and JSON elsewhere; every check is a portable `IN (...)`. RLS is on, with no policies.
   - They have their own SQLModel registry (`RfpModel.metadata`), separate from the inventory tables' `SQLModel.metadata`.
   - Created by `store.initialize_schema` at API start-up.
@@ -321,8 +383,12 @@ This repository currently contains two website implementations related to TrackF
   - Staff-only RFP intake (admin/manager through `services/auth/dependencies.py::StaffUser`; a `user` account gets 403):
     - `POST /rfp/tickets`: multipart `file`, 202; 415 not a PDF, 413 over `RFP_MAX_UPLOAD_MB`, 422 empty, 503 storage failure;
     - `GET /rfp/tickets`: the 50 newest;
-    - `GET /rfp/tickets/{id}`: the full Sales view, without the RFP's Markdown. Since Part 2 it includes each section's draft (`draft_content`, `draft`), its `EvaluationResult` and the `proposal` handoff status.
-    - Since Part 2, the upload also schedules drafting (`RFP_AUTO_DRAFT`).
+    - `GET /rfp/tickets/{id}`: the full Sales view, without the RFP's Markdown. Since Part 2 it includes each section's draft (`draft_content`, `draft`), its `EvaluationResult` and the `proposal` handoff status. Since Part 3 it includes each section's approval (with `can_decide` for the signed-in owner), the `approval` run and the `final_document` summary.
+    - Since Part 2, the upload also schedules drafting (`RFP_AUTO_DRAFT`), and since Part 3 the opening of the approvals (`RFP_AUTO_REQUEST_APPROVAL`).
+    - Part 3:
+      - `POST /rfp/tickets/{id}/sections/{department}/decision` (`{action, comment, review_round}`, 202; only the department owner's account);
+      - `GET /rfp/tickets/{id}/document` (JSON) and `/document.md` (file), both 404 until `done`;
+      - `GET /rfp/tickets/{id}/trace` (Parts 1-3, with agents).
   - Unauthenticated at this stage: `POST /api/incidents`, `GET /api/incidents` (filters `status`, `origin`, `branch`, `category`, `reference`), `GET /api/incidents/summary`, `GET /api/incidents/{id}`, `PATCH /api/incidents/{id}/status`. Anyone in the company reports incidents, and no incident route exposes the commercially sensitive data that makes `/suppliers` token-only. Revisit when the panel lands.
 - The TrackFlow MCP server (:8100, separate process) exposes the incident routes and inventory reads to OAuth-authorized MCP clients: `POST /mcp` (Streamable HTTP, bearer token validated by MCP Auth) and the public `GET /.well-known/oauth-protected-resource/mcp` and `GET /healthz`. See `docs/mcp/mcp-server.md`.
 - `uis/backoffice` consumes the `/suppliers` routes with `Authorization: Bearer <token>` on every call.

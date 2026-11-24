@@ -40,6 +40,8 @@ if claimed is not None:
 
 `claim_next` takes the oldest `pending` row for `next_stage = "approval"`, using `FOR UPDATE SKIP LOCKED`, and marks it `claimed`. It leaves the ticket's status to Part 3, which owns `waiting_for_approval` and `done`. To read a proposal without claiming it, use `load_proposal_handoff(engine, ticket_id)`. From the command line, use `npm run rfp -- proposal <ticket_id>`.
 
+Part 3 consumes it exactly this way: `approval.runner.start_pending` claims each proposal and runs its approval graph until every owner's request is open (see [approval-completion.md](approval-completion.md)). Both end statuses are accepted, and the ticket moves to `waiting_for_approval`. The payload is never changed afterwards: the owners' decisions, any revision and the final document live in Part 3's own tables, and in `rfp_department_sections` (`approval_status`, `approver`, `approved_at`, `approved_by`, `review_rounds`).
+
 ## What the payload guarantees
 
 - **`status`:** `waiting_for_approval` when every section passed its three checks, `needs_human_review` when at least one did not. **Part 3 must accept both.** The ticket has the same status.

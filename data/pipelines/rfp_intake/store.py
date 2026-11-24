@@ -21,10 +21,16 @@ from sqlmodel import Session, col
 
 from data.pipelines.rfp_intake.briefing import DEPARTMENT_BY_ID, DEPARTMENT_IDS, TicketStatus
 from data.pipelines.rfp_intake.models import (
+    ADDED_SECTION_COLUMNS,
+    APPROVAL_STATUS_CHECK,
+    APPROVAL_STATUS_CHECK_NAME,
+    APPROVAL_STATUSES,
     DRAFT_STATUS_CHECK,
     DRAFT_STATUS_CHECK_NAME,
-    PART_2_SECTION_COLUMNS,
+    SECTION_DRAFT_STATUSES,
     TABLES,
+    TICKET_STATUS_CHECK,
+    TICKET_STATUS_CHECK_NAME,
     RfpDepartmentSection,
     RfpHandoff,
     RfpMetadata,
@@ -70,32 +76,35 @@ def as_utc(value: datetime | None) -> datetime | None:
 
 
 _SECTIONS_TABLE: Final = str(RfpDepartmentSection.__tablename__)
-_DRAFT_STATUS_CHECK_DDL: Final = f"""
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conrelid = '{_SECTIONS_TABLE}'::regclass AND conname = '{DRAFT_STATUS_CHECK_NAME}'
-    ) THEN
-        ALTER TABLE {_SECTIONS_TABLE} ADD CONSTRAINT {DRAFT_STATUS_CHECK_NAME}
-            CHECK ({DRAFT_STATUS_CHECK});
-    END IF;
-END
-$$
-"""
+_TICKETS_TABLE: Final = str(RfpTicket.__tablename__)
+
+# (table, constraint, expression, values it must allow). On PostgreSQL each is
+# added when missing and replaced when it lacks a value added later, such as
+# the `rejected` ticket status of Part 3. A table `create_all` just built
+# already has them, from the models.
+_CHECKS: Final = (
+    (_SECTIONS_TABLE, DRAFT_STATUS_CHECK_NAME, DRAFT_STATUS_CHECK, SECTION_DRAFT_STATUSES),
+    (_SECTIONS_TABLE, APPROVAL_STATUS_CHECK_NAME, APPROVAL_STATUS_CHECK, APPROVAL_STATUSES),
+    (
+        _TICKETS_TABLE,
+        TICKET_STATUS_CHECK_NAME,
+        TICKET_STATUS_CHECK,
+        tuple(status.value for status in TicketStatus),
+    ),
+)
 
 
-def _add_part_2_section_columns(connection: Any) -> None:
-    """Add the Part 2 section columns to a table created before they existed.
+def _add_section_columns(connection: Any) -> None:
+    """Add the Part 2 and Part 3 section columns to a table created before they existed.
 
-    `create_all` never alters a table, so a database initialized by Part 1
-    gets them here (as inventory's `products.client_id`). Each type is
+    `create_all` never alters a table, so a database initialized by an earlier
+    part gets them here (as inventory's `products.client_id`). Each type is
     compiled by the connection's dialect (JSONB and UUID on PostgreSQL).
     """
     table = RfpModel.metadata.tables[_SECTIONS_TABLE]
     present = {column["name"] for column in inspect(connection).get_columns(_SECTIONS_TABLE)}
     postgres = connection.dialect.name == "postgresql"
-    for name in PART_2_SECTION_COLUMNS:
+    for name in ADDED_SECTION_COLUMNS:
         if name in present:
             continue
         column = table.c[name]
@@ -104,21 +113,37 @@ def _add_part_2_section_columns(connection: Any) -> None:
             ddl += f" NOT NULL DEFAULT {column.server_default.arg}"  # type: ignore[attr-defined]
         exists = "IF NOT EXISTS " if postgres else ""
         connection.execute(text(f"ALTER TABLE {_SECTIONS_TABLE} ADD COLUMN {exists}{ddl}"))
-    if postgres:
-        connection.execute(text(_DRAFT_STATUS_CHECK_DDL))
+
+
+def _ensure_checks(connection: Any) -> None:
+    """PostgreSQL only: every `_CHECKS` constraint present and allowing all its values."""
+    for table, name, expression, values in _CHECKS:
+        definition = connection.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = CAST(:table AS regclass) AND conname = :name"
+            ),
+            {"table": table, "name": name},
+        ).scalar_one_or_none()
+        if definition is not None and all(f"'{value}'" in definition for value in values):
+            continue
+        if definition is not None:
+            connection.execute(text(f"ALTER TABLE {table} DROP CONSTRAINT {name}"))
+        connection.execute(text(f"ALTER TABLE {table} ADD CONSTRAINT {name} CHECK ({expression})"))
 
 
 def initialize_schema(engine: Engine) -> None:
-    """Create the seven tables when missing, with RLS on and no policies (as inventory).
+    """Create the ten tables when missing, with RLS on and no policies (as inventory).
 
     Initialization, not migration: `create_all` never alters an existing table,
-    so the Part 2 section columns are added separately when missing.
+    so the later parts' section columns and check values are added separately.
     """
     tables = [RfpModel.metadata.tables[str(model.__tablename__)] for model in TABLES]
     with engine.begin() as connection:
         RfpModel.metadata.create_all(connection, tables=tables)
-        _add_part_2_section_columns(connection)
+        _add_section_columns(connection)
         if connection.dialect.name == "postgresql":
+            _ensure_checks(connection)
             quote = connection.dialect.identifier_preparer.quote
             for table in tables:
                 connection.execute(

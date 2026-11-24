@@ -66,7 +66,7 @@ graph TD;
 
 ### Statuses
 
-They are the briefing's (§2.3), plus one:
+They are the briefing's (§2.3), plus two: `failed` here, and `rejected` in Part 3.
 
 | Status | Set by |
 |---|---|
@@ -74,7 +74,8 @@ They are the briefing's (§2.3), plus one:
 | `discarded` | `discard_ticket`: the classifier said the document is not an RFP, or no TrackFlow service is requested |
 | `intake_complete` | `complete_intake` |
 | `failed` | Any stage failing, or the stale sweep. **Not in the briefing:** a technical failure is not a classification, and calling it `discarded` would distort the "correct classification rate" KPI (§3). |
-| `drafting` … `done` | Parts 2 and 3. `handoff.claim_next` sets `drafting`; see [proposal-drafting.md](proposal-drafting.md). |
+| `drafting` … `needs_human_review` | Part 2. `handoff.claim_next` sets `drafting`; see [proposal-drafting.md](proposal-drafting.md). |
+| `waiting_for_approval`, `done`, `rejected` | Part 3: each department owner's approval and the final document; see [approval-completion.md](approval-completion.md). **`rejected` is not in the briefing either:** an owner, or an unresolved §7 conflict, rejected a section, so the proposal does not go out. |
 
 **"Don't fail silently."**
 - Every node runs inside `graph._step` (`steps.run_step`, shared with Part 2), which:

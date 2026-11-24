@@ -369,3 +369,18 @@ def check_section(
     for rule_id in checked:
         violations.extend(checks[rule_id]())
     return violations, checked
+
+
+# --- Used by Part 3's arbitration (§7), which reads the same rules across sections ------
+
+
+def currency_violations(
+    draft: dict[str, Any], markdown: str, currency: str | None
+) -> list[Violation]:
+    """`currency-by-country` on one section (feeds §7 `currency-mismatch`)."""
+    return _check_currency(draft, markdown, currency)
+
+
+def returns_violations(draft: dict[str, Any], markdown: str) -> list[Violation]:
+    """`returns-min-48h` on one section (feeds §7 `returns-sla-breach`)."""
+    return _check_returns(draft, markdown)

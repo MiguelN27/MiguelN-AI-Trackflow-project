@@ -362,6 +362,8 @@ def test_the_router_only_triggers_and_queries_the_pipeline():
     pipeline = {m for m in modules if m.startswith("data.")}
     assert pipeline == {
         "data.pipelines.rfp_intake",
+        "data.pipelines.rfp_intake.approval",
+        "data.pipelines.rfp_intake.approval.decisions",
         "data.pipelines.rfp_intake.config",
         "data.pipelines.rfp_intake.proposal",
     }
@@ -372,11 +374,16 @@ def test_the_router_only_triggers_and_queries_the_pipeline():
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and isinstance(node.func.value, ast.Name)
-        and node.func.value.id in {"runner", "store"}
+        and node.func.value.id
+        in {"runner", "store", "approval_runner", "approval_detail", "approval_trace"}
     }
     assert calls == {
         "runner.sweep",
         "store.create_ticket",
         "store.list_tickets",
-        "store.get_ticket_detail",
+        "store.get_ticket",
+        "approval_detail.ticket_detail",
+        "approval_detail.document_fields",
+        "approval_runner.submit_decision",
+        "approval_trace.ticket_trace",
     }

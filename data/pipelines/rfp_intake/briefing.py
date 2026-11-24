@@ -27,9 +27,18 @@ class TicketStatus(StrEnum):
     # down, abandoned run) is not a classification: marking it `discarded`
     # would count it against the "correct classification rate" KPI (§3).
     FAILED = "failed"
+    # Not in the briefing either (Part 3, decided with the developer 2026-11-23).
+    # A department owner rejected their section, or an arbitration (§7) could
+    # not resolve a conflict within its limit. The proposal does not go out and
+    # no final document is generated. Terminal, like `done`.
+    REJECTED = "rejected"
 
 
-BRIEFING_STATUSES: Final = frozenset(status for status in TicketStatus if status != "failed")
+# This implementation's additions to the briefing's statuses.
+ADDED_STATUSES: Final = frozenset({TicketStatus.FAILED, TicketStatus.REJECTED})
+BRIEFING_STATUSES: Final = frozenset(
+    status for status in TicketStatus if status not in ADDED_STATUSES
+)
 
 # Where a Part 1 run can end. A ticket in any of them can be read in full.
 PART_1_OUTCOMES: Final = frozenset(
@@ -97,7 +106,9 @@ COUNTRY_NAMES: Final[dict[str, str]] = {"US": "United States", "ES": "Spain"}
 CURRENCY_BY_COUNTRY: Final[dict[str, Currency]] = {"US": "USD", "ES": "EUR"}
 
 # Briefing §1: RFPs land on his desk; he is the Sales reader of every ticket.
+# Briefing §7 also names him the fixed arbiter of cross-department conflicts.
 COMMERCIAL_DIRECTOR: Final = "Miguel Torres"
+COMMERCIAL_DIRECTOR_TITLE: Final = "Commercial Director"
 
 
 def departments_for(services: Sequence[str]) -> list[DepartmentId]:

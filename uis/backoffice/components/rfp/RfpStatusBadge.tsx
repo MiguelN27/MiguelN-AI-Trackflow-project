@@ -10,7 +10,11 @@ const STATUS_CLASSES: Partial<Record<RfpStatus, string>> = {
   drafting: WORKING,
   under_evaluation: WORKING,
   needs_human_review: "border-orange-200 bg-orange-50 text-orange-800",
-  waiting_for_approval: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  // Waiting on people, not finished: amber. Only `done` is the finished green.
+  waiting_for_approval: "border-amber-200 bg-amber-50 text-amber-800",
+  done: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  // Closed by a department owner or an arbitration: final, not a technical error.
+  rejected: "border-slate-300 bg-slate-100 text-slate-700",
 };
 
 const LATER_PARTS = "border-blue-200 bg-blue-50 text-blue-800";

@@ -12,7 +12,7 @@ A section that fails goes back to its generator with concrete feedback, up to an
 - **Brief:** `lead-instr.png` (the ticket) and `stages-todo.png` (the checklist).
 - **Visual reference:** `visual-ref.png`, "departmental mapping & deliverable finalization".
 - **Briefing:** the root `agentic-workflow-context.md` (the ticket's `company-BRIEFING.md`).
-- **Part 3 contract:** [proposal-handoff-contract.md](proposal-handoff-contract.md).
+- **Part 3 contract:** [proposal-handoff-contract.md](proposal-handoff-contract.md). Part 3 itself (approval per department, arbitration, final document): [approval-completion.md](approval-completion.md).
 
 ## Decisions taken with the developer (2026-11-23)
 
@@ -247,7 +247,7 @@ If Qdrant or the embeddings model is unavailable, or nothing scores above the th
 | `rfp_section_drafts` (new) | **Every attempt** and its evaluation, unique per (section, run, attempt). It is the audit trail and the source of the §3 KPI (`npm run rfp -- kpi`). |
 | `rfp_proposal_handoffs` (new) | The Part 3 queue: `rfp-proposal/1`, `next_stage = approval`. See the contract. |
 
-`store.initialize_schema` creates the seven tables. Because `create_all` never alters a table, it adds the new section columns to a Part 1 database with `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, typed by the dialect, plus the `draft_status` check on PostgreSQL. This is the same approach as inventory's `products.client_id`. RLS is on, with no policies.
+`store.initialize_schema` creates the seven tables (ten since Part 3). Because `create_all` never alters a table, it adds the new section columns to a Part 1 database with `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, typed by the dialect, plus the `draft_status` check on PostgreSQL (since Part 3, every such check is added when missing and replaced when it lacks a newer value). This is the same approach as inventory's `products.client_id`. RLS is on, with no policies.
 
 ## Triggering (no new API process)
 
@@ -287,7 +287,7 @@ npm run rfp -- draft [<ticket_id>]                           # one ticket, or dr
 npm run rfp -- redraft <ticket_id>                           # Part 2 again (not once Part 3 has claimed it)
 npm run rfp -- show <ticket_id>                              # the drafts, their checks and what to fix
 npm run rfp -- proposal <ticket_id>                          # the Part 3 payload
-npm run rfp -- kpi                                           # average iterations per section (§3)
+npm run rfp -- kpi                                           # average iterations per section (§3; Part 2 runs only)
 npm run rfp -- graph --part 2                                # both Part 2 graphs as Mermaid
 npm run rfp -- proposal-schema --write                       # refresh the contract's JSON Schema
 LLM_TIMEOUT_SECONDS=120 npm run rfp:smoke                    # intake + drafting on the three PDFs, live

@@ -1,8 +1,8 @@
-"""RFP intake and proposal drafting from the command line (Milestone 9 Parts 1-2).
+"""The RFP workflow from the command line (Milestone 9 Parts 1-3).
 
 Not a second HTTP API.
 
-    npm run rfp -- run PDF-examples/trackflow-request-1.pdf   # intake + drafting, synchronously
+    npm run rfp -- run PDF-examples/trackflow-request-1.pdf   # intake + drafting + open approvals
     npm run rfp -- list
     npm run rfp -- show <ticket_id> [--json]                  # the Sales view, or everything
     npm run rfp -- reprocess <ticket_id>                      # a failed or discarded ticket
@@ -10,8 +10,15 @@ Not a second HTTP API.
     npm run rfp -- draft [<ticket_id>]                        # draft one ticket, or the queue
     npm run rfp -- redraft <ticket_id>                        # Part 2 again, from the handoff
     npm run rfp -- proposal <ticket_id>                       # the Part 3 payload (JSON)
-    npm run rfp -- kpi                                        # average iterations per section
-    npm run rfp -- graph [--part 1|2]                         # the graphs as Mermaid
+    npm run rfp -- request-approval [--limit N]               # open approvals for the queue
+    npm run rfp -- approvals <ticket_id>                      # open requests, decisions, rulings
+    npm run rfp -- decide <ticket_id> <department> approve|request-changes|reject \
+                          --as <owner email> [--comment TEXT]  # an owner's decision, applied
+    npm run rfp -- resume <ticket_id>                         # continue a stopped approval run
+    npm run rfp -- document <ticket_id> [--output FILE]       # the final document (Markdown)
+    npm run rfp -- trace <ticket_id> [--json] [--state]       # which agent did what, in order
+    npm run rfp -- kpi                                        # iterations, approval and build time
+    npm run rfp -- graph [--part 1|2|3]                       # the graphs as Mermaid
     npm run rfp -- handoff-schema [--write]                   # docs/rfp/handoff-contract.md
     npm run rfp -- proposal-schema [--write]                  # the Part 3 contract doc
     LLM_TIMEOUT_SECONDS=120 npm run rfp:smoke                 # the three briefing PDFs, live
@@ -19,13 +26,15 @@ Not a second HTTP API.
 All commands but `smoke`, `graph` and the schemas use the API's database
 (`DATABASE_URL`) and create the `rfp_*` tables when missing, like the API's
 start-up. `smoke` uses the real models but a temporary SQLite database, so it
-leaves no ticket behind. It runs intake and then drafting on each PDF, and
-writes `data/eval/rfp_intake/smoke.json` with the briefing's KPIs (§3):
-correct classification rate and average iterations per section.
+leaves no ticket behind. It runs intake, drafting and approval on each PDF:
+the owners are simulated (programmatic resumes), one of them asks for a
+change, which the live generator makes. It writes
+`data/eval/rfp_intake/smoke.json` with the briefing's KPIs (§3): correct
+classification rate and average iterations per section.
 
 Exit codes: 0 done, 1 a smoke expectation failed or a run did not complete,
 2 configuration (models or database), 3 unknown ticket or refused
-reprocess/draft/redraft.
+reprocess/draft/redraft/decision.
 """
 
 from __future__ import annotations
@@ -46,6 +55,12 @@ from sqlalchemy.engine import Engine
 from sqlmodel import create_engine
 
 from data.pipelines.rfp_intake import handoff, runner, store
+from data.pipelines.rfp_intake.approval import approvers, decisions
+from data.pipelines.rfp_intake.approval import detail as approval_detail
+from data.pipelines.rfp_intake.approval import graph as approval_graph
+from data.pipelines.rfp_intake.approval import runner as approval_runner
+from data.pipelines.rfp_intake.approval import store as approval_store
+from data.pipelines.rfp_intake.approval import trace as approval_trace
 from data.pipelines.rfp_intake.config import ROOT_DIR, RfpIntakeSettings, get_rfp_settings
 from data.pipelines.rfp_intake.graph import draw_mermaid
 from data.pipelines.rfp_intake.proposal import graph as proposal_graph
@@ -66,6 +81,26 @@ PROPOSAL_SCHEMA_END = "<!-- proposal-schema:end -->"
 # Where intake + drafting may end for a document the intake accepted.
 DRAFTED: frozenset[str] = frozenset({"waiting_for_approval", "needs_human_review"})
 COMPLETED: frozenset[str] = DRAFTED | {"intake_complete", "discarded"}
+# The smoke run's simulated owners (Part 3), one account per department.
+SMOKE_OWNERS: dict[str, str] = {
+    "warehouse": "ana.whitfield@smoke.trackflow.test",
+    "lastmile": "carlos.vega@smoke.trackflow.test",
+    "reverse": "sofia.ramos@smoke.trackflow.test",
+}
+SMOKE_CHANGE_REQUEST = (
+    "Please add one sentence that says which person at TrackFlow the client contacts for "
+    "this service, and keep everything else as it is."
+)
+# The order a ticket's status must follow through the three parts.
+FORWARD = (
+    "analyzing",
+    "intake_complete",
+    "drafting",
+    "under_evaluation",
+    "needs_human_review",
+    "waiting_for_approval",
+    "done",
+)
 
 # Briefing §4: what each sample must produce.
 SMOKE_CASES: tuple[dict[str, Any], ...] = (
@@ -163,7 +198,9 @@ def create_from_pdf(
 
 def detail_or_exit(engine: Engine, ticket_id: str) -> dict[str, Any]:
     try:
-        detail = store.get_ticket_detail(engine, ticket_id)
+        detail = approval_detail.ticket_detail(
+            engine, ticket_id, viewer_email=None, settings=get_rfp_settings()
+        )
     except ValueError:
         raise CliError(f"not a ticket id: {ticket_id}", 3) from None
     if detail is None:
@@ -209,7 +246,51 @@ def render(detail: dict[str, Any]) -> str:
             lines += ["", "Not covered by a department:"]
             lines += [f"  - {item}" for item in brief["unassigned_requirements"]]
     lines += render_drafts(detail)
+    lines += render_approval(detail)
     return "\n".join(lines)
+
+
+def render_approval(detail: dict[str, Any]) -> list[str]:
+    """Part 3: each owner's decision, the arbitration rulings and the final document."""
+    approval = detail.get("approval")
+    if not approval:
+        return []
+    lines = [
+        "",
+        f"Approval (Part 3): {approval['status']}, {approval['approved']} of "
+        f"{approval['sections']} section(s) approved; thread {approval['thread_id']}",
+    ]
+    if approval.get("error_stage"):
+        lines.append(
+            f"  stopped at {approval['error_stage']}: {approval['error_message']} "
+            f"(npm run rfp -- resume {detail['ticket_id']})"
+        )
+    for ruling in approval.get("rulings") or []:
+        lines.append(
+            f"  arbitration {ruling['trigger_id']} by {ruling['arbiter']}: {ruling['action']} "
+            f"{', '.join(ruling['departments'])}"
+        )
+    for section in detail["sections"]:
+        if not section.get("approval_status"):
+            continue
+        state = section["approval_status"]
+        if state == "approved":
+            state = f"approved by {section['approver']} ({section['approved_by']})"
+        elif section.get("awaiting_decision"):
+            state = f"waiting for {section['owner']}, round {section['review_round']}"
+        lines.append(f"  {section['department_name']}: {state}")
+        for decision in section.get("decisions") or []:
+            comment = f": {decision['comment']}" if decision.get("comment") else ""
+            lines.append(
+                f"    round {decision['review_round']} {decision['decided_by_name']} "
+                f"({decision['source']}) {decision['action']} [{decision['status']}]{comment}"
+            )
+    if detail.get("final_document"):
+        lines.append(
+            f"  Final document: {detail['final_document']['generated_at']} "
+            f"(npm run rfp -- document {detail['ticket_id']})"
+        )
+    return lines
 
 
 def _check(result: dict[str, Any] | None) -> str:
@@ -269,6 +350,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if status == "intake_complete" and not args.no_draft:
         print(f"ticket {ticket_id}: drafting the proposal...", file=sys.stderr)
         status = proposal_runner.draft_ticket(ticket_id, engine)
+        if status in DRAFTED and not args.no_approval:
+            print(f"ticket {ticket_id}: asking each department owner...", file=sys.stderr)
+            approval_runner.start_pending(engine)
+            status = store.get_ticket(engine, ticket_id).status  # type: ignore[union-attr]
     print(render(detail_or_exit(engine, str(ticket_id))))
     return 0 if status in COMPLETED else 1
 
@@ -354,7 +439,12 @@ def cmd_proposal(args: argparse.Namespace) -> int:
 
 
 def cmd_kpi(args: argparse.Namespace) -> int:
-    print(json.dumps(proposal_store.iteration_kpi(api_engine()), indent=2))
+    engine = api_engine()
+    report = {
+        "iterations": proposal_store.iteration_kpi(engine),
+        "approval": approval_store.approval_kpi(engine),
+    }
+    print(json.dumps(report, indent=2))
     return 0
 
 
@@ -362,8 +452,122 @@ def cmd_graph(args: argparse.Namespace) -> int:
     if args.part == "1":
         print(draw_mermaid())
         return 0
-    for name, mermaid in proposal_graph.draw_mermaid().items():
+    drawings = proposal_graph.draw_mermaid() if args.part == "2" else approval_graph.draw_mermaid()
+    for name, mermaid in drawings.items():
         print(f"%% {name}\n{mermaid}")
+    return 0
+
+
+def cmd_request_approval(args: argparse.Namespace) -> int:
+    engine = api_engine()
+    started = approval_runner.start_pending(engine, limit=args.limit)
+    for ticket_id, status in started:
+        print(f"{ticket_id}  {status}")
+    if not started:
+        print("no proposal is waiting for its approvals to open", file=sys.stderr)
+    return 0
+
+
+def cmd_approvals(args: argparse.Namespace) -> int:
+    engine = api_engine()
+    detail = detail_or_exit(engine, args.ticket_id)
+    requests = approval_runner.open_requests(engine, args.ticket_id)
+    if not requests:
+        print("no department is waiting for a decision", file=sys.stderr)
+    for _, request in requests:
+        note = " [needs human review]" if request["needs_human_review"] else ""
+        account = approvers.approver_email(get_rfp_settings(), request["department_id"])
+        print(
+            f"{request['department_id']:<10} ask {request['owner']} "
+            f"({account or 'no account configured'}), "
+            f"round {request['review_round']}, may: {', '.join(request['allowed_actions'])}{note}"
+        )
+        if request.get("reason"):
+            print(f"           because: {request['reason']}")
+        if request.get("error"):
+            print(f"           last answer refused: {request['error']}")
+    print("\n".join(render_approval(detail)))
+    return 0
+
+
+def cmd_decide(args: argparse.Namespace) -> int:
+    engine = api_engine()
+    detail = detail_or_exit(engine, args.ticket_id)
+    section = next((s for s in detail["sections"] if s["department_id"] == args.department), None)
+    review_round = args.round or (section["review_round"] if section else 1)
+    action = args.action.replace("-", "_")
+    if action == "request_changes":
+        require_models()  # the section is redrafted by the live generator
+    try:
+        approval_runner.submit_decision(
+            engine,
+            args.ticket_id,
+            args.department,
+            action=action,
+            comment=args.comment,
+            review_round=review_round,
+            decided_by_email=args.decided_by,
+        )
+    except decisions.DecisionRefused as refused:
+        raise CliError(refused.message, 3) from None
+    status = approval_runner.apply_decisions(args.ticket_id, engine)
+    print(f"ticket {args.ticket_id}: {status}", file=sys.stderr)
+    print("\n".join(render_approval(detail_or_exit(engine, args.ticket_id))))
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    engine = api_engine()
+    detail_or_exit(engine, args.ticket_id)
+    try:
+        status = approval_runner.resume(args.ticket_id, engine)
+    except store.TicketStateError as error:
+        raise CliError(str(error), 3) from None
+    print(f"ticket {args.ticket_id}: {status}")
+    return 0
+
+
+def cmd_document(args: argparse.Namespace) -> int:
+    engine = api_engine()
+    detail_or_exit(engine, args.ticket_id)
+    document = approval_detail.document_fields(engine, args.ticket_id)
+    if document is None:
+        raise CliError(
+            f"ticket {args.ticket_id} has no final document yet (every owner must approve)", 3
+        )
+    if args.output:
+        Path(args.output).write_text(document["content"], encoding="utf-8")
+        print(f"wrote {args.output}", file=sys.stderr)
+    else:
+        print(document["content"])
+    return 0
+
+
+def cmd_trace(args: argparse.Namespace) -> int:
+    engine = api_engine()
+    detail_or_exit(engine, args.ticket_id)
+    if args.state:
+        entries = approval_runner.state_trace(engine, args.ticket_id)
+        if args.json:
+            print(json.dumps(entries, indent=2, default=str))
+            return 0
+        for entry in entries:
+            print(
+                f"{entry['started_at'][:19]}  {entry['node']:<32} {entry['agent']}\n"
+                f"    in:  {json.dumps(entry['input'], default=str)[:160]}\n"
+                f"    out: {json.dumps(entry['output'], default=str)[:160]}"
+            )
+        return 0
+    steps = approval_trace.ticket_trace(engine, args.ticket_id)
+    if args.json:
+        print(json.dumps(steps, indent=2, default=str))
+        return 0
+    for step in steps:
+        took = f"{step['duration_ms']} ms" if step["duration_ms"] is not None else ""
+        print(
+            f"{step['position']:>3}. Part {step['part']}  {step['at']:%H:%M:%S}  "
+            f"{step['node']:<34} {step['outcome']:<9} {took:>9}  {step['agent']}"
+        )
     return 0
 
 
@@ -482,6 +686,109 @@ def check_proposal(expect: dict[str, Any], detail: dict[str, Any]) -> dict[str, 
     }
 
 
+def _forward(statuses: list[str]) -> bool:
+    """The statuses only move forward through the three parts (repeats allowed)."""
+    positions = [FORWARD.index(status) for status in statuses if status in FORWARD]
+    return len(positions) == len(statuses) and positions == sorted(positions)
+
+
+def simulated_approval(
+    engine: Engine,
+    ticket_id: UUID,
+    settings: RfpIntakeSettings,
+    *,
+    currency: str,
+    change_request: str | None,
+    statuses: list[str],
+) -> dict[str, Any]:
+    """Part 3 with simulated owners: programmatic decisions, the graph resumed with each.
+
+    Every owner approves; with `change_request`, the first owner asks for that
+    change instead, and the live generator revises the section first.
+    """
+
+    def status() -> str:
+        ticket = store.get_ticket(engine, ticket_id)
+        return ticket.status if ticket else "missing"
+
+    approval_runner.start_pending(engine, settings=settings, limit=1)
+    statuses.append(status())
+    made: list[dict[str, Any]] = []
+    asked = change_request is None
+    for _ in range(12):
+        requests = approval_runner.open_requests(engine, ticket_id, settings)
+        if not requests:
+            break
+        for _, request in requests:
+            dept = request["department_id"]
+            action, comment = "approve", None
+            if not asked and "request_changes" in request["allowed_actions"]:
+                action, comment, asked = "request_changes", change_request, True
+            approval_runner.submit_decision(
+                engine,
+                ticket_id,
+                dept,
+                action=action,
+                comment=comment,
+                review_round=request["review_round"],
+                decided_by_email=SMOKE_OWNERS[dept],
+                settings=settings,
+            )
+            made.append({"department": dept, "round": request["review_round"], "action": action})
+        approval_runner.apply_decisions(ticket_id, engine, settings=settings)
+        statuses.append(status())
+
+    detail = detail_or_exit(engine, str(ticket_id))
+    document = approval_detail.document_fields(engine, ticket_id)
+    active = [s for s in detail["sections"] if s.get("approval_status")]
+    content = (document or {}).get("content") or ""
+    checks = {
+        "status_done": detail["status"] == "done",
+        "every_section_approved_by_its_owner": bool(active)
+        and all(s["approval_status"] == "approved" and s["approver"] == s["owner"] for s in active),
+        "document_stored": document is not None,
+        "document_sections": bool(document)
+        and [s["department_id"] for s in document["sections"]]  # type: ignore[index]
+        == [s["department_id"] for s in active],
+        "document_currency": bool(document) and document["currency"] == currency,  # type: ignore[index]
+        "approved_text_in_document": bool(document)
+        and all(((s.get("draft") or {}).get("summary") or "") in content for s in active),
+        "statuses_forward": _forward(statuses),
+    }
+    if change_request is not None:
+        checks["change_requested_and_revised"] = any(
+            (s.get("review_rounds") or 0) >= 1 for s in active
+        )
+    return {
+        "checks": checks,
+        "passed": all(checks.values()),
+        "status": detail["status"],
+        "statuses": statuses,
+        "decisions": made,
+        "rulings": (detail.get("approval") or {}).get("rulings"),
+        "sections": {
+            s["department_id"]: {
+                "approval_status": s["approval_status"],
+                "approver": s.get("approver"),
+                "review_rounds": s.get("review_rounds"),
+                "draft_status": s.get("draft_status"),
+            }
+            for s in active
+        },
+        "document": (
+            {
+                "currency": document["currency"],
+                "sections": [section["department_id"] for section in document["sections"]],
+                "characters": len(document["content"]),
+                "content_sha256": document["content_sha256"],
+            }
+            if document
+            else None
+        ),
+        "trace_steps": len(approval_trace.ticket_trace(engine, ticket_id)),
+    }
+
+
 def cmd_smoke(args: argparse.Namespace) -> int:
     require_models()
     pdf_dir = Path(args.pdf_dir)
@@ -491,20 +798,26 @@ def cmd_smoke(args: argparse.Namespace) -> int:
             connect_args={"check_same_thread": False},
         )
         store.initialize_schema(engine)
-        settings = get_rfp_settings().model_copy(update={"upload_dir": Path(scratch) / "pdf"})
+        settings = get_rfp_settings().model_copy(
+            update={"upload_dir": Path(scratch) / "pdf", "approvers": SMOKE_OWNERS}
+        )
         results = []
+        change_request: str | None = SMOKE_CHANGE_REQUEST
         for case in SMOKE_CASES:
             pdf = pdf_dir / case["file"]
             if not pdf.is_file():
                 raise CliError(f"missing sample PDF: {pdf}", 2)
             ticket_id = create_from_pdf(engine, pdf, settings, uploaded_by="smoke")
+            statuses = ["analyzing"]
             started = time.perf_counter()
             runner.run_intake(ticket_id, engine, settings=settings)
             seconds = round(time.perf_counter() - started, 1)
             detail = detail_or_exit(engine, str(ticket_id))
             verdict = check_case(case["expect"], detail)
             classification = detail.get("classification") or {}
+            statuses.append(detail["status"])
             drafting = None
+            approval = None
             if (
                 "proposal" in case
                 and not args.skip_drafting
@@ -533,6 +846,29 @@ def cmd_smoke(args: argparse.Namespace) -> int:
                     f"({drafting['seconds']}s)",
                     file=sys.stderr,
                 )
+                statuses.append(drafted["status"])
+                if not args.skip_approval and drafted["status"] in DRAFTED:
+                    started = time.perf_counter()
+                    before = drafted["llm_tokens_used"]
+                    approval = simulated_approval(
+                        engine,
+                        ticket_id,
+                        settings,
+                        currency=case["proposal"]["currency"],
+                        change_request=change_request,
+                        statuses=statuses,
+                    )
+                    change_request = None  # one live revision per smoke run
+                    approved = detail_or_exit(engine, str(ticket_id))
+                    approval["seconds"] = round(time.perf_counter() - started, 1)
+                    approval["llm_tokens_used"] = approved["llm_tokens_used"] - before
+                    verdict["passed"] = verdict["passed"] and approval["passed"]
+                    mark = "PASS" if approval["passed"] else "FAIL"
+                    print(
+                        f"{mark} {case['file']} approval: {approval['status']}, "
+                        f"{approval['statuses']} ({approval['seconds']}s)",
+                        file=sys.stderr,
+                    )
             results.append(
                 {
                     "file": case["file"],
@@ -555,6 +891,7 @@ def cmd_smoke(args: argparse.Namespace) -> int:
                     "sales_brief": detail.get("sales_brief"),
                     "sections": detail["sections"],
                     "drafting": drafting,
+                    "approval": approval,
                 }
             )
             mark = "PASS" if verdict["passed"] else "FAIL"
@@ -579,6 +916,9 @@ def cmd_smoke(args: argparse.Namespace) -> int:
             round(sum(iterations) / len(iterations), 2) if iterations else None
         ),
         "max_draft_iterations": settings.max_draft_iterations,
+        "approvals_done": sum(
+            1 for r in results if (r.get("approval") or {}).get("status") == "done"
+        ),
         "results": results,
     }
     output = Path(args.output)
@@ -600,6 +940,7 @@ def build_parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="create a ticket from a local PDF, analyse and draft it")
     run.add_argument("pdf")
     run.add_argument("--no-draft", action="store_true", help="stop after the intake (Part 1)")
+    run.add_argument("--no-approval", action="store_true", help="stop after drafting (Part 2)")
     run.set_defaults(handler=cmd_run)
 
     reprocess = commands.add_parser("reprocess", help="re-run a failed or discarded ticket")
@@ -630,11 +971,49 @@ def build_parser() -> argparse.ArgumentParser:
     proposal.add_argument("ticket_id")
     proposal.set_defaults(handler=cmd_proposal)
 
-    commands.add_parser("kpi", help="average iterations per section").set_defaults(handler=cmd_kpi)
+    commands.add_parser(
+        "kpi", help="iterations per section, approval time, build time"
+    ).set_defaults(handler=cmd_kpi)
 
     graph = commands.add_parser("graph", help="the graphs as Mermaid")
-    graph.add_argument("--part", choices=("1", "2"), default="1")
+    graph.add_argument("--part", choices=("1", "2", "3"), default="1")
     graph.set_defaults(handler=cmd_graph)
+
+    request_approval = commands.add_parser(
+        "request-approval", help="open the approvals of queued proposals (Part 3)"
+    )
+    request_approval.add_argument("--limit", type=int, default=None)
+    request_approval.set_defaults(handler=cmd_request_approval)
+
+    approvals = commands.add_parser("approvals", help="a ticket's open approval requests")
+    approvals.add_argument("ticket_id")
+    approvals.set_defaults(handler=cmd_approvals)
+
+    decide = commands.add_parser("decide", help="an owner's decision, applied to the graph")
+    decide.add_argument("ticket_id")
+    decide.add_argument("department", choices=("warehouse", "lastmile", "reverse"))
+    decide.add_argument("action", choices=("approve", "request-changes", "reject"))
+    decide.add_argument("--as", dest="decided_by", required=True, help="the owner's account")
+    decide.add_argument("--comment", default=None)
+    decide.add_argument("--round", type=int, default=None, help="the round reviewed")
+    decide.set_defaults(handler=cmd_decide)
+
+    resume_cmd = commands.add_parser("resume", help="continue a stopped approval run")
+    resume_cmd.add_argument("ticket_id")
+    resume_cmd.set_defaults(handler=cmd_resume)
+
+    document = commands.add_parser("document", help="a done ticket's final document")
+    document.add_argument("ticket_id")
+    document.add_argument("--output", default=None)
+    document.set_defaults(handler=cmd_document)
+
+    trace_cmd = commands.add_parser("trace", help="which agent did what, in order")
+    trace_cmd.add_argument("ticket_id")
+    trace_cmd.add_argument("--json", action="store_true")
+    trace_cmd.add_argument(
+        "--state", action="store_true", help="the approval graph state's trace (Part 3)"
+    )
+    trace_cmd.set_defaults(handler=cmd_trace)
 
     schema = commands.add_parser("handoff-schema", help="the handoff JSON Schema")
     schema.add_argument("--write", action="store_true", help=f"update {CONTRACT_DOC.name}")
@@ -648,6 +1027,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--pdf-dir", default=str(DEFAULT_PDF_DIR))
     smoke.add_argument("--output", default=str(DEFAULT_SMOKE_OUTPUT))
     smoke.add_argument("--skip-drafting", action="store_true", help="Part 1 only")
+    smoke.add_argument("--skip-approval", action="store_true", help="Parts 1 and 2 only")
     smoke.set_defaults(handler=cmd_smoke)
     return parser
 

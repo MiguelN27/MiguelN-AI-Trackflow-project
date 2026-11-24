@@ -9,7 +9,9 @@ They cover what SQLite cannot: JSONB columns, RLS, the check and unique
 constraints enforced by the server, a whole intake and a whole proposal
 drafting persisted through the real engine, the Part 2 column upgrade of a
 Part 1 database, and both queues' `FOR UPDATE SKIP LOCKED` between two
-connections.
+connections. For Part 3: LangGraph's `PostgresSaver` in its own throwaway
+schema (RLS on), a whole approval across a "restart", the ticket status
+check upgraded to allow `rejected`, and the lease between two workers.
 """
 
 import os
@@ -25,10 +27,16 @@ from sqlalchemy.schema import CreateSchema
 from sqlmodel import Session
 
 from data.pipelines.rfp_intake import handoff, runner, store
+from data.pipelines.rfp_intake.approval import checkpoint
+from data.pipelines.rfp_intake.approval import graph as approval_graph
+from data.pipelines.rfp_intake.approval import store as approval_store
+from data.pipelines.rfp_intake.briefing import TicketStatus
+from data.pipelines.rfp_intake.config import get_rfp_settings
 from data.pipelines.rfp_intake.models import PART_2_SECTION_COLUMNS, RfpHandoff, RfpProposalHandoff
 from data.pipelines.rfp_intake.proposal import handoff as proposal_handoff
 from data.pipelines.rfp_intake.proposal import runner as proposal_runner
 from data.pipelines.rfp_intake.proposal import store as proposal_store
+from tests.pipelines.rfp_intake.approval import support as approval_support
 from tests.pipelines.rfp_intake.proposal import support as proposal_support
 from tests.pipelines.rfp_intake.support import ScriptedAgents, new_ticket
 
@@ -41,6 +49,9 @@ TABLES = (
     "rfp_ticket_events",
     "rfp_section_drafts",
     "rfp_proposal_handoffs",
+    "rfp_approval_runs",
+    "rfp_approval_decisions",
+    "rfp_final_documents",
 )
 
 
@@ -262,3 +273,103 @@ def test_part_3_claims_skip_a_proposal_another_worker_holds(postgres, tmp_path):
 
     assert claimed is not None and claimed.proposal.ticket_id == second
     assert proposal_handoff.claim_next(engine, claimed_by="approval-a").proposal.ticket_id == first
+
+
+# --- Part 3 -------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def checkpoints(postgres, monkeypatch):
+    """The approval graph's checkpointer in its own throwaway schema."""
+    engine, _ = postgres
+    schema = f"rfp_graph_test_{uuid4().hex}"
+    monkeypatch.setenv("RFP_CHECKPOINT_SCHEMA", schema)
+    get_rfp_settings.cache_clear()
+    try:
+        yield engine, schema
+    finally:
+        approval_graph.clear_graphs()
+        checkpoint.close_checkpointers()
+        with engine.begin() as connection:
+            connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        get_rfp_settings.cache_clear()
+
+
+def test_a_whole_approval_runs_on_the_postgres_checkpointer(checkpoints, tmp_path):
+    engine, schema = checkpoints
+    approval = approval_support.opened(engine, tmp_path, "formal")
+
+    # LangGraph's checkpoint tables are in their own schema, with RLS on.
+    with engine.connect() as connection:
+        rls = dict(
+            connection.execute(
+                text(
+                    "SELECT c.relname, c.relrowsecurity FROM pg_class c JOIN pg_namespace n "
+                    "ON n.oid = c.relnamespace WHERE n.nspname = :schema AND c.relkind = 'r'"
+                ),
+                {"schema": schema},
+            ).all()
+        )
+        saved = connection.execute(
+            text(f'SELECT count(*) FROM "{schema}".checkpoints WHERE thread_id = :thread'),
+            {"thread": f"rfp-{approval.ticket_id}"},
+        ).scalar_one()
+    assert rls == dict.fromkeys(checkpoint.CHECKPOINT_TABLES, True)
+    assert saved > 0
+
+    assert approval.decide("reverse", "approve") == "waiting_for_approval"
+    assert set(approval.requests()) == {"warehouse"}
+
+    # A new process: the paused branch is read back from PostgreSQL.
+    approval_graph.clear_graphs()
+    checkpoint.close_checkpointers()
+    assert approval.decide("warehouse", "approve") == "done"
+
+    document = approval_store.get_document(engine, approval.ticket_id)
+    assert document is not None and document.currency == "EUR"
+    assert [s["department_id"] for s in document.sections] == ["warehouse", "reverse"]
+    assert approval.events("open_approval") == ["open_approval"]
+
+
+def test_an_older_status_check_is_upgraded_to_allow_rejected(postgres, tmp_path):
+    engine, _ = postgres
+    # The check as Parts 1-2 created it: every status but Part 3's `rejected`.
+    old = ", ".join(f"'{s.value}'" for s in TicketStatus if s != TicketStatus.REJECTED)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE rfp_tickets DROP CONSTRAINT ck_rfp_status"))
+        connection.execute(
+            text(f"ALTER TABLE rfp_tickets ADD CONSTRAINT ck_rfp_status CHECK (status IN ({old}))")
+        )
+
+    store.initialize_schema(engine)
+    store.initialize_schema(engine)
+
+    ticket_id = new_ticket(engine, tmp_path, "formal")
+    runner.run_intake(ticket_id, engine, agents=ScriptedAgents("formal").bundle())  # sections
+    with engine.begin() as connection:
+        definition = connection.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE "
+                "conrelid = 'rfp_tickets'::regclass AND conname = 'ck_rfp_status'"
+            )
+        ).scalar_one()
+        connection.execute(
+            text("UPDATE rfp_tickets SET status = 'rejected' WHERE id = :id"), {"id": ticket_id}
+        )
+    assert "'rejected'" in definition
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(text("UPDATE rfp_department_sections SET approval_status = 'maybe'"))
+
+
+def test_one_worker_at_a_time_resumes_a_ticket(checkpoints, tmp_path):
+    engine, _ = checkpoints
+    approval = approval_support.opened(engine, tmp_path, "informal")
+    ttl = timedelta(minutes=30)
+
+    assert approval_store.acquire_lease(engine, approval.ticket_id, "worker-a", ttl=ttl)
+    assert not approval_store.acquire_lease(engine, approval.ticket_id, "worker-b", ttl=ttl)
+    approval.submit("lastmile", "approve")
+    assert approval.apply() == "waiting_for_approval"  # worker-a holds it: recorded, not applied
+    approval_store.release_lease(engine, approval.ticket_id, "worker-a")
+    assert approval.apply() == "waiting_for_approval"
+    assert approval.sections()["lastmile"].approval_status == "approved"

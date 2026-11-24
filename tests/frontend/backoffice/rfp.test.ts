@@ -1,14 +1,23 @@
 import {
+  APPROVAL_POLL_INTERVAL_MS,
   MAX_UPLOAD_BYTES,
   POLL_INTERVAL_MS,
   QUEUED_POLL_INTERVAL_MS,
   RULE_LABELS,
   STAFF_ONLY_MESSAGE,
+  TRIGGER_LABELS,
+  approvalLine,
+  approvalSummary,
   checkPdf,
+  describeDecisionError,
   describeRfpError,
+  downloadFinalDocument,
   failedWhileDrafting,
+  getFinalDocument,
   getRfpTicket,
+  getRfpTrace,
   isAnalyzing,
+  isApprovalBusy,
   isRfpTicketDetail,
   isWorking,
   listPollDelay,
@@ -17,13 +26,16 @@ import {
   sectionStatusLine,
   stageLabel,
   stageProgress,
+  submitDecision,
   uploadRfp,
+  type RfpApproval,
+  type RfpApprovalDecision,
   type RfpEvaluation,
   type RfpSection,
   type RfpTicketDetail,
 } from "@/lib/rfp";
 import { parseSectionMarkdown } from "@/components/rfp/ProposalSectionCard";
-import { NetworkError } from "@/lib/api-client";
+import { ApiError, NetworkError } from "@/lib/api-client";
 import { clearToken, storeToken } from "@/lib/auth-storage";
 import { installBrowser, removeBrowser } from "../shared/support/browser";
 import { API, jsonResponse, scriptFetch, textResponse } from "../shared/support/http";
@@ -46,11 +58,14 @@ const SUMMARY = {
   updated_at: "2026-11-21T10:00:03Z",
 };
 
-// A section before Part 2 has drafted it.
+// A section before Part 2 has drafted it (and before Part 3 asks its owner).
 const NOT_DRAFTED = {
   draft_status: null, draft_iterations: 0, max_iterations: null, is_sla_section: false, needs_human_review: false,
   draft_content: null, draft: null, guard_notes: [], knowledge_source: null, rate_card_version: null, review_note: null,
   evaluation: null, approval_status: null, ready_at: null,
+  approver: null, approved_by: null, approved_at: null, review_round: 1, review_rounds: 0, max_review_rounds: 3,
+  allowed_actions: ["approve", "request_changes", "reject"] as RfpSection["allowed_actions"], approver_configured: true,
+  awaiting_decision: false, decision_pending: false, can_decide: false, decisions: [] as RfpApprovalDecision[],
 };
 
 function evaluation(overrides: Partial<RfpEvaluation> = {}): RfpEvaluation {
@@ -143,6 +158,8 @@ function detail(overrides: Partial<RfpTicketDetail> = {}): RfpTicketDetail {
     },
     handoff: { contract_version: "rfp-intake/1", next_stage: "drafting", status: "pending", created_at: "2026-11-21T10:00:30Z", claimed_at: null },
     proposal: null,
+    approval: null,
+    final_document: null,
     events: [
       { node: "convert_to_markdown", outcome: "completed", detail: null, duration_ms: 40, created_at: "2026-11-21T10:00:01Z" },
       { node: "classify_document", outcome: "completed", detail: null, duration_ms: 1500, created_at: "2026-11-21T10:00:03Z" },
@@ -271,7 +288,11 @@ it("polls while a run works on the ticket and while it waits in the drafting que
   expect(isWorking("needs_human_review") || isWorking("waiting_for_approval")).toBe(false);
   expect(pollDelay(detail({ status: "under_evaluation" }))).toBe(POLL_INTERVAL_MS);
   expect(pollDelay(detail())).toBe(QUEUED_POLL_INTERVAL_MS); // intake_complete, handoff pending
-  expect(pollDelay(detail({ status: "waiting_for_approval", handoff: { ...detail().handoff!, status: "claimed" } }))).toBeNull();
+  // Waiting for its owners: another owner may decide from another browser.
+  expect(pollDelay(detail({ status: "waiting_for_approval", handoff: { ...detail().handoff!, status: "claimed" } }))).toBe(
+    APPROVAL_POLL_INTERVAL_MS,
+  );
+  expect(pollDelay(detail({ status: "done", handoff: { ...detail().handoff!, status: "claimed" } }))).toBeNull();
 
   const now = Date.parse("2026-11-23T10:00:00Z");
   const recent = { status: "intake_complete" as const, updated_at: "2026-11-23T09:59:00Z" };
@@ -307,10 +328,153 @@ it("reads the section Markdown as headings, paragraphs, lists and tables, never 
   );
 
   expect(blocks).toEqual([
-    { kind: "heading", text: "Title" },
+    { kind: "heading", text: "Title", level: 2 },
     { kind: "paragraph", text: "One paragraph." },
-    { kind: "heading", text: "Pricing" },
+    { kind: "heading", text: "Pricing", level: 3 },
     { kind: "table", header: ["Item", "Price"], rows: [["Storage", "16.00 EUR"]], caption: "Pricing" },
     { kind: "list", items: ["First", "<b>Second</b>"] },
   ]);
+});
+
+// --- Part 3: approval per department and the final document ------------------------------------
+
+function decision(overrides: Partial<RfpApprovalDecision> = {}): RfpApprovalDecision {
+  return {
+    decision_id: "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a", department_id: "reverse", review_round: 1, action: "approve",
+    comment: null, source: "owner", decided_by: "sofia.ramos@trackflow.com", decided_by_name: "Sofía Ramos", trigger_id: null,
+    status: "applied", status_note: null, created_at: "2026-11-23T11:00:00Z", applied_at: "2026-11-23T11:00:01Z",
+    ...overrides,
+  };
+}
+
+const APPROVAL: RfpApproval = {
+  status: "paused", thread_id: `rfp-${TICKET}`, started_at: "2026-11-23T10:03:00Z", finished_at: null, arbitration_rounds: 0,
+  max_arbitration_rounds: 2, rulings: [], error_stage: null, error_message: null, approved: 0, sections: 2,
+  viewer_departments: ["reverse"],
+};
+
+function inApproval(overrides: Partial<RfpTicketDetail> = {}): RfpTicketDetail {
+  const handoff = { ...detail().handoff!, status: "claimed" };
+  return detail({
+    status: "waiting_for_approval",
+    handoff,
+    proposal: { ...PROPOSAL, status: "claimed" },
+    approval: APPROVAL,
+    sections: [
+      draftedSection({ department_id: "warehouse", department_name: "Warehouse Operations", owner: "Ana Whitfield", awaiting_decision: true }),
+      draftedSection({ awaiting_decision: true, can_decide: true }),
+    ],
+    ...overrides,
+  });
+}
+
+it("validates a ticket in approval, done or rejected, and refuses a malformed approval", () => {
+  const approved = draftedSection({
+    approval_status: "approved", approver: "Sofía Ramos", approved_by: "sofia.ramos@trackflow.com",
+    approved_at: "2026-11-23T11:00:01Z", decisions: [decision()],
+  });
+  expect(isRfpTicketDetail(inApproval())).toBe(true);
+  expect(
+    isRfpTicketDetail(
+      inApproval({
+        status: "done", sections: [approved], approval: { ...APPROVAL, status: "done", approved: 1, sections: 1 },
+        final_document: { generated_at: "2026-11-23T11:00:02Z", currency: "EUR", content_sha256: "ab", sections: ["reverse"] },
+      }),
+    ),
+  ).toBe(true);
+  expect(isRfpTicketDetail(inApproval({ status: "rejected" }))).toBe(true);
+
+  const noCanDecide = { ...draftedSection(), can_decide: undefined } as unknown as RfpSection;
+  const badDecision = draftedSection({ decisions: [{ ...decision(), source: "manager" } as unknown as RfpApprovalDecision] });
+  const badAction = draftedSection({ allowed_actions: ["approve", "escalate"] as unknown as RfpSection["allowed_actions"] });
+  expect(isRfpTicketDetail(inApproval({ sections: [noCanDecide] }))).toBe(false);
+  expect(isRfpTicketDetail(inApproval({ sections: [badDecision] }))).toBe(false);
+  expect(isRfpTicketDetail(inApproval({ sections: [badAction] }))).toBe(false);
+  expect(isRfpTicketDetail({ ...inApproval(), approval: { ...APPROVAL, rulings: [{ trigger_id: "x" }] } })).toBe(false);
+  expect(isRfpTicketDetail({ ...inApproval(), approval: undefined })).toBe(false);
+});
+
+it("posts an owner's decision as JSON, with the round they reviewed", async () => {
+  const requests = scriptFetch(jsonResponse(202, { ...decision(), status: "recorded", applied_at: null }));
+
+  const recorded = await submitDecision(TICKET, "reverse", { action: "request_changes", comment: "Add the return window.", review_round: 1 });
+
+  expect(recorded.status).toBe("recorded");
+  expect(requests[0].url).toBe(`${API}/rfp/tickets/${TICKET}/sections/reverse/decision`);
+  expect(requests[0].method).toBe("POST");
+  expect(requests[0].headers.Authorization).toBe("Bearer staff-session");
+  expect(requests[0].headers["Content-Type"]).toBe("application/json");
+  expect(requests[0].body).toEqual({ action: "request_changes", comment: "Add the return window.", review_round: 1 });
+});
+
+it.each([
+  [403, "Only this department's owner can decide"],
+  [409, "changed since you opened it"],
+  [422, "a comment is required"],
+])("explains a refused decision (%i) in its own words", async (status, copy) => {
+  scriptFetch(jsonResponse(status, { detail: "server text" }));
+  const failure = await submitDecision(TICKET, "reverse", { action: "reject", comment: null, review_round: 1 }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(ApiError);
+  expect(describeDecisionError(failure)).toContain(copy);
+  expect(describeDecisionError(failure)).not.toContain("server text");
+});
+
+it("reads the final document, its download and the run's trace", async () => {
+  const content = "# Pricing proposal for ModaViva, S.L.\n";
+  scriptFetch(
+    jsonResponse(200, {
+      ticket_id: TICKET, rfp_id: SUMMARY.rfp_id, client_name: "ModaViva, S.L.", currency: "EUR", sections: [],
+      generated_at: "2026-11-23T11:00:02Z", content, content_sha256: "ab", approval_thread_id: `rfp-${TICKET}`,
+    }),
+  );
+  expect((await getFinalDocument(TICKET)).content).toBe(content);
+
+  scriptFetch(
+    new Response(content, {
+      status: 200,
+      headers: { "Content-Type": "text/markdown", "Content-Disposition": 'attachment; filename="trackflow-proposal-modaviva-sl.md"' },
+    }),
+  );
+  expect(await downloadFinalDocument(TICKET)).toEqual({ filename: "trackflow-proposal-modaviva-sl.md", content });
+
+  const step = {
+    position: 1, node: "sign_off:reverse#1", part: 3, step: "sign_off", department: "reverse", number: 1,
+    agent: "Sofía Ramos (owner of Reverse Logistics)", outcome: "completed", duration_ms: 4, at: "2026-11-23T11:00:01Z",
+    input: {}, output: {}, detail: null,
+  };
+  scriptFetch(jsonResponse(200, { ticket_id: TICKET, steps: [step] }));
+  expect((await getRfpTrace(TICKET))[0].agent).toBe("Sofía Ramos (owner of Reverse Logistics)");
+
+  scriptFetch(jsonResponse(200, { ticket_id: TICKET, steps: [{ position: 1 }] }));
+  await expect(getRfpTrace(TICKET)).rejects.toThrow("cannot read");
+});
+
+it("polls fast while a section is revised or a decision applied, slowly while owners decide", () => {
+  expect(pollDelay(inApproval())).toBe(APPROVAL_POLL_INTERVAL_MS);
+  const revising = inApproval({ sections: [draftedSection({ approval_status: "changes_requested" })] });
+  expect(isApprovalBusy(revising)).toBe(true);
+  expect(pollDelay(revising)).toBe(POLL_INTERVAL_MS);
+  const applying = inApproval({ sections: [draftedSection({ decision_pending: true })] });
+  expect(pollDelay(applying)).toBe(POLL_INTERVAL_MS);
+  // Drafted, and the proposal still waits in the approval queue.
+  const queued = detail({ status: "needs_human_review", handoff: { ...detail().handoff!, status: "claimed" }, proposal: PROPOSAL });
+  expect(pollDelay(queued)).toBe(QUEUED_POLL_INTERVAL_MS);
+  expect(pollDelay(inApproval({ status: "rejected", approval: { ...APPROVAL, status: "rejected" } }))).toBeNull();
+  expect(listPollDelay([{ status: "waiting_for_approval", updated_at: SUMMARY.updated_at }])).toBe(APPROVAL_POLL_INTERVAL_MS);
+});
+
+it("says where each section's approval stands, and labels Part 3's stages by round", () => {
+  expect(approvalSummary(inApproval())).toBe("0 of 2 departments approved");
+  expect(approvalLine(draftedSection())).toBe("Waiting for Sofía Ramos (round 1)");
+  expect(approvalLine(draftedSection({ decision_pending: true }))).toBe("Sofía Ramos's decision is being applied");
+  expect(approvalLine(draftedSection({ approval_status: "changes_requested", review_round: 2, review_rounds: 1 }))).toBe(
+    "Changes requested: revision 1 of 3 in progress",
+  );
+  expect(approvalLine(draftedSection({ approval_status: "approved", approver: "Sofía Ramos", approved_at: "2026-11-23T11:00:01Z" }))).toMatch(
+    /^Approved by Sofía Ramos on /,
+  );
+  expect(stageLabel("open_review:reverse#2")).toBe("Ask the owner: Reverse Logistics (round 2)");
+  expect(stageLabel("awaiting_approval:warehouse,reverse")).toBe("Waiting for approval: Warehouse Operations, Reverse Logistics");
+  expect(stageLabel("compose_final_document")).toBe("Compose the final document");
+  expect(Object.keys(TRIGGER_LABELS).sort()).toEqual(["currency-mismatch", "returns-sla-breach", "volume-vs-capacity"]);
 });

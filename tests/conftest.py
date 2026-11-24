@@ -6,11 +6,15 @@ own - the cache has to be cleared as well, before and after, or one test's
 incidents leak into the next and into `data/suppliers.json`.
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
 from data.pipelines.rfp_intake import config as rfp_config
 from data.pipelines.rfp_intake import llm as rfp_llm
+from data.pipelines.rfp_intake.approval import checkpoint as rfp_checkpoint
+from data.pipelines.rfp_intake.approval import graph as rfp_approval_graph
 from data.pipelines.rfp_intake.proposal import knowledge as rfp_knowledge
 from data.process.knowledge_base import KnowledgeBaseError
 from services.agent import config as agent_config
@@ -208,17 +212,29 @@ def isolated_agent_tools(monkeypatch):
     monkeypatch.setattr(agent_memory_classifier, "_classifier_client", forbid_classifier)
 
 
+# The department owners' accounts in every test (briefing §2.1 owners; RFP_APPROVERS).
+RFP_TEST_APPROVERS = {
+    "warehouse": "ana.whitfield@trackflow.com",
+    "lastmile": "carlos.vega@trackflow.com",
+    "reverse": "sofia.ramos@trackflow.com",
+}
+
+
 @pytest.fixture(autouse=True)
 def isolated_rfp_intake(tmp_path, monkeypatch):
     """Uploaded PDFs go to the test's directory, and no RFP agent reaches a model or Qdrant.
 
     Tests fake the agents (`IntakeAgents`, `ProposalAgents`) or `llm._client`
-    explicitly. Drafting after an upload is off unless a test turns it on
-    (`RFP_AUTO_DRAFT`), and a knowledge-base search always falls back to the
-    local documents.
+    explicitly. Drafting and opening the approvals after an upload are off
+    unless a test turns them on (`RFP_AUTO_DRAFT`, `RFP_AUTO_REQUEST_APPROVAL`),
+    and a knowledge-base search always falls back to the local documents. The
+    department owners' accounts are the test ones (`RFP_TEST_APPROVERS`), and
+    the approval graph's checkpoint connections are closed after each test.
     """
     monkeypatch.setenv("RFP_UPLOAD_DIR", str(tmp_path / "rfp-uploads"))
     monkeypatch.setenv("RFP_AUTO_DRAFT", "false")
+    monkeypatch.setenv("RFP_AUTO_REQUEST_APPROVAL", "false")
+    monkeypatch.setenv("RFP_APPROVERS", json.dumps(RFP_TEST_APPROVERS))
     rfp_config.get_rfp_settings.cache_clear()
 
     def forbid_model():
@@ -231,6 +247,8 @@ def isolated_rfp_intake(tmp_path, monkeypatch):
     monkeypatch.setattr(rfp_knowledge, "search", no_vector_search)
     yield
     rfp_config.get_rfp_settings.cache_clear()
+    rfp_approval_graph.clear_graphs()
+    rfp_checkpoint.close_checkpointers()
 
 
 @pytest.fixture

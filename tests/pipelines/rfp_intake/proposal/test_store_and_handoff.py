@@ -6,7 +6,7 @@ from sqlalchemy import inspect, text, update
 from sqlmodel import Session
 
 from data.pipelines.rfp_intake import handoff, runner, store
-from data.pipelines.rfp_intake.models import PART_2_SECTION_COLUMNS, RfpTicket, utcnow
+from data.pipelines.rfp_intake.models import ADDED_SECTION_COLUMNS, RfpTicket, utcnow
 from data.pipelines.rfp_intake.proposal import handoff as proposal_handoff
 from data.pipelines.rfp_intake.proposal import runner as proposal_runner
 from data.pipelines.rfp_intake.proposal import store as proposal_store
@@ -25,13 +25,13 @@ def drafted(engine, tmp_path, kind="informal", **agents_kwargs):
     return ticket_id
 
 
-def test_a_database_from_part_1_gets_the_part_2_section_columns(engine, tmp_path):
+def test_a_database_from_part_1_gets_the_later_section_columns(engine, tmp_path):
     complete = new_ticket(engine, tmp_path / "pdf", "formal")
     runner.run_intake(complete, engine, agents=ScriptedAgents("formal").bundle())
     part_1_columns = [
         c["name"]
         for c in inspect(engine).get_columns("rfp_department_sections")
-        if c["name"] not in PART_2_SECTION_COLUMNS
+        if c["name"] not in ADDED_SECTION_COLUMNS
     ]
     with engine.begin() as connection:  # back to the Part 1 table, with its rows
         connection.execute(
@@ -47,9 +47,10 @@ def test_a_database_from_part_1_gets_the_part_2_section_columns(engine, tmp_path
     store.initialize_schema(engine)  # and again: harmless
 
     columns = {c["name"] for c in inspect(engine).get_columns("rfp_department_sections")}
-    assert set(PART_2_SECTION_COLUMNS) <= columns
+    assert set(ADDED_SECTION_COLUMNS) <= columns
     rows = proposal_store.load_sections(engine, complete)
     assert [row.draft_iterations for row in rows] == [0, 0]
+    assert [row.review_rounds for row in rows] == [0, 0]
     assert all(row.draft_status is None for row in rows)
 
 

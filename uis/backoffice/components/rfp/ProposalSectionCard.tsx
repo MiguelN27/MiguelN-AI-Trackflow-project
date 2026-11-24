@@ -1,5 +1,7 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
+import { ApprovalControl } from "@/components/rfp/ApprovalControl";
 import {
+  APPROVAL_STATUS_LABELS,
   RULE_LABELS,
   sectionStatusLine,
   stageLabel,
@@ -14,7 +16,7 @@ const labelClass = "text-xs font-semibold uppercase tracking-wide text-slate-500
 // --- The draft, as it goes to approval ------------------------------------------------
 
 type Block =
-  | { kind: "heading"; text: string }
+  | { kind: "heading"; text: string; level: number }
   | { kind: "paragraph"; text: string }
   | { kind: "list"; items: string[] }
   | { kind: "table"; header: string[]; rows: string[][]; caption: string };
@@ -29,9 +31,10 @@ function cells(line: string): string[] {
 }
 
 /**
- * The section's Markdown as blocks. The pipeline writes a fixed, small subset
- * (`proposal/render.py`): headings, paragraphs, "- " lists and pipe tables. It
- * is rendered as React elements, never as HTML.
+ * The section's (or the final document's) Markdown as blocks. The pipeline
+ * writes a fixed, small subset (`proposal/render.py`, `approval/document.py`):
+ * headings, paragraphs, "- " lists, pipe tables and `**bold**`. It is rendered
+ * as React elements, never as HTML.
  */
 export function parseSectionMarkdown(markdown: string): Block[] {
   const blocks: Block[] = [];
@@ -53,7 +56,7 @@ export function parseSectionMarkdown(markdown: string): Block[] {
       index += 1;
     } else if (line.startsWith("#")) {
       heading = line.replace(/^#+\s*/, "");
-      blocks.push({ kind: "heading", text: heading });
+      blocks.push({ kind: "heading", text: heading, level: /^#+/.exec(line)?.[0].length ?? 1 });
       index += 1;
     } else if (line.startsWith("|")) {
       const [header = "", , ...rows] = run("|");
@@ -68,30 +71,53 @@ export function parseSectionMarkdown(markdown: string): Block[] {
   return blocks;
 }
 
-function DraftDocument({ markdown, label }: { markdown: string; label: string }) {
-  // The title and its "For approval by ..." line are already in the card's header.
-  const blocks = parseSectionMarkdown(markdown).filter(
-    (block, index) =>
-      !(index === 0 && block.kind === "heading") &&
-      !(index === 1 && block.kind === "paragraph" && block.text.startsWith("For approval by")),
+/** `**bold**` inside a line, as <strong>; everything else stays text. */
+export function Inline({ text }: { text: string }) {
+  const parts = text.split(/\*\*(.+?)\*\*/g);
+  return (
+    <>
+      {parts.map((part, index) =>
+        index % 2 === 1 ? <strong key={index}>{part}</strong> : <Fragment key={index}>{part}</Fragment>,
+      )}
+    </>
   );
+}
+
+const HEADING_TAGS = ["h3", "h4", "h5", "h6"] as const;
+
+/**
+ * Blocks as React elements. `headingBase`: the HTML level of a `#` heading
+ * (null = every heading as an h5, as in a section card).
+ */
+export function MarkdownBlocks({ blocks, label, headingBase = null }: { blocks: Block[]; label: string; headingBase?: number | null }) {
   return (
     <div className="space-y-3 text-sm leading-relaxed">
       {blocks.map((block, index) => {
         const key = `${block.kind}-${index}`;
         if (block.kind === "heading") {
+          const level = headingBase === null ? 5 : Math.min(headingBase + block.level - 1, 6);
+          const Tag = HEADING_TAGS[Math.max(level - 3, 0)];
+          const size = level <= 3 ? "text-lg" : level === 4 ? "text-base" : "text-sm";
           return (
-            <h5 key={key} className="pt-2 text-sm font-semibold">
+            <Tag key={key} className={`pt-2 font-semibold ${size}`}>
               {block.text}
-            </h5>
+            </Tag>
           );
         }
-        if (block.kind === "paragraph") return <p key={key}>{block.text}</p>;
+        if (block.kind === "paragraph") {
+          return (
+            <p key={key}>
+              <Inline text={block.text} />
+            </p>
+          );
+        }
         if (block.kind === "list") {
           return (
             <ul key={key} className="list-disc space-y-1 pl-5">
               {block.items.map((item) => (
-                <li key={item}>{item}</li>
+                <li key={item}>
+                  <Inline text={item} />
+                </li>
               ))}
             </ul>
           );
@@ -116,7 +142,7 @@ function DraftDocument({ markdown, label }: { markdown: string; label: string })
                   <tr key={`${key}-${rowIndex}`} className="border-b border-[color:var(--border-soft)] last:border-0">
                     {row.map((cell, cellIndex) => (
                       <td key={`${cellIndex}-${cell}`} className="py-1.5 pr-3 align-top tabular-nums">
-                        {cell}
+                        <Inline text={cell} />
                       </td>
                     ))}
                   </tr>
@@ -128,6 +154,16 @@ function DraftDocument({ markdown, label }: { markdown: string; label: string })
       })}
     </div>
   );
+}
+
+function DraftDocument({ markdown, label }: { markdown: string; label: string }) {
+  // The title and its "For approval by ..." line are already in the card's header.
+  const blocks = parseSectionMarkdown(markdown).filter(
+    (block, index) =>
+      !(index === 0 && block.kind === "heading") &&
+      !(index === 1 && block.kind === "paragraph" && block.text.startsWith("For approval by")),
+  );
+  return <MarkdownBlocks blocks={blocks} label={label} />;
 }
 
 // --- The three checks ---------------------------------------------------------------------
@@ -204,8 +240,24 @@ function Checks({ evaluation }: { evaluation: RfpEvaluation }) {
 
 // --- The card ----------------------------------------------------------------------------------
 
-/** One department's section of the proposal: the draft, its checks, and who approves it. */
-export function ProposalSectionCard({ section, currentStage }: { section: RfpSection; currentStage: string | null }) {
+function cardTitle(section: RfpSection): string {
+  if (section.approval_status === "approved") return `Approved by ${section.approver ?? section.owner}`;
+  if (section.approval_status === "rejected") return `Rejected: ${section.department_name}`;
+  return `For approval by ${section.owner}`;
+}
+
+/** One department's section of the proposal: the draft, its checks, and its owner's approval. */
+export function ProposalSectionCard({
+  section,
+  currentStage,
+  ticketId,
+  onDecided,
+}: {
+  section: RfpSection;
+  currentStage: string | null;
+  ticketId?: string;
+  onDecided?: () => void;
+}) {
   const headingId = `draft-${section.department_id}`;
   const evaluation = section.evaluation;
   const inLoop = section.draft_status === "drafting" || section.draft_status === "under_evaluation" || section.draft_status === "pending";
@@ -215,13 +267,15 @@ export function ProposalSectionCard({ section, currentStage }: { section: RfpSec
     <article aria-labelledby={headingId} className={`${cardClass} min-w-0`}>
       <p className={labelClass}>{section.department_name}</p>
       <h3 id={headingId} className="mt-1 text-lg font-semibold">
-        For approval by {section.owner}
+        {cardTitle(section)}
       </h3>
       <p className="mt-1 text-sm">
         <span className={section.needs_human_review ? "font-semibold text-orange-700" : section.draft_status === "passed" ? "font-semibold text-emerald-800" : section.draft_status === "failed" ? "font-semibold text-red-700" : "text-slate-700"}>
           {sectionStatusLine(section)}
         </span>
-        {section.approval_status === "pending" ? <span className="text-slate-600"> · Approval: not reviewed yet</span> : null}
+        {section.approval_status ? (
+          <span className="text-slate-600"> · {APPROVAL_STATUS_LABELS[section.approval_status] ?? section.approval_status}</span>
+        ) : null}
       </p>
       {section.is_sla_section ? (
         <p className="mt-1 text-xs text-slate-600">This section states the proposal&apos;s on-time delivery SLA.</p>
@@ -254,7 +308,9 @@ export function ProposalSectionCard({ section, currentStage }: { section: RfpSec
 
       {evaluation ? (
         <section aria-label={`Checks of the ${section.department_name} draft`} className="mt-4">
-          <h4 className="text-sm font-semibold">Automatic review of attempt {evaluation.iteration}</h4>
+          <h4 className="text-sm font-semibold">
+            Automatic review of {section.review_rounds > 0 ? `revision ${section.review_rounds}, ` : ""}attempt {evaluation.iteration}
+          </h4>
           <Checks evaluation={evaluation} />
         </section>
       ) : null}
@@ -286,6 +342,9 @@ export function ProposalSectionCard({ section, currentStage }: { section: RfpSec
             ))}
           </ul>
         </details>
+      ) : null}
+      {ticketId && onDecided && section.approval_status ? (
+        <ApprovalControl ticketId={ticketId} section={section} onDecided={onDecided} />
       ) : null}
     </article>
   );

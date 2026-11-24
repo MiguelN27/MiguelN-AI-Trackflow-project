@@ -2,15 +2,19 @@
 
 PostgreSQL (Supabase) is the source of truth, through the same SQLModel stack
 as inventory: TinyDB and JSON files are not acceptable for these entities.
-`store.initialize_schema` creates exactly these seven tables: the five of
-Part 1, plus `rfp_section_drafts` and `rfp_proposal_handoffs` for Part 2.
+`store.initialize_schema` creates exactly these ten tables: the five of
+Part 1, `rfp_section_drafts` and `rfp_proposal_handoffs` for Part 2, and
+`rfp_approval_runs`, `rfp_approval_decisions` and `rfp_final_documents` for
+Part 3. (The approval graph's checkpoints are LangGraph's own tables, in their
+own schema: see `approval/checkpoint.py`.)
 
 Portability: JSON columns are JSONB on PostgreSQL and JSON elsewhere, and every
 check is a plain `IN (...)` list, so the offline tests run the same models on
 SQLite. The briefing's Part 2/3 columns of `rfp_department_sections` existed
-from the start (nullable). The columns Part 2 added later (`PART_2_SECTION_COLUMNS`)
-are added to an existing table by `store.initialize_schema`, because
-`create_all` never alters a table that already exists.
+from the start (nullable). The columns Parts 2 and 3 added later
+(`ADDED_SECTION_COLUMNS`) are added to an existing table by
+`store.initialize_schema`, because `create_all` never alters a table that
+already exists.
 
 The tables have their own registry (`RfpModel.metadata`), not the global
 `SQLModel.metadata` the inventory tables use: a bare `SQLModel.metadata.create_all()`
@@ -31,6 +35,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import registry
 from sqlmodel import Field, SQLModel
@@ -64,6 +69,24 @@ PART_2_SECTION_COLUMNS: Final = (
     "draft_run_id",
     "ready_at",
 )
+# The section columns Part 3 added (the briefing's `approver` / `approved_at` existed).
+PART_3_SECTION_COLUMNS: Final = ("approved_by", "review_rounds")
+ADDED_SECTION_COLUMNS: Final = PART_2_SECTION_COLUMNS + PART_3_SECTION_COLUMNS
+
+# A department section through Part 3 (`approval_status`):
+# - `pending`: waiting for its owner's decision;
+# - `changes_requested`: being revised (asked by the owner or by an arbitration ruling);
+# - `approved` / `rejected`: the owner's decision (or the arbiter's, for a rejection);
+# - `withdrawn`: another section was rejected, so no decision is needed any more.
+APPROVAL_STATUSES: Final = ("pending", "changes_requested", "approved", "rejected", "withdrawn")
+APPROVAL_RUN_STATUSES: Final = ("running", "paused", "done", "rejected", "failed")
+# What a decision does. `withdrawn` is only ever written by the system.
+DECISION_ACTIONS: Final = ("approve", "request_changes", "reject", "withdrawn")
+# Who decided: the department owner, an arbiter applying a §7 rule, or the system.
+DECISION_SOURCES: Final = ("owner", "arbiter", "system")
+# `recorded` by the API, `applied` once the graph has taken it, `stale` when the
+# request it answered had moved on, `refused` when the graph's validation refused it.
+DECISION_STATUSES: Final = ("recorded", "applied", "stale", "refused")
 
 
 class RfpModel(SQLModel, registry=registry()):
@@ -98,6 +121,12 @@ DRAFT_STATUS_CHECK: Final = (
     f"draft_status IS NULL OR {_one_of('draft_status', SECTION_DRAFT_STATUSES)}"
 )
 DRAFT_STATUS_CHECK_NAME: Final = "ck_rfp_section_draft_status"
+APPROVAL_STATUS_CHECK: Final = (
+    f"approval_status IS NULL OR {_one_of('approval_status', APPROVAL_STATUSES)}"
+)
+APPROVAL_STATUS_CHECK_NAME: Final = "ck_rfp_section_approval_status"
+TICKET_STATUS_CHECK: Final = _one_of("status", [s.value for s in TicketStatus])
+TICKET_STATUS_CHECK_NAME: Final = "ck_rfp_status"
 
 
 class RfpTicket(RfpModel, table=True):
@@ -105,7 +134,7 @@ class RfpTicket(RfpModel, table=True):
 
     __tablename__ = "rfp_tickets"
     __table_args__ = (
-        CheckConstraint(_one_of("status", [s.value for s in TicketStatus]), name="ck_rfp_status"),
+        CheckConstraint(TICKET_STATUS_CHECK, name=TICKET_STATUS_CHECK_NAME),
         UniqueConstraint("rfp_id", name="uq_rfp_tickets_rfp_id"),
         Index("rfp_tickets_status_idx", "status"),
     )
@@ -194,6 +223,7 @@ class RfpDepartmentSection(RfpModel, table=True):
         UniqueConstraint("ticket_id", "department_id", name="uq_rfp_section_department"),
         CheckConstraint(_one_of("department_id", DEPARTMENT_IDS), name="ck_rfp_section_dept"),
         CheckConstraint(DRAFT_STATUS_CHECK, name=DRAFT_STATUS_CHECK_NAME),
+        CheckConstraint(APPROVAL_STATUS_CHECK, name=APPROVAL_STATUS_CHECK_NAME),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -235,7 +265,15 @@ class RfpDepartmentSection(RfpModel, table=True):
     draft_data: dict[str, Any] | None = _json()
     draft_run_id: UUID | None = Field(default=None)
     # When the section left Part 2 for approval (starts the §3 approval-time KPI).
+    # Part 3 resets it each time a revised section goes back to its owner.
     ready_at: datetime | None = _timestamp(nullable=True)
+    # Added by Part 3 (`PART_3_SECTION_COLUMNS`). `approver` is the owner's name
+    # (briefing §2.3); `approved_by` the account that signed in to decide.
+    approved_by: str | None = Field(default=None, max_length=254)
+    # Revisions in Part 3 so far (by the owner's request or an arbitration ruling).
+    review_rounds: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, server_default="0")
+    )
 
 
 class RfpHandoff(RfpModel, table=True):
@@ -325,6 +363,109 @@ class RfpProposalHandoff(RfpModel, table=True):
     claimed_by: str | None = Field(default=None, max_length=100)
 
 
+class RfpApprovalRun(RfpModel, table=True):
+    """One ticket's Part 3 run: its checkpoint thread, the lease, and the arbitration log.
+
+    The lease (`worker`, `lease_expires_at`) makes one process at a time resume
+    the ticket's graph: two concurrent resumes of one thread would each start
+    from the same checkpoint and lose each other's writes.
+    """
+
+    __tablename__ = "rfp_approval_runs"
+    __table_args__ = (
+        CheckConstraint(_one_of("status", APPROVAL_RUN_STATUSES), name="ck_rfp_approval_status"),
+        UniqueConstraint("thread_id", name="uq_rfp_approval_thread"),
+    )
+
+    ticket_id: UUID = Field(primary_key=True, foreign_key="rfp_tickets.id")
+    # The LangGraph checkpoint thread, `rfp-<ticket_id>`.
+    thread_id: str = Field(max_length=80, nullable=False)
+    graph_version: str = Field(max_length=32, nullable=False)
+    status: str = Field(default="running", max_length=16, nullable=False)
+    arbitration_rounds: int = Field(default=0, nullable=False)
+    # Every §7 ruling, in order (trigger, arbiter, rule, departments, round, evidence).
+    rulings: list[dict[str, Any]] = Field(
+        default_factory=list, sa_column=Column(JSON_TYPE, nullable=False)
+    )
+    worker: str | None = Field(default=None, max_length=100)
+    lease_expires_at: datetime | None = _timestamp(nullable=True)
+    error_stage: str | None = Field(default=None, max_length=64)
+    error_message: str | None = _text()
+    started_at: datetime = _timestamp()
+    updated_at: datetime = _timestamp()
+    finished_at: datetime | None = _timestamp(nullable=True)
+
+
+# One live owner decision per section and review round: a double click, or two
+# tabs, cannot record two. Refused and stale decisions do not count.
+_LIVE_OWNER_DECISION: Final = "source = 'owner' AND status IN ('recorded', 'applied')"
+
+
+class RfpApprovalDecision(RfpModel, table=True):
+    """Every decision on a section, append-only: the owner's, an arbiter's, or the system's."""
+
+    __tablename__ = "rfp_approval_decisions"
+    __table_args__ = (
+        CheckConstraint(_one_of("department_id", DEPARTMENT_IDS), name="ck_rfp_decision_dept"),
+        CheckConstraint(_one_of("action", DECISION_ACTIONS), name="ck_rfp_decision_action"),
+        CheckConstraint(_one_of("source", DECISION_SOURCES), name="ck_rfp_decision_source"),
+        CheckConstraint(_one_of("status", DECISION_STATUSES), name="ck_rfp_decision_status"),
+        Index(
+            "uq_rfp_decision_live_owner",
+            "section_id",
+            "review_round",
+            unique=True,
+            postgresql_where=sql_text(_LIVE_OWNER_DECISION),
+            sqlite_where=sql_text(_LIVE_OWNER_DECISION),
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    ticket_id: UUID = Field(foreign_key="rfp_tickets.id", nullable=False, index=True)
+    section_id: UUID = Field(foreign_key="rfp_department_sections.id", nullable=False)
+    department_id: str = Field(max_length=16, nullable=False)
+    # The review round the decision answers (1 = Part 2's draft, then one per revision).
+    review_round: int = Field(nullable=False)
+    # The draft the decider saw: a decision never applies to a newer draft.
+    draft_sha256: str | None = Field(default=None, max_length=64)
+    action: str = Field(max_length=16, nullable=False)
+    comment: str | None = _text()
+    source: str = Field(max_length=16, nullable=False)
+    # The owner's account email, or the arbiter's name, or "system".
+    decided_by: str = Field(max_length=254, nullable=False)
+    # The briefing's name for who decided (owner or arbiter), or "system".
+    decided_by_name: str = Field(max_length=100, nullable=False)
+    # The §7 trigger behind an arbiter's decision.
+    trigger_id: str | None = Field(default=None, max_length=32)
+    status: str = Field(default="recorded", max_length=16, nullable=False)
+    status_note: str | None = _text()
+    created_at: datetime = _timestamp(index=True)
+    applied_at: datetime | None = _timestamp(nullable=True)
+
+
+class RfpFinalDocument(RfpModel, table=True):
+    """Briefing §2.3 "FinalDocument": `ticket_id`, `sections`, `currency`, `generated_at`.
+
+    Written in the same transaction that moves the ticket to `done`, so a
+    `done` ticket always has its document and the reverse.
+    """
+
+    __tablename__ = "rfp_final_documents"
+    __table_args__ = (CheckConstraint("currency IN ('USD', 'EUR')", name="ck_rfp_final_currency"),)
+
+    ticket_id: UUID = Field(primary_key=True, foreign_key="rfp_tickets.id")
+    rfp_id: UUID = Field(nullable=False)
+    client_name: str | None = Field(default=None, max_length=200)
+    currency: str = Field(max_length=3, nullable=False)
+    # One entry per approved department section, in the briefing's order.
+    sections: list[dict[str, Any]] = Field(sa_column=Column(JSON_TYPE, nullable=False))
+    # The consolidated document, as Markdown.
+    content: str = Field(sa_column=Column(Text, nullable=False))
+    content_sha256: str = Field(max_length=64, nullable=False)
+    approval_thread_id: str = Field(max_length=80, nullable=False)
+    generated_at: datetime = _timestamp()
+
+
 TABLES: Final = (
     RfpTicket,
     RfpMetadata,
@@ -333,4 +474,7 @@ TABLES: Final = (
     RfpTicketEvent,
     RfpSectionDraft,
     RfpProposalHandoff,
+    RfpApprovalRun,
+    RfpApprovalDecision,
+    RfpFinalDocument,
 )

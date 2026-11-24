@@ -1,13 +1,15 @@
 /**
- * RFP intake and proposal drafting, as the backoffice reads them (Milestone 9 Parts 1-2).
+ * The RFP workflow as the backoffice reads it (Milestone 9 Parts 1-3).
  *
- * Three calls, all with the session token and staff-only on the API:
+ * Every call carries the session token and is staff-only on the API:
  * `POST /rfp/tickets` (multipart PDF upload, answers 202 at once),
- * `GET /rfp/tickets` and `GET /rfp/tickets/{id}`. The analysis and then the
- * proposal drafting run in the background, so the pages poll while a ticket
- * is being worked on (`isWorking`). Every reply is validated before it is
- * rendered: a reply the page cannot read is an error, never an empty ticket.
- * Shapes mirror `services/rfp/models.py`.
+ * `GET /rfp/tickets`, `GET /rfp/tickets/{id}`, an owner's decision
+ * (`POST /rfp/tickets/{id}/sections/{department}/decision`, 202), and the final
+ * document and the run's trace. The analysis, the drafting and each owner's
+ * decision run in the background, so the pages poll while a ticket is being
+ * worked on (`pollDelay`). Every reply is validated before it is rendered: a
+ * reply the page cannot read is an error, never an empty ticket. Shapes mirror
+ * `services/rfp/models.py`.
  */
 
 import { ApiError, parseResponseJson, requestAuthenticatedApi } from "@/lib/api-client";
@@ -23,6 +25,8 @@ export const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 export const POLL_INTERVAL_MS = 3000;
 /** How often a ticket waiting in the drafting queue is re-read. */
 export const QUEUED_POLL_INTERVAL_MS = 10000;
+/** How often a ticket waiting for its owners is re-read (another owner may decide meanwhile). */
+export const APPROVAL_POLL_INTERVAL_MS = 15000;
 
 export type RfpStatus =
   | "analyzing"
@@ -33,7 +37,8 @@ export type RfpStatus =
   | "needs_human_review"
   | "waiting_for_approval"
   | "done"
-  | "failed";
+  | "failed"
+  | "rejected";
 
 export const STATUS_LABELS: Record<RfpStatus, string> = {
   analyzing: "Analyzing",
@@ -45,6 +50,7 @@ export const STATUS_LABELS: Record<RfpStatus, string> = {
   waiting_for_approval: "Waiting for approval",
   done: "Done",
   failed: "Failed",
+  rejected: "Rejected",
 };
 
 export const DEPARTMENT_NAMES: Record<string, string> = {
@@ -75,6 +81,45 @@ export const PROPOSAL_STAGES: readonly { key: string; label: string }[] = [
   { key: "synthesize_proposal", label: "Assemble the approval tickets" },
   { key: "complete_drafting", label: "Hand off for approval" },
 ];
+
+/** Part 3's stages (`data/pipelines/rfp_intake/approval/graph.py`), as Sales reads them. */
+export const APPROVAL_STAGES: readonly { key: string; label: string }[] = [
+  { key: "open_approval", label: "Open the approvals" },
+  { key: "arbitrate", label: "Check the departments agree" },
+  { key: "open_review", label: "Ask the owner" },
+  { key: "validate_decision", label: "Check the owner's decision" },
+  { key: "start_revision", label: "Send back for changes" },
+  { key: "revise_section", label: "Revise the section" },
+  { key: "sign_off", label: "Owner approved" },
+  { key: "record_rejection", label: "Owner rejected" },
+  { key: "withdraw", label: "Request withdrawn" },
+  { key: "compose_final_document", label: "Compose the final document" },
+  { key: "complete_approval", label: "Deliver to Sales" },
+  { key: "close_rejected", label: "Close the proposal" },
+];
+
+/** A section's approval in Part 3 (`approval_status`). */
+export const APPROVAL_STATUS_LABELS: Record<string, string> = {
+  pending: "Waiting for the owner's decision",
+  changes_requested: "Being revised",
+  approved: "Approved",
+  rejected: "Rejected",
+  withdrawn: "Withdrawn",
+};
+
+export const DECISION_ACTION_LABELS: Record<string, string> = {
+  approve: "approved",
+  request_changes: "requested changes",
+  reject: "rejected",
+  withdrawn: "withdrew the request",
+};
+
+/** Briefing §7, one plain sentence per conflict trigger (`approval/arbitration.py`). */
+export const TRIGGER_LABELS: Record<string, string> = {
+  "volume-vs-capacity": "Last mile planned more orders than the warehouse can handle",
+  "returns-sla-breach": "A section promised returns processing in under 48 hours",
+  "currency-mismatch": "A section quoted the wrong currency for the client's country",
+};
 
 /** A section's place in the generator-evaluator loop. */
 export const SECTION_STATUS_LABELS: Record<string, string> = {
@@ -241,6 +286,107 @@ export type RfpSection = {
   evaluation: RfpEvaluation | null;
   approval_status: string | null;
   ready_at: string | null;
+  // Part 3: the owner's approval.
+  approver: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  review_round: number;
+  review_rounds: number;
+  max_review_rounds: number | null;
+  allowed_actions: DecisionAction[];
+  approver_configured: boolean;
+  awaiting_decision: boolean;
+  decision_pending: boolean;
+  /** The signed-in account is this department's owner and may decide now. */
+  can_decide: boolean;
+  decisions: RfpApprovalDecision[];
+};
+
+export type DecisionAction = "approve" | "request_changes" | "reject";
+
+/** One decision on a section: its owner's, an arbiter's (§7) or the system's. */
+export type RfpApprovalDecision = {
+  decision_id: string;
+  department_id: string;
+  review_round: number;
+  action: string;
+  comment: string | null;
+  source: "owner" | "arbiter" | "system";
+  decided_by: string;
+  decided_by_name: string;
+  trigger_id: string | null;
+  status: "recorded" | "applied" | "stale" | "refused";
+  status_note: string | null;
+  created_at: string;
+  applied_at: string | null;
+};
+
+/** A §7 arbitration ruling, applied by rule in the named arbiter's name. */
+export type RfpRuling = {
+  trigger_id: string;
+  arbiter: string;
+  arbiter_basis: string;
+  rule: string;
+  round: number;
+  departments: string[];
+  action: "request_changes" | "reject";
+  instruction: string;
+  volume_cap: number | null;
+  evidence: string[];
+  ruled_at: string;
+};
+
+/** The Part 3 run. */
+export type RfpApproval = {
+  status: "running" | "paused" | "done" | "rejected" | "failed";
+  thread_id: string;
+  started_at: string;
+  finished_at: string | null;
+  arbitration_rounds: number;
+  max_arbitration_rounds: number;
+  rulings: RfpRuling[];
+  error_stage: string | null;
+  error_message: string | null;
+  approved: number;
+  sections: number;
+  viewer_departments: string[];
+};
+
+export type RfpFinalDocumentSummary = {
+  generated_at: string;
+  currency: string;
+  content_sha256: string;
+  sections: string[];
+};
+
+/** Briefing §2.3 FinalDocument, plus the Markdown Sales sends. */
+export type RfpFinalDocument = {
+  ticket_id: string;
+  rfp_id: string;
+  client_name: string | null;
+  currency: string;
+  sections: { department_id: string; department_name: string; owner: string; approved_by: string; approved_at: string }[];
+  generated_at: string;
+  content: string;
+  content_sha256: string;
+  approval_thread_id: string;
+};
+
+/** One step of the run, across Parts 1-3: which agent did what, and when. */
+export type RfpTraceStep = {
+  position: number;
+  node: string;
+  part: number;
+  step: string;
+  department: string | null;
+  number: number | null;
+  agent: string;
+  outcome: string;
+  duration_ms: number | null;
+  at: string;
+  input: Record<string, unknown> | null;
+  output: Record<string, unknown> | null;
+  detail: Record<string, unknown> | null;
 };
 
 /** The Part 3 handoff (`rfp-proposal/1`), once Part 2 has finished. */
@@ -314,6 +460,8 @@ export type RfpTicketDetail = Omit<RfpTicketSummary, "client_name" | "client_cou
   sales_brief: RfpSalesBrief | null;
   handoff: { contract_version: string; next_stage: string; status: string; created_at: string; claimed_at: string | null } | null;
   proposal: RfpProposal | null;
+  approval: RfpApproval | null;
+  final_document: RfpFinalDocumentSummary | null;
   events: RfpEvent[];
 };
 
@@ -400,6 +548,76 @@ export function isDraft(value: unknown): value is RfpSectionDraft {
   );
 }
 
+const SOURCES = new Set(["owner", "arbiter", "system"]);
+const DECISION_STATUSES = new Set(["recorded", "applied", "stale", "refused"]);
+const ACTIONS = new Set<string>(["approve", "request_changes", "reject"]);
+
+function isDecision(value: unknown): value is RfpApprovalDecision {
+  return (
+    isRecord(value) &&
+    isString(value.decision_id) &&
+    isString(value.department_id) &&
+    typeof value.review_round === "number" &&
+    isString(value.action) &&
+    isNullableString(value.comment) &&
+    isString(value.source) &&
+    SOURCES.has(value.source) &&
+    isString(value.decided_by_name) &&
+    isString(value.status) &&
+    DECISION_STATUSES.has(value.status) &&
+    isString(value.created_at)
+  );
+}
+
+function isApprovalFields(value: Json): boolean {
+  return (
+    isNullableString(value.approval_status) &&
+    isNullableString(value.approver) &&
+    isNullableString(value.approved_at) &&
+    typeof value.review_round === "number" &&
+    typeof value.review_rounds === "number" &&
+    Array.isArray(value.allowed_actions) &&
+    value.allowed_actions.every((action) => isString(action) && ACTIONS.has(action)) &&
+    typeof value.approver_configured === "boolean" &&
+    typeof value.awaiting_decision === "boolean" &&
+    typeof value.decision_pending === "boolean" &&
+    typeof value.can_decide === "boolean" &&
+    Array.isArray(value.decisions) &&
+    value.decisions.every(isDecision)
+  );
+}
+
+function isRuling(value: unknown): value is RfpRuling {
+  return (
+    isRecord(value) &&
+    isString(value.trigger_id) &&
+    isString(value.arbiter) &&
+    isString(value.rule) &&
+    isStringArray(value.departments) &&
+    (value.action === "request_changes" || value.action === "reject") &&
+    isString(value.instruction)
+  );
+}
+
+function isApproval(value: unknown): value is RfpApproval {
+  return (
+    isRecord(value) &&
+    isString(value.status) &&
+    isString(value.thread_id) &&
+    typeof value.approved === "number" &&
+    typeof value.sections === "number" &&
+    Array.isArray(value.rulings) &&
+    value.rulings.every(isRuling) &&
+    isNullableString(value.error_stage) &&
+    isNullableString(value.error_message) &&
+    isStringArray(value.viewer_departments)
+  );
+}
+
+function isFinalSummary(value: unknown): value is RfpFinalDocumentSummary {
+  return isRecord(value) && isString(value.generated_at) && isString(value.currency) && isStringArray(value.sections);
+}
+
 function isSection(value: unknown): value is RfpSection {
   return (
     isRecord(value) &&
@@ -418,7 +636,8 @@ function isSection(value: unknown): value is RfpSection {
     typeof value.needs_human_review === "boolean" &&
     isNullableString(value.draft_content) &&
     (value.draft === null || isDraft(value.draft)) &&
-    (value.evaluation === null || isEvaluation(value.evaluation))
+    (value.evaluation === null || isEvaluation(value.evaluation)) &&
+    isApprovalFields(value)
   );
 }
 
@@ -475,6 +694,8 @@ export function isRfpTicketDetail(value: unknown): value is RfpTicketDetail {
     value.sections.every(isSection) &&
     (value.sales_brief === null || isBrief(value.sales_brief)) &&
     (value.proposal === null || isProposal(value.proposal)) &&
+    (value.approval === null || isApproval(value.approval)) &&
+    (value.final_document === null || isFinalSummary(value.final_document)) &&
     Array.isArray(value.events) &&
     value.events.every((event) => isRecord(event) && isString(event.node) && isString(event.outcome))
   );
@@ -504,13 +725,32 @@ export function isQueuedForDrafting(detail: Pick<RfpTicketDetail, "status" | "ha
 /** How long after an intake completes the list keeps watching for drafting to start. */
 const DRAFTING_START_WINDOW_MS = 5 * 60 * 1000;
 
-/** The list's re-read delay: fast while a run works, slower just after an intake; else null. */
+/** Part 3 has the ticket: drafted, waiting for (or getting) its owners' decisions. */
+export function isAwaitingApproval(status: RfpStatus): boolean {
+  return status === "waiting_for_approval" || status === "needs_human_review";
+}
+
+/** The list's re-read delay: fast while a run works, slower just after an intake or while
+ * owners decide; else null. */
 export function listPollDelay(tickets: Pick<RfpTicketSummary, "status" | "updated_at">[], now = Date.now()): number | null {
   if (tickets.some((ticket) => isWorking(ticket.status))) return POLL_INTERVAL_MS;
   const justCompleted = tickets.some(
     (ticket) => ticket.status === "intake_complete" && now - Date.parse(ticket.updated_at) < DRAFTING_START_WINDOW_MS,
   );
-  return justCompleted ? QUEUED_POLL_INTERVAL_MS : null;
+  if (justCompleted) return QUEUED_POLL_INTERVAL_MS;
+  return tickets.some((ticket) => isAwaitingApproval(ticket.status)) ? APPROVAL_POLL_INTERVAL_MS : null;
+}
+
+/** Part 3 is doing something now: a section is being revised or a decision applied. */
+export function isApprovalBusy(detail: Pick<RfpTicketDetail, "status" | "sections" | "approval">): boolean {
+  if (detail.status !== "waiting_for_approval") return false;
+  if (detail.approval?.status === "running") return true;
+  return detail.sections.some((section) => section.approval_status === "changes_requested" || section.decision_pending);
+}
+
+/** Drafted, and the proposal waits in the approval queue for its requests to open. */
+export function isQueuedForApproval(detail: Pick<RfpTicketDetail, "status" | "proposal" | "approval">): boolean {
+  return isAwaitingApproval(detail.status) && detail.approval === null && detail.proposal?.status === "pending";
 }
 
 /** A failed ticket whose intake had finished: it failed while drafting (Part 2). */
@@ -519,10 +759,56 @@ export function failedWhileDrafting(detail: Pick<RfpTicketDetail, "status" | "ha
 }
 
 /** How long to wait before re-reading a ticket; null when nothing will change by itself. */
-export function pollDelay(detail: Pick<RfpTicketDetail, "status" | "handoff">): number | null {
-  if (isWorking(detail.status)) return POLL_INTERVAL_MS;
-  if (isQueuedForDrafting(detail)) return QUEUED_POLL_INTERVAL_MS;
+export function pollDelay(
+  detail: Pick<RfpTicketDetail, "status" | "handoff" | "proposal" | "approval" | "sections">,
+): number | null {
+  if (isWorking(detail.status) || isApprovalBusy(detail)) return POLL_INTERVAL_MS;
+  if (isQueuedForDrafting(detail) || isQueuedForApproval(detail)) return QUEUED_POLL_INTERVAL_MS;
+  if (isAwaitingApproval(detail.status)) return APPROVAL_POLL_INTERVAL_MS;
   return null;
+}
+
+/** "1 of 2 departments approved". */
+export function approvalSummary(detail: Pick<RfpTicketDetail, "sections">): string {
+  const active = detail.sections.filter((section) => section.approval_status);
+  const approved = active.filter((section) => section.approval_status === "approved").length;
+  const noun = active.length === 1 ? "department" : "departments";
+  return `${approved} of ${active.length} ${noun} approved`;
+}
+
+/** A section's approval in one plain line, for anyone reading the ticket. */
+export function approvalLine(
+  section: Pick<
+    RfpSection,
+    "approval_status" | "owner" | "approver" | "approved_at" | "review_round" | "review_rounds" | "max_review_rounds" | "decision_pending"
+  >,
+): string {
+  const status = section.approval_status;
+  if (!status) return "Not in approval yet";
+  if (status === "approved") {
+    const when = section.approved_at ? ` on ${formatDate(section.approved_at)}` : "";
+    return `Approved by ${section.approver ?? section.owner}${when}`;
+  }
+  if (status === "changes_requested") {
+    // `review_rounds` already counts the revision under way.
+    const of = section.max_review_rounds ? ` of ${section.max_review_rounds}` : "";
+    return `Changes requested: revision ${section.review_rounds}${of} in progress`;
+  }
+  if (status === "pending") {
+    if (section.decision_pending) return `${section.owner}'s decision is being applied`;
+    return `Waiting for ${section.owner} (round ${section.review_round})`;
+  }
+  return APPROVAL_STATUS_LABELS[status] ?? status;
+}
+
+export function formatDate(value: string): string {
+  return new Date(value).toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 /** Plain-language check before a file is sent; null when it can be uploaded. */
@@ -541,13 +827,20 @@ export function checkPdf(file: { name: string; type: string; size: number }): st
 export function stageLabel(stage: string | null): string {
   if (!stage || stage === "queued") return "Queued";
   const [key, target = ""] = stage.split(":");
-  const [department, attempt] = target.split("#");
+  if (key === "awaiting_approval") {
+    const names = target.split(",").filter(Boolean).map((dept) => DEPARTMENT_NAMES[dept] ?? dept);
+    return names.length ? `Waiting for approval: ${names.join(", ")}` : "Waiting for approval";
+  }
+  const [department, number] = target.split("#");
+  const approvalStage = APPROVAL_STAGES.find((item) => item.key === key);
   const label =
     STAGES.find((item) => item.key === key)?.label ??
     PROPOSAL_STAGES.find((item) => item.key === key)?.label ??
+    approvalStage?.label ??
     key.replaceAll("_", " ");
   if (!department) return label;
-  const suffix = attempt ? ` (attempt ${attempt})` : "";
+  // Part 3 numbers review rounds; Parts 1-2 number drafting attempts.
+  const suffix = number ? (approvalStage ? ` (round ${number})` : ` (attempt ${number})`) : "";
   return `${label}: ${DEPARTMENT_NAMES[department] ?? department}${suffix}`;
 }
 
@@ -618,6 +911,62 @@ export async function getRfpTicket(ticketId: string): Promise<RfpTicketDetail> {
   return value;
 }
 
+export type DecisionInput = { action: DecisionAction; comment: string | null; review_round: number };
+
+/** An owner's decision on their section. Recorded at once (202); applied in the background. */
+export async function submitDecision(ticketId: string, departmentId: string, input: DecisionInput): Promise<RfpApprovalDecision> {
+  const path = `${TICKETS_API}/${encodeURIComponent(ticketId)}/sections/${encodeURIComponent(departmentId)}/decision`;
+  const response = await requestAuthenticatedApi(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+    cache: "no-store",
+  });
+  const value = await parseResponseJson(response);
+  if (!isDecision(value)) throw new RfpResponseError(UNREADABLE);
+  return value;
+}
+
+export async function getFinalDocument(ticketId: string): Promise<RfpFinalDocument> {
+  const response = await requestAuthenticatedApi(`${TICKETS_API}/${encodeURIComponent(ticketId)}/document`, { cache: "no-store" });
+  const value = await parseResponseJson(response);
+  if (
+    !isRecord(value) ||
+    !isString(value.content) ||
+    !isString(value.currency) ||
+    !isString(value.generated_at) ||
+    !Array.isArray(value.sections)
+  ) {
+    throw new RfpResponseError(UNREADABLE);
+  }
+  return value as RfpFinalDocument;
+}
+
+/** The final document as the Markdown file the API serves, with its file name. */
+export async function downloadFinalDocument(ticketId: string): Promise<{ filename: string; content: string }> {
+  const response = await requestAuthenticatedApi(`${TICKETS_API}/${encodeURIComponent(ticketId)}/document.md`, {
+    cache: "no-store",
+  });
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "trackflow-proposal.md";
+  return { filename, content: await response.text() };
+}
+
+export async function getRfpTrace(ticketId: string): Promise<RfpTraceStep[]> {
+  const response = await requestAuthenticatedApi(`${TICKETS_API}/${encodeURIComponent(ticketId)}/trace`, { cache: "no-store" });
+  const value = await parseResponseJson(response);
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.steps) ||
+    !value.steps.every(
+      (step) => isRecord(step) && typeof step.part === "number" && isString(step.node) && isString(step.agent) && isString(step.at),
+    )
+  ) {
+    throw new RfpResponseError(UNREADABLE);
+  }
+  return value.steps as RfpTraceStep[];
+}
+
 // --- Errors ----------------------------------------------------------------------------------
 
 export const RFP_ERROR_COPY: ErrorCopy = {
@@ -640,6 +989,20 @@ export function describeRfpError(error: unknown): string {
   if (error instanceof RfpResponseError) return error.message;
   if (error instanceof ApiError && STATUS_COPY[error.status]) return STATUS_COPY[error.status];
   return describeError(error, "The upload was refused. Check the file and try again.", RFP_ERROR_COPY).message;
+}
+
+/** Frontend-authored copy for what the decision route can answer with. */
+const DECISION_COPY: Record<number, string> = {
+  403: "Only this department's owner can decide on this section, from their own account.",
+  404: "This proposal has no such section any more. Refresh the page.",
+  409: "This section changed since you opened it: it was revised, or a decision was already recorded. The page now shows its current state.",
+  422: "Say what needs to change: a comment is required when you request changes or reject.",
+};
+
+export function describeDecisionError(error: unknown): string {
+  if (error instanceof RfpResponseError) return error.message;
+  if (error instanceof ApiError && DECISION_COPY[error.status]) return DECISION_COPY[error.status];
+  return describeError(error, "The decision could not be recorded. Please try again.", RFP_ERROR_COPY).message;
 }
 
 export function isStaffOnlyError(error: unknown): boolean {

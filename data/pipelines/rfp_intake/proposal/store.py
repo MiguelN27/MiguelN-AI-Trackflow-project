@@ -3,7 +3,10 @@
 PostgreSQL through the same SQLModel layer as Part 1 (each function takes the
 engine). Every write first checks that the ticket is still `drafting` or
 `under_evaluation` (`store.update_if`). A run that finds it swept or reset
-raises `TicketStateError` instead of overwriting the newer state.
+raises `TicketStateError` instead of overwriting the newer state. Part 3
+runs the same section loop to revise an approved-for-review section while the
+ticket is `waiting_for_approval`: the loop's writes take that status set
+(`statuses=`), and the ticket's status is never moved back to a Part 2 one.
 
 - `rfp_department_sections` keeps the *current* state of each section:
   `draft_content` (Markdown), `evaluation_results` (the latest
@@ -65,8 +68,8 @@ class MissingSections(LookupError):
     """The handoff names a department whose Part 1 section row is missing."""
 
 
-def _guard(session: Session, ticket_id: UUID) -> None:
-    update_if(session, ticket_id, PART_2_ACTIVE)
+def _guard(session: Session, ticket_id: UUID, statuses: frozenset[str] = PART_2_ACTIVE) -> None:
+    update_if(session, ticket_id, statuses)
 
 
 def _section(session: Session, section_id: UUID | str) -> RfpDepartmentSection:
@@ -104,9 +107,15 @@ def start_run(
     return ids
 
 
-def mark_drafting(engine: Engine, ticket_id: UUID | str, section_id: UUID | str) -> None:
+def mark_drafting(
+    engine: Engine,
+    ticket_id: UUID | str,
+    section_id: UUID | str,
+    *,
+    statuses: frozenset[str] = PART_2_ACTIVE,
+) -> None:
     with Session(engine) as session:
-        _guard(session, as_uuid(ticket_id))
+        _guard(session, as_uuid(ticket_id), statuses)
         _section(session, section_id).draft_status = "drafting"
         session.commit()
 
@@ -124,6 +133,7 @@ def save_draft(
     guard_notes: list[str],
     draft_data: dict[str, Any],
     tokens: int,
+    statuses: frozenset[str] = PART_2_ACTIVE,
 ) -> None:
     """Store one attempt (an upsert, so a retried node is harmless).
 
@@ -139,7 +149,7 @@ def save_draft(
             .values(status=UNDER_EVALUATION, updated_at=utcnow())
         )
         if moved.rowcount != 1:  # type: ignore[attr-defined]
-            _guard(session, key)
+            _guard(session, key, statuses)
         attempt = session.execute(
             select(RfpSectionDraft).where(
                 col(RfpSectionDraft.section_id) == as_uuid(section_id),
@@ -184,9 +194,10 @@ def save_evaluation(
     iteration: int,
     evaluation: dict[str, Any],
     overall_pass: bool,
+    statuses: frozenset[str] = PART_2_ACTIVE,
 ) -> None:
     with Session(engine) as session:
-        _guard(session, as_uuid(ticket_id))
+        _guard(session, as_uuid(ticket_id), statuses)
         session.execute(
             update(RfpSectionDraft)
             .where(
@@ -201,11 +212,16 @@ def save_evaluation(
 
 
 def finish_section(
-    engine: Engine, ticket_id: UUID | str, section_id: UUID | str, *, status: str
+    engine: Engine,
+    ticket_id: UUID | str,
+    section_id: UUID | str,
+    *,
+    status: str,
+    statuses: frozenset[str] = PART_2_ACTIVE,
 ) -> None:
     """The section leaves the loop: `passed`, `needs_human_review` or `failed`."""
     with Session(engine) as session:
-        _guard(session, as_uuid(ticket_id))
+        _guard(session, as_uuid(ticket_id), statuses)
         section = _section(session, section_id)
         section.draft_status = status
         if status in FINISHED_SECTION:
@@ -237,10 +253,11 @@ def restore_attempt(
     attempt: RfpSectionDraft,
     *,
     draft_data: dict[str, Any],
+    statuses: frozenset[str] = PART_2_ACTIVE,
 ) -> None:
     """Ship the last evaluated attempt as `needs_human_review` (a later attempt broke)."""
     with Session(engine) as session:
-        _guard(session, as_uuid(ticket_id))
+        _guard(session, as_uuid(ticket_id), statuses)
         section = _section(session, section_id)
         section.draft_content = attempt.draft_content
         section.draft_data = draft_data
@@ -381,24 +398,51 @@ def reset_for_redraft(engine: Engine, ticket_id: UUID | str, *, claimed_by: str)
 
 
 def iteration_kpi(engine: Engine) -> dict[str, Any]:
-    """Briefing §3: average iterations per section in the generator-evaluator loop (< 2)."""
+    """Briefing §3: average iterations per section in the generator-evaluator loop (< 2).
+
+    Counted on each section's Part 2 run (`draft_run_id`) from the attempts
+    table, so a Part 3 revision (a run of its own) never changes the figure.
+    Revisions are reported beside it.
+    """
     with Session(engine) as session:
-        rows = list(
+        sections = list(
             session.execute(
-                select(
-                    col(RfpDepartmentSection.draft_iterations),
-                    col(RfpDepartmentSection.draft_status),
-                ).where(col(RfpDepartmentSection.draft_status).in_(sorted(FINISHED_SECTION)))
+                select(col(RfpDepartmentSection.id), col(RfpDepartmentSection.draft_run_id)).where(
+                    col(RfpDepartmentSection.draft_status).in_(sorted(FINISHED_SECTION))
+                )
             ).all()
         )
-    count = len(rows)
-    iterations = [row[0] for row in rows]
+        attempts = list(
+            session.execute(
+                select(
+                    col(RfpSectionDraft.section_id),
+                    col(RfpSectionDraft.run_id),
+                    col(RfpSectionDraft.iteration),
+                    col(RfpSectionDraft.overall_pass),
+                ).where(col(RfpSectionDraft.section_id).in_([row[0] for row in sections]))
+            ).all()
+        )
+    part_2_run: dict[UUID, UUID | None] = {row[0]: row[1] for row in sections}
+    runs: dict[tuple[UUID, UUID], list[tuple[int, bool | None]]] = {}
+    for section_id, run_id, iteration, overall_pass in attempts:
+        runs.setdefault((section_id, run_id), []).append((iteration, overall_pass))
+    part_2 = [
+        sorted(rows)
+        for (section_id, run_id), rows in runs.items()
+        if part_2_run.get(section_id) == run_id
+    ]
+    revisions = [
+        rows for (section_id, run_id), rows in runs.items() if part_2_run.get(section_id) != run_id
+    ]
+    count = len(part_2)
     return {
         "sections": count,
-        "average_iterations_per_section": round(sum(iterations) / count, 2) if count else None,
-        "target": "fewer than 2",
-        "passed_first_attempt": sum(
-            1 for iters, status in rows if status == "passed" and iters == 1
+        "average_iterations_per_section": (
+            round(sum(rows[-1][0] for rows in part_2) / count, 2) if count else None
         ),
-        "needs_human_review": sum(1 for _, status in rows if status == "needs_human_review"),
+        "target": "fewer than 2",
+        "passed_first_attempt": sum(1 for rows in part_2 if rows[0] == (1, True)),
+        "needs_human_review": sum(1 for rows in part_2 if rows[-1][1] is not True),
+        "part_3_revisions": len(revisions),
+        "part_3_revision_attempts": sum(len(rows) for rows in revisions),
     }

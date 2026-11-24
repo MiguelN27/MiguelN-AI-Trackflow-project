@@ -1,7 +1,7 @@
 """Response contracts of the RFP intake routes (mirrored in `uis/backoffice/lib/rfp.ts`)."""
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -143,6 +143,24 @@ class RfpSectionDraft(BaseModel):
     open_questions: list[str]
 
 
+class RfpApprovalDecision(BaseModel):
+    """One decision on a section: the owner's, an arbiter's (§7) or the system's."""
+
+    decision_id: UUID
+    department_id: str
+    review_round: int
+    action: str
+    comment: str | None
+    source: str
+    decided_by: str
+    decided_by_name: str
+    trigger_id: str | None
+    status: str
+    status_note: str | None
+    created_at: datetime
+    applied_at: datetime | None
+
+
 class RfpDepartmentSection(BaseModel):
     department_id: str
     department_name: str
@@ -168,6 +186,20 @@ class RfpDepartmentSection(BaseModel):
     evaluation: RfpEvaluationResult | None = None
     approval_status: str | None = None
     ready_at: datetime | None = None
+    # Part 3: the owner's approval (null or empty before the approvals open).
+    approver: str | None = None
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    review_round: int = 1
+    review_rounds: int = 0
+    max_review_rounds: int | None = None
+    allowed_actions: list[str] = Field(default_factory=list)
+    approver_configured: bool = False
+    awaiting_decision: bool = False
+    decision_pending: bool = False
+    # Whether the signed-in account is this department's owner and may decide now.
+    can_decide: bool = False
+    decisions: list[RfpApprovalDecision] = Field(default_factory=list)
 
 
 class RfpBriefDepartment(BaseModel):
@@ -217,6 +249,48 @@ class RfpProposalStatus(BaseModel):
     claimed_at: datetime | None
 
 
+class RfpRuling(BaseModel):
+    """A §7 arbitration ruling, applied by rule in the named arbiter's name."""
+
+    model_config = ConfigDict(extra="allow")
+
+    trigger_id: str
+    arbiter: str
+    arbiter_basis: str
+    rule: str
+    round: int
+    departments: list[str]
+    action: str
+    instruction: str
+    volume_cap: int | None = None
+    evidence: list[str]
+    ruled_at: datetime
+
+
+class RfpApprovalStatus(BaseModel):
+    """The Part 3 run: its checkpoint thread, status, rulings and any failure."""
+
+    status: str
+    thread_id: str
+    started_at: datetime
+    finished_at: datetime | None
+    arbitration_rounds: int
+    max_arbitration_rounds: int
+    rulings: list[RfpRuling]
+    error_stage: str | None
+    error_message: str | None
+    approved: int
+    sections: int
+    viewer_departments: list[str]
+
+
+class RfpFinalDocumentSummary(BaseModel):
+    generated_at: datetime
+    currency: str
+    content_sha256: str
+    sections: list[str]
+
+
 class RfpTicketEvent(BaseModel):
     node: str
     outcome: str
@@ -247,4 +321,65 @@ class RfpTicketDetail(BaseModel):
     sales_brief: RfpSalesBrief | None
     handoff: RfpHandoffStatus | None
     proposal: RfpProposalStatus | None = None
+    approval: RfpApprovalStatus | None = None
+    final_document: RfpFinalDocumentSummary | None = None
     events: list[RfpTicketEvent]
+
+
+class RfpDecisionRequest(BaseModel):
+    """An owner's decision on their department's section."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["approve", "request_changes", "reject"]
+    comment: str | None = Field(default=None, max_length=2000)
+    # The round the owner reviewed: a decision never applies to a newer draft.
+    review_round: int = Field(ge=1)
+
+
+class RfpFinalSection(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    department_id: str
+    department_name: str
+    owner: str
+    approved_by: str
+    approved_at: datetime
+    review_rounds: int
+    is_sla_section: bool
+    content: str
+
+
+class RfpFinalDocument(BaseModel):
+    """Briefing §2.3 FinalDocument (`ticket_id`, `sections`, `currency`, `generated_at`)."""
+
+    ticket_id: UUID
+    rfp_id: UUID
+    client_name: str | None
+    currency: str
+    sections: list[RfpFinalSection]
+    generated_at: datetime
+    content: str
+    content_sha256: str
+    approval_thread_id: str
+
+
+class RfpTraceStep(BaseModel):
+    position: int
+    node: str
+    part: int
+    step: str
+    department: str | None
+    number: int | None
+    agent: str
+    outcome: str
+    duration_ms: int | None
+    at: datetime
+    input: dict[str, Any] | None
+    output: dict[str, Any] | None
+    detail: dict[str, Any] | None
+
+
+class RfpTrace(BaseModel):
+    ticket_id: UUID
+    steps: list[RfpTraceStep]

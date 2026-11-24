@@ -2,6 +2,93 @@
 
 Last updated: 2026-11-23
 
+## Update 2026-11-23 (later) - RFP human approval and document completion (Milestone 9 Part 3)
+
+Goals accomplished.
+- **Brief:** the new `lead-instr.png` (ticket "Human approval and document completion"), with the checklist in `stages-todo.png` and the visual reference in `visual-ref.png`. The briefing is the root `agentic-workflow-context.md`.
+- **Branch:** `feature/rfp-approval-completion`. **Design:** `docs/rfp/approval-completion.md`.
+
+Decided with the developer:
+- **Checkpointer:** PostgreSQL in the same database. `langgraph-checkpoint-postgres` 3.2.1 and `psycopg[binary]` 3.3.9 were added with `uv add` and `requirements.txt` was re-exported. The tables live in schema `rfp_graph`, with RLS on. SQLite engines use `SqliteSaver`.
+- **Approvers:** configured owner accounts (`RFP_APPROVERS`). Only the department owner's account decides; admins too get 403 (no ladder).
+- **Reject:** ends the proposal. The ticket goes to the new terminal status `rejected`, and the other open requests are withdrawn.
+- **Arbitration:** the briefing's §7 rule is applied deterministically, under the named arbiter, with no interrupt for the arbiter.
+
+What was built (`data/pipelines/rfp_intake/approval/`, no `services/` import):
+- **Human approval per department:**
+  - the graph `rfp_approval`, one checkpoint thread per ticket, `rfp-<ticket_id>`;
+  - `Send` one `review_department` branch per department. Its `rfp_department_review` subgraph persists the request in `open_review`, pauses in a side-effect-free `await_decision` (`interrupt`), and checks the answer again in `validate_decision`.
+  - A pause holds only its own branch: department B is approved, or revised, while A stays interrupted.
+  - `apply_decisions` is the explicit resume entry point (`Command(resume={interrupt_id: decision})`, several at once). It never re-runs `open_approval` or Parts 1 and 2.
+  - A per-ticket lease serializes resumes. `resume` and `recover` continue after a failure without losing a decision.
+- **Request changes:** Part 2's own generator-evaluator loop revises the section with the owner's comment (enveloped) or the arbiter's instruction, then the owner reviews it again.
+- **Guardrails:**
+  - `RFP_MAX_REVISION_ROUNDS` (3) and `RFP_MAX_ARBITRATION_ROUNDS` (2);
+  - the arbitration node implements the §7 table verbatim (drift test): `volume-vs-capacity` caps the volume, `returns-sla-breach` is ruled by Sofía Ramos (her section) or Miguel Torres, `currency-mismatch` by Miguel Torres. A conflict unresolved at a limit is rejected.
+- **Traceability:** every node execution adds agent, input, output and timestamps to the state's `trace` and to `rfp_ticket_events`. `trace.ticket_trace` covers Parts 1-3. It is available through the CLI, `GET /rfp/tickets/{id}/trace` and the "Run history" panel.
+- **Document completion:** `compose_final_document` is deterministic, with the approved sections word for word. It has the briefing's FinalDocument fields and is stored with `done` in one transaction. It is served as JSON and `.md`, and shown on the ticket page.
+- **API:**
+  - the decision route (202; 403/404/409/422);
+  - the document, download and trace routes;
+  - the detail with approval fields and `can_decide`;
+  - the upload chains the opening of the approvals;
+  - the lifespan prepares the checkpointer and starts recovery.
+- **Backoffice:**
+  - the decision form for the owner only, with the history;
+  - the "Approval by department" card (progress, rulings, failures, rejection);
+  - the final document and its download;
+  - the run history;
+  - polling through Part 3.
+- **CLI:**
+  - `request-approval`, `approvals`, `decide`, `resume`, `document`, `trace`, `graph --part 3`, and `kpi` with approval and build times;
+  - `run` opens the approvals;
+  - `smoke` runs Parts 1 → 3 with simulated owners and one live revision;
+  - `npm run rfp:e2e`.
+- **Transitions between parts fixed:**
+  - the Part 2 text "Every section passed" was shown for any `waiting_for_approval` ticket;
+  - "needsa person's review" (glued words);
+  - `waiting_for_approval` was shown green like a finished ticket;
+  - no polling after Part 2;
+  - the download file name was hidden by CORS;
+  - the browser tooltip replaced the form's own message;
+  - the revision-round wording.
+
+Verification:
+- **Offline:**
+  - `tests/pipelines/rfp_intake/approval/` **48** and `tests/test_rfp_approval_api.py` **15**, covering the checklist: successful interruption and resume, the iteration limit reached, arbitration on disagreement, **B approved while A stays interrupted**, and Parts 1 → 3 with simulated resumes. They run through `npm run rfp:e2e`.
+  - Full backend: **2335 passed, 62 skipped, 0 failed** without `test_agent_evals.py` (the known stale recording).
+- **Opt-in PostgreSQL** on a throwaway `postgres:17-alpine`: `tests/test_rfp_postgres.py` **11/11**. It covers the real `PostgresSaver` in its own schema with RLS, a paused branch resumed after a "restart", the `rejected` status-check upgrade, and the lease.
+- **Backoffice:** Jest **322** (8 new); `tsc` and ESLint clean.
+- **Static checks:** `ruff format` / `ruff check --isolated` clean, with only our hunks in pre-existing files (checked against HEAD); mypy clean on the RFP modules, CLI, services and tests.
+- **Live, `gpt-6-luna`:** `npm run rfp:smoke` passed **3/3** through Parts 1 → 3.
+  - ModaViva and Luna reached `done`, and RapidShip was discarded.
+  - One live change request was revised and approved in 18 s.
+  - Part 2's KPI was 1.75 attempts per section.
+  - Qdrant was down, so the local documents fallback was used.
+- **Through the UI** (Chrome via playwright-core, the real API on the throwaway Postgres, Sales plus three owner accounts): **28/28 checks**.
+  - Uploads reached "Waiting for approval" in 98 s without a reload.
+  - Ana approved warehouse while Sofía's reverse kept waiting.
+  - Sofía requested changes; the revised section came back as round 2 in 60 s, and she approved it.
+  - The ticket became `done`, and the document rendered and downloaded.
+  - The run history showed the agents of all three parts.
+  - A non-owner saw it read-only, and a customer got 403.
+  - Dark mode and 390 px showed no overflow and no console errors.
+  - PostgreSQL afterwards was consistent (decisions, document, checkpoints in `rfp_graph`).
+
+Still missing / next goals:
+1. **Commit when asked** (AGENTS.md workflow). Include `data/pipelines/rfp_intake/approval/`, the new tests and docs, `data/eval/rfp_intake/smoke.json`, `uv.lock` and `requirements.txt`, and ask about the three updated PNGs.
+2. **Supabase before the first start against it:**
+   - inspect the live `rfp_*` schema (three new tables, the `ck_rfp_status` replacement);
+   - check that the transaction pooler accepts the checkpointer's `search_path` option. If not, set `RFP_CHECKPOINT_SCHEMA=public` (RLS stays on).
+3. **Set `RFP_APPROVERS` in `.env`** with the real owner accounts, and create those manager accounts.
+4. **Still open from Part 2:** Commercial must confirm the indicative rate card; Part 1's metadata quote variance.
+5. **Optional:**
+   - notify an owner (email through Resend) when a request opens;
+   - approvers from a directory or SSO group instead of configuration;
+   - a PDF export of the final document;
+   - run the live checks with Qdrant up.
+6. **Still open from earlier:** re-recording the agent evals; Auth0 and the MCP Playground.
+
 ## Update 2026-11-23 - RFP proposal drafting and self-evaluation (Milestone 9 Part 2)
 
 Goals accomplished.

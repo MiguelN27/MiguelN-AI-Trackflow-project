@@ -71,6 +71,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         agent_graph.close_agent_graph()
+        rfp_lifecycle.shutdown()
         inventory_database.dispose_engine()
 
 
@@ -119,6 +120,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # The RFP final document's file name (`GET /rfp/tickets/{id}/document.md`): a browser
+    # hides this header from a cross-origin page unless it is exposed.
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(auth_router)

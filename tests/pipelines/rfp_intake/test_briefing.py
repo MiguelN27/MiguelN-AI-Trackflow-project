@@ -44,8 +44,8 @@ def test_statuses_match_the_briefing_status_table(briefing_text):
     rows = table_rows(briefing_text, "| Status")
     statuses = {row[0].strip("`") for row in rows}
     assert statuses == set(briefing.BRIEFING_STATUSES)
-    # `failed` is this implementation's addition, documented in briefing.py.
-    assert {status.value for status in briefing.TicketStatus} - statuses == {"failed"}
+    # `failed` and `rejected` are this implementation's additions, documented in briefing.py.
+    assert {status.value for status in briefing.TicketStatus} - statuses == {"failed", "rejected"}
 
 
 def test_the_currency_rule_matches_section_5(briefing_text):

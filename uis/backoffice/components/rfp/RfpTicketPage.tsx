@@ -3,27 +3,36 @@
 import Link from "next/link";
 import { type ReactNode, useEffect, useState } from "react";
 import { StateMessage } from "@/components/common/StateMessage";
-import { ProposalSectionCard } from "@/components/rfp/ProposalSectionCard";
+import { MarkdownBlocks, ProposalSectionCard, parseSectionMarkdown } from "@/components/rfp/ProposalSectionCard";
 import { RfpStatusBadge } from "@/components/rfp/RfpStatusBadge";
 import {
   COUNTRY_NAMES,
   DEPARTMENT_NAMES,
   RFP_PATH,
   SERVICE_LABELS,
+  TRIGGER_LABELS,
+  approvalSummary,
   describeRfpError,
+  downloadFinalDocument,
   failedWhileDrafting,
   formatBytes,
+  getFinalDocument,
   getRfpTicket,
+  getRfpTrace,
   isAnalyzing,
+  isApprovalBusy,
   isDrafting,
+  isQueuedForApproval,
   isQueuedForDrafting,
   pollDelay,
   stageLabel,
   stageProgress,
+  type RfpFinalDocument,
   type RfpMetadata,
   type RfpSalesBrief,
   type RfpSection,
   type RfpTicketDetail,
+  type RfpTraceStep,
 } from "@/lib/rfp";
 
 const cardClass =
@@ -250,52 +259,54 @@ function Progress({ ticket }: { ticket: RfpTicketDetail }) {
   );
 }
 
-function ProposalArea({ ticket }: { ticket: RfpTicketDetail }) {
-  const drafted = ticket.sections.filter((section) => section.draft_status !== null);
-  const queued = isQueuedForDrafting(ticket);
-  if (drafted.length === 0 && !queued && !isDrafting(ticket.status)) return null;
-  const proposal = ticket.proposal;
-  const review = ticket.sections.filter((section) => section.needs_human_review);
-  const maxIterations = proposal?.max_iterations ?? drafted.find((section) => section.max_iterations)?.max_iterations;
-  const rateCard = proposal?.rate_card_version ?? drafted.find((section) => section.rate_card_version)?.rate_card_version;
-  let outcome: ReactNode;
-  if (queued) {
-    outcome = "Queued for proposal drafting: it starts on its own. This page updates on its own.";
-  } else if (isDrafting(ticket.status)) {
-    outcome = (
+function departmentList(sections: RfpSection[]): string {
+  return sections.map((section) => DEPARTMENT_NAMES[section.department_id] ?? section.department_id).join(", ");
+}
+
+/** What Part 2 produced, said from the sections themselves (never from the ticket's later status). */
+function draftingOutcome(ticket: RfpTicketDetail, drafted: RfpSection[], maxIterations: number | null | undefined): ReactNode {
+  if (isQueuedForDrafting(ticket)) return "Queued for proposal drafting: it starts on its own. This page updates on its own.";
+  if (isDrafting(ticket.status)) {
+    return (
       <>
         Drafting and checking each department&apos;s section: {stageLabel(ticket.current_stage)}. This page updates on its
         own.
       </>
     );
-  } else if (ticket.status === "needs_human_review") {
-    outcome = (
+  }
+  const review = drafted.filter((section) => section.needs_human_review);
+  if (review.length > 0) {
+    return (
       <>
         <span className="font-semibold text-orange-700">
-          {review.length} of {ticket.sections.length} section{ticket.sections.length === 1 ? "" : "s"} did not pass within{" "}
-          {maxIterations ?? "the"} attempts and need{review.length === 1 ? "s" : ""} a person&apos;s review.
+          {review.length} of {drafted.length} section{drafted.length === 1 ? "" : "s"} did not pass within{" "}
+          {maxIterations ?? "the"} attempts and {review.length === 1 ? "needs" : "need"}{" "}
+          a person&apos;s review.
         </span>{" "}
-        They are still in the proposal, with their last draft and its review:{" "}
-        {review.map((section) => DEPARTMENT_NAMES[section.department_id] ?? section.department_id).join(", ")}.
+        They are still in the proposal, with their last draft and its review: {departmentList(review)}.
       </>
     );
-  } else if (ticket.status === "waiting_for_approval") {
-    outcome = (
-      <>
-        <span className="font-semibold text-emerald-800">Every section passed its automatic review.</span> Each department
-        owner can now approve their own section.
-      </>
-    );
-  } else {
-    outcome = "The drafts below are from the last drafting run.";
   }
+  if (drafted.length > 0 && drafted.every((section) => section.draft_status === "passed")) {
+    return <span className="font-semibold text-emerald-800">Every section passed its automatic review.</span>;
+  }
+  return "The drafts below are from the last drafting run.";
+}
+
+function ProposalArea({ ticket, onDecided }: { ticket: RfpTicketDetail; onDecided: () => void }) {
+  const drafted = ticket.sections.filter((section) => section.draft_status !== null);
+  const queued = isQueuedForDrafting(ticket);
+  if (drafted.length === 0 && !queued && !isDrafting(ticket.status)) return null;
+  const proposal = ticket.proposal;
+  const maxIterations = proposal?.max_iterations ?? drafted.find((section) => section.max_iterations)?.max_iterations;
+  const rateCard = proposal?.rate_card_version ?? drafted.find((section) => section.rate_card_version)?.rate_card_version;
   return (
     <section aria-labelledby="proposal-heading">
       <div className={cardClass}>
         <h2 id="proposal-heading" className="text-lg font-semibold">
-          Proposal draft
+          Proposal sections
         </h2>
-        <p className="mt-2 text-sm leading-relaxed">{outcome}</p>
+        <p className="mt-2 text-sm leading-relaxed">{draftingOutcome(ticket, drafted, maxIterations)}</p>
         {proposal?.average_iterations_per_section != null || rateCard ? (
           <dl className="mt-3 grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
             {proposal?.average_iterations_per_section != null ? (
@@ -318,11 +329,246 @@ function ProposalArea({ ticket }: { ticket: RfpTicketDetail }) {
       {drafted.length > 0 ? (
         <div className="mt-5 grid gap-5 lg:grid-cols-2">
           {drafted.map((section) => (
-            <ProposalSectionCard key={section.department_id} section={section} currentStage={ticket.current_stage} />
+            <ProposalSectionCard
+              key={section.department_id}
+              section={section}
+              currentStage={ticket.current_stage}
+              ticketId={ticket.ticket_id}
+              onDecided={onDecided}
+            />
           ))}
         </div>
       ) : null}
     </section>
+  );
+}
+
+// --- Part 3: approval and the final document ---------------------------------------------------
+
+function rejectionNote(ticket: RfpTicketDetail): ReactNode {
+  const rejected = ticket.sections.filter((section) => section.approval_status === "rejected");
+  return rejected.map((section) => {
+    const decision = [...section.decisions].reverse().find((item) => item.action === "reject");
+    const by = decision ? (decision.source === "arbiter" ? `${decision.decided_by_name} (arbitration)` : decision.decided_by_name) : section.owner;
+    return (
+      <p key={section.department_id} className="mt-1">
+        {DEPARTMENT_NAMES[section.department_id] ?? section.department_id}: rejected by {by}
+        {decision?.comment ? <>: “{decision.comment}”</> : "."}
+      </p>
+    );
+  });
+}
+
+function ApprovalArea({ ticket }: { ticket: RfpTicketDetail }) {
+  const approval = ticket.approval;
+  if (isQueuedForApproval(ticket)) {
+    return (
+      <StateMessage tone="info">
+        Drafted: the approvals open on their own, one request per department owner. This page updates on its own.
+      </StateMessage>
+    );
+  }
+  if (!approval) return null;
+  let outcome: ReactNode;
+  if (ticket.status === "done") {
+    outcome = (
+      <span className="font-semibold text-emerald-800">
+        Every department owner approved their section. The final document is ready for Sales.
+      </span>
+    );
+  } else if (ticket.status === "rejected") {
+    outcome = (
+      <>
+        <span className="font-semibold">This proposal was closed and does not go out.</span>
+        {rejectionNote(ticket)}
+      </>
+    );
+  } else {
+    const waiting = ticket.sections.filter((section) => section.awaiting_decision);
+    outcome = (
+      <>
+        <span className="font-semibold">{approvalSummary(ticket)}.</span> Each owner decides on their own section; a pending
+        decision never blocks the others.
+        {waiting.length ? <> Waiting for: {waiting.map((section) => section.owner).join(", ")}.</> : null}
+        {isApprovalBusy(ticket) ? <> Working: {stageLabel(ticket.current_stage)}.</> : null}
+      </>
+    );
+  }
+  return (
+    <section aria-labelledby="approval-heading" className={cardClass}>
+      <h2 id="approval-heading" className="text-lg font-semibold">
+        Approval by department
+      </h2>
+      <p className="mt-2 text-sm leading-relaxed">{outcome}</p>
+      {approval.error_stage ? (
+        <StateMessage tone="error" className="mt-3">
+          <p className="font-semibold">Processing stopped at “{stageLabel(approval.error_stage)}”.</p>
+          <p className="mt-1">{approval.error_message}</p>
+          <p className="mt-2 text-xs">
+            Every decision is kept. TrackFlow Tech can continue it with{" "}
+            <code className="font-mono">npm run rfp -- resume {ticket.ticket_id}</code>.
+          </p>
+        </StateMessage>
+      ) : null}
+      {approval.rulings.length > 0 ? (
+        <div className="mt-4">
+          <h3 className="text-sm font-semibold">Conflicts between departments</h3>
+          <ul className="mt-2 space-y-2 text-sm">
+            {approval.rulings.map((ruling, index) => (
+              <li key={`${ruling.trigger_id}-${index}`} className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-orange-900">
+                <p className="font-semibold">{TRIGGER_LABELS[ruling.trigger_id] ?? ruling.trigger_id}</p>
+                <p className="mt-1">
+                  Ruled by {ruling.arbiter} ({ruling.arbiter_basis}):{" "}
+                  {ruling.action === "reject" ? "rejected" : "sent back for changes"}{" "}
+                  {ruling.departments.map((dept) => DEPARTMENT_NAMES[dept] ?? dept).join(", ")}.
+                </p>
+                <p className="mt-1 text-xs">Rule: {ruling.rule}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function FinalDocumentCard({ ticket }: { ticket: RfpTicketDetail }) {
+  const [document, setDocument] = useState<RfpFinalDocument | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const sha = ticket.final_document?.content_sha256;
+
+  useEffect(() => {
+    if (!sha) return;
+    let active = true;
+    getFinalDocument(ticket.ticket_id)
+      .then((value) => active && setDocument(value))
+      .catch((failure: unknown) => active && setError(describeRfpError(failure)));
+    return () => {
+      active = false;
+    };
+  }, [ticket.ticket_id, sha]);
+
+  if (!ticket.final_document) return null;
+
+  async function download() {
+    setDownloading(true);
+    try {
+      const file = await downloadFinalDocument(ticket.ticket_id);
+      const url = URL.createObjectURL(new Blob([file.content], { type: "text/markdown;charset=utf-8" }));
+      const link = window.document.createElement("a");
+      link.href = url;
+      link.download = file.filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (failure: unknown) {
+      setError(describeRfpError(failure));
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  return (
+    <section aria-labelledby="document-heading" className={`${cardClass} min-w-0`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 id="document-heading" className="text-lg font-semibold">
+            Final document
+          </h2>
+          <p className="mt-1 text-sm text-slate-600">
+            The approved sections, as approved. Generated{" "}
+            <time dateTime={ticket.final_document.generated_at}>{formatDateTime(ticket.final_document.generated_at)}</time>{" "}
+            · prices in {ticket.final_document.currency}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={download}
+          disabled={downloading}
+          className="inline-flex min-h-10 items-center rounded-xl bg-[color:var(--brand-primary)] px-4 py-2 text-sm font-semibold text-[color:var(--on-brand)] transition hover:opacity-90 disabled:opacity-50"
+        >
+          {downloading ? "Preparing…" : "Download (.md)"}
+        </button>
+      </div>
+      {error ? (
+        <StateMessage tone="error" className="mt-3">
+          {error}
+        </StateMessage>
+      ) : null}
+      {document ? (
+        <details className="mt-4" open>
+          <summary className="cursor-pointer text-sm font-semibold text-[color:var(--brand-primary)]">Read the document</summary>
+          <div className="mt-3">
+            <MarkdownBlocks blocks={parseSectionMarkdown(document.content)} label="Final document" headingBase={3} />
+          </div>
+        </details>
+      ) : !error ? (
+        <p className="mt-3 text-sm text-slate-600" role="status">
+          Loading the document…
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function RunHistory({ ticketId }: { ticketId: string }) {
+  const [steps, setSteps] = useState<RfpTraceStep[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function load(open: boolean) {
+    if (!open) return;
+    getRfpTrace(ticketId)
+      .then(setSteps)
+      .catch((failure: unknown) => setError(describeRfpError(failure)));
+  }
+
+  return (
+    <details className={cardClass} onToggle={(event) => load(event.currentTarget.open)}>
+      <summary className="cursor-pointer text-sm font-semibold">Run history: which agent did what, in order</summary>
+      {error ? (
+        <StateMessage tone="error" className="mt-3">
+          {error}
+        </StateMessage>
+      ) : null}
+      {!steps && !error ? (
+        <p className="mt-3 text-sm text-slate-600" role="status">
+          Loading the history…
+        </p>
+      ) : null}
+      {steps ? (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[40rem] border-collapse text-left text-sm">
+            <caption className="sr-only">Every step of this ticket across the three parts</caption>
+            <thead>
+              <tr className="border-b border-[color:var(--border-soft)]">
+                {["#", "Part", "When", "Step", "Agent", "Outcome"].map((cell) => (
+                  <th key={cell} scope="col" className="py-1.5 pr-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    {cell}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {steps.map((step) => (
+                <tr key={step.position} className="border-b border-[color:var(--border-soft)] last:border-0">
+                  <td className="py-1.5 pr-3 tabular-nums">{step.position}</td>
+                  <td className="py-1.5 pr-3 tabular-nums">{step.part}</td>
+                  <td className="py-1.5 pr-3 tabular-nums">
+                    <time dateTime={step.at}>{new Date(step.at).toLocaleTimeString()}</time>
+                  </td>
+                  <td className="py-1.5 pr-3">{stageLabel(step.node)}</td>
+                  <td className="py-1.5 pr-3">{step.agent}</td>
+                  <td className={`py-1.5 pr-3 ${step.outcome === "failed" ? "font-semibold text-red-700" : ""}`}>
+                    {step.outcome}
+                    {step.duration_ms != null ? <span className="text-slate-500"> · {step.duration_ms} ms</span> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </details>
   );
 }
 
@@ -448,7 +694,11 @@ export function RfpTicketPage({ ticketId }: { ticketId: string }) {
 
             {classification?.review_note ? <StateMessage tone="info">{classification.review_note}</StateMessage> : null}
 
-            <ProposalArea ticket={ticket} />
+            <ApprovalArea ticket={ticket} />
+
+            <FinalDocumentCard ticket={ticket} />
+
+            <ProposalArea ticket={ticket} onDecided={() => setRefresh((value) => value + 1)} />
 
             {ticket.sales_brief ? <BriefCard brief={ticket.sales_brief} /> : null}
 
@@ -496,6 +746,8 @@ export function RfpTicketPage({ ticketId }: { ticketId: string }) {
                 ) : null}
               </details>
             ) : null}
+
+            <RunHistory ticketId={ticket.ticket_id} />
           </div>
         </>
       ) : null}
