@@ -26,13 +26,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateSchema
 from sqlmodel import Session
 
+from data.notifications import outbox
 from data.pipelines.rfp_intake import handoff, runner, store
 from data.pipelines.rfp_intake.approval import checkpoint
 from data.pipelines.rfp_intake.approval import graph as approval_graph
 from data.pipelines.rfp_intake.approval import store as approval_store
 from data.pipelines.rfp_intake.briefing import TicketStatus
 from data.pipelines.rfp_intake.config import get_rfp_settings
-from data.pipelines.rfp_intake.models import PART_2_SECTION_COLUMNS, RfpHandoff, RfpProposalHandoff
+from data.pipelines.rfp_intake.models import (
+    PART_2_SECTION_COLUMNS,
+    RfpHandoff,
+    RfpProposalHandoff,
+)
 from data.pipelines.rfp_intake.proposal import handoff as proposal_handoff
 from data.pipelines.rfp_intake.proposal import runner as proposal_runner
 from data.pipelines.rfp_intake.proposal import store as proposal_store
@@ -52,7 +57,7 @@ TABLES = (
     "rfp_approval_runs",
     "rfp_approval_decisions",
     "rfp_final_documents",
-    "rfp_ticket_notifications",
+    "live_notifications",
 )
 
 
@@ -393,7 +398,7 @@ def test_announcements_are_numbered_in_commit_order(postgres, tmp_path):
         with Session(engine) as session:
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-                {"key": store.NOTIFICATION_LOCK},
+                {"key": outbox.LOCK_KEY},
             )
             holding.set()
             release.wait(10)
@@ -416,6 +421,6 @@ def test_announcements_are_numbered_in_commit_order(postgres, tmp_path):
     second.join(10)
 
     assert order == ["first committed", "second registered"]
-    [row] = store.notifications_after(engine, 0, limit=10)
+    [row] = outbox.notifications_after(engine, 0, limit=10)
     assert row["event"] == "rfp_ticket_created"
     assert isinstance(row["payload"], dict) and row["payload"]["status"] == "analyzing"

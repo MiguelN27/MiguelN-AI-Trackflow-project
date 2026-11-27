@@ -1,4 +1,4 @@
-"""The live stream's feed in the store: `rfp_ticket_notifications` (the outbox).
+"""A new ticket's live announcement, in the shared outbox (`live_notifications`).
 
 A ticket and its `rfp_ticket_created` announcement are written in one
 transaction, so whatever process registers a ticket (the API, the CLI) the
@@ -9,8 +9,10 @@ import pytest
 from sqlalchemy import func, select
 from sqlmodel import Session
 
+from data.notifications import outbox
+from data.notifications.models import LiveNotification
 from data.pipelines.rfp_intake import store
-from data.pipelines.rfp_intake.models import RfpTicket, RfpTicketNotification
+from data.pipelines.rfp_intake.models import RfpTicket
 from tests.pipelines.rfp_intake.support import new_ticket, sqlite_engine
 
 
@@ -31,11 +33,11 @@ def test_registering_a_ticket_announces_it_once_with_the_list_shape(engine, tmp_
     ticket = store.get_ticket(engine, ticket_id)
     assert ticket is not None
 
-    [row] = store.notifications_after(engine, 0, limit=10)
+    [row] = outbox.notifications_after(engine, 0, limit=10)
 
     assert row["seq"] == 1
     assert row["event"] == store.TICKET_CREATED_EVENT == "rfp_ticket_created"
-    assert row["ticket_id"] == str(ticket_id)
+    assert row["subject"] == str(ticket_id)
     assert row["payload"] == store.new_ticket_summary(ticket)
     assert row["payload"] == {
         "ticket_id": str(ticket_id),
@@ -62,22 +64,22 @@ def test_the_ticket_and_its_announcement_commit_together_or_not_at_all(
         new_ticket(engine, tmp_path)
 
     assert count(engine, RfpTicket) == 0
-    assert count(engine, RfpTicketNotification) == 0
+    assert count(engine, LiveNotification) == 0
 
 
 def test_the_feed_is_read_in_seq_order_after_a_cursor(engine, tmp_path):
-    assert store.latest_notification_seq(engine) == 0
+    assert outbox.latest_seq(engine) == 0
     tickets = [str(new_ticket(engine, tmp_path)) for _ in range(4)]
 
-    assert store.latest_notification_seq(engine) == 4
-    assert [row["seq"] for row in store.notifications_after(engine, 0, limit=10)] == [1, 2, 3, 4]
-    assert [row["ticket_id"] for row in store.notifications_after(engine, 1, limit=2)] == tickets[
+    assert outbox.latest_seq(engine) == 4
+    assert [row["seq"] for row in outbox.notifications_after(engine, 0, limit=10)] == [1, 2, 3, 4]
+    assert [row["subject"] for row in outbox.notifications_after(engine, 1, limit=2)] == tickets[
         1:3
     ]
-    assert store.notifications_after(engine, 4, limit=10) == []
+    assert outbox.notifications_after(engine, 4, limit=10) == []
     assert all(
         row["created_at"].tzinfo is not None
-        for row in store.notifications_after(engine, 0, limit=4)
+        for row in outbox.notifications_after(engine, 0, limit=4)
     )
 
 
@@ -87,4 +89,4 @@ def test_reprocessing_does_not_announce_a_ticket_again(engine, tmp_path):
 
     store.reset_ticket(engine, ticket_id)
 
-    assert count(engine, RfpTicketNotification) == 1
+    assert count(engine, LiveNotification) == 1

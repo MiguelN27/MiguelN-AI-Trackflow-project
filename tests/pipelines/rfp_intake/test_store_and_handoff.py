@@ -32,7 +32,9 @@ def age(engine, ticket_id, minutes):
 # --- Store ---------------------------------------------------------------------------
 
 
-def test_the_schema_is_the_eleven_rfp_tables_and_initializing_twice_is_harmless(engine):
+def test_the_schema_is_the_ten_rfp_tables_plus_the_outbox_and_initializing_twice_is_harmless(
+    engine,
+):
     store.initialize_schema(engine)
 
     assert set(inspect(engine).get_table_names()) == {
@@ -48,8 +50,8 @@ def test_the_schema_is_the_eleven_rfp_tables_and_initializing_twice_is_harmless(
         "rfp_approval_runs",
         "rfp_approval_decisions",
         "rfp_final_documents",
-        # Milestone 10: the live notification stream's feed
-        "rfp_ticket_notifications",
+        # Milestone 10: the shared live notification outbox, where new tickets are announced
+        "live_notifications",
     }
 
 

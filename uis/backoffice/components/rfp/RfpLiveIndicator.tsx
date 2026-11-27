@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRfpLive } from "@/components/rfp/RfpLiveContext";
-import { BACKOFF_MAX_MS, type ConnectionState } from "@/lib/rfp-stream";
+import { BACKOFF_MAX_MS, type ConnectionState } from "@/lib/live-stream";
 
 type Display = { label: string; announcement: string; dot: string; retry: boolean };
 

@@ -31,8 +31,12 @@ from services.core import db as core_db
 from services.incidents.read_cache import clear_read_cache
 from services.inventory import database as inventory_database
 from services.main import app
+from services.notifications import config as live_stream_config
+from services.notifications import stream as live_stream
+from services.operations import config as operations_config
+from services.operations import lifecycle as operations_lifecycle
+from services.operations import rules as operations_rules
 from services.rfp import lifecycle as rfp_lifecycle
-from services.rfp import notifications as rfp_notifications
 from services.tasks.celery_app import celery_app
 from services.telemetry import database as telemetry_database
 
@@ -119,6 +123,7 @@ def isolated_postgres(monkeypatch):
     monkeypatch.setattr(inventory_database, "initialize_schema", lambda: None)
     monkeypatch.setattr(telemetry_database, "initialize_schema", lambda: None)
     monkeypatch.setattr(rfp_lifecycle, "initialize", lambda: None)
+    monkeypatch.setattr(operations_lifecycle, "initialize", lambda: None)
     yield
     monkeypatch.setattr(inventory_database, "get_engine", engine_factory)
     dispose()
@@ -222,6 +227,18 @@ RFP_TEST_APPROVERS = {
 
 
 @pytest.fixture(autouse=True)
+def isolated_operations_monitor(monkeypatch):
+    """The operational monitor never runs in the background of a test: tests evaluate
+    explicitly (`monitor.evaluate`) with their own clock and engine."""
+    monkeypatch.setenv("OPS_MONITOR_ENABLED", "false")
+    operations_config.get_operations_settings.cache_clear()
+    operations_rules.get_rules.cache_clear()
+    yield
+    operations_config.get_operations_settings.cache_clear()
+    operations_rules.get_rules.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def isolated_rfp_intake(tmp_path, monkeypatch):
     """Uploaded PDFs go to the test's directory, and no RFP agent reaches a model or Qdrant.
 
@@ -247,9 +264,11 @@ def isolated_rfp_intake(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rfp_llm, "_client", forbid_model)
     monkeypatch.setattr(rfp_knowledge, "search", no_vector_search)
-    rfp_notifications.reset_hub()
+    live_stream.reset_hub()
+    live_stream_config.get_live_stream_settings.cache_clear()
     yield
-    rfp_notifications.reset_hub()
+    live_stream.reset_hub()
+    live_stream_config.get_live_stream_settings.cache_clear()
     rfp_config.get_rfp_settings.cache_clear()
     rfp_approval_graph.clear_graphs()
     rfp_checkpoint.close_checkpointers()

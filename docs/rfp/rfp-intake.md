@@ -211,7 +211,7 @@ All routes need a staff account: `admin` or `manager`. A self-registered `user` 
 | `POST /rfp/tickets` (multipart `file`) | **202** `{ticket_id, rfp_id, status, original_filename}`.<br>**415** not a PDF, **413** too large, **422** empty, **503** storage failure (the stored PDF is removed). |
 | `GET /rfp/tickets` | The 50 newest tickets, with the client and departments when known. It runs the stale sweep first. |
 | `GET /rfp/tickets/{id}` | Everything the Sales view shows: classification, metadata with readability, sections, Sales brief, handoff status and events. No Markdown. **404** unknown, **422** malformed id. |
-| `GET /rfp/notifications/stream` (Milestone 10) | Server-Sent Events: a named `rfp_ticket_created` the moment a ticket is registered, with resume by `Last-Event-ID`. See [live-notifications.md](live-notifications.md). |
+| `GET /rfp/notifications/stream` (Milestone 10; alias of the shared `GET /notifications/stream`) | Server-Sent Events: a named `rfp_ticket_created` the moment a ticket is registered, with resume by `Last-Event-ID`. See [live-notifications.md](live-notifications.md). |
 
 ## Backoffice
 

@@ -1,7 +1,7 @@
 /**
  * What the backoffice does with live RFP notifications (Milestone 10): pure state, so it is
- * unit-tested without a browser. The stream itself is `lib/rfp-stream.ts`; the React side is
- * `components/rfp/RfpLiveProvider.tsx`.
+ * unit-tested without a browser. The stream itself is `lib/live-stream.ts`; the React side is
+ * `components/live/LiveProvider.tsx`.
  *
  * Dedupe at the screen: tickets are keyed by `ticket_id`. A ticket the list already shows, a
  * replayed ticket, or the tab's own upload never adds a second row or a second notification.

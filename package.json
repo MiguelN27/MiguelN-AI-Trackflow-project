@@ -24,6 +24,7 @@
     "mcp:tools": "uv run python -m mcps.trackflow_tools tools",
     "mcp:token": "uv run python -m mcps.trackflow_tools token",
     "rfp": "uv run python -m scripts.rfp_intake",
+    "ops": "uv run python -m scripts.operations_monitor",
     "rfp:setup": "uv run python -m nltk.downloader punkt punkt_tab",
     "rfp:smoke": "uv run python -m scripts.rfp_intake smoke",
     "rfp:e2e": "uv run pytest tests/pipelines/rfp_intake/approval/test_end_to_end.py tests/test_rfp_approval_api.py -v",

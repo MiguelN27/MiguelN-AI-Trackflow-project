@@ -36,6 +36,10 @@ from services.incidents.router import router as incidents_router
 from services.inventory import database as inventory_database
 from services.inventory.routers.inventory import router as inventory_router
 from services.knowledge.router import router as knowledge_router
+from services.notifications import stream as notifications
+from services.notifications.router import router as notifications_router
+from services.operations import lifecycle as operations_lifecycle
+from services.operations.router import router as operations_router
 from services.profiles.router import router as profiles_router
 from services.reporting.router import router as reporting_router
 from services.rfp import lifecycle as rfp_lifecycle
@@ -64,12 +68,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         telemetry_database.initialize_schema()
         # The RFP intake tables (Milestone 9), and tickets abandoned by a restart.
         rfp_lifecycle.initialize()
+        # Operational inactivity alerts (Milestone 10): the rules, their table and
+        # the monitor, which announces alerts on the live notification stream.
+        operations_lifecycle.initialize()
+        operations_lifecycle.start()
         # Compile the agent graph before any request: a structural error in it
         # stops startup here (AgentGraphBuildError) instead of failing a query.
         agent_graph.get_agent_graph()
         get_trace_store()
         yield
     finally:
+        await operations_lifecycle.stop()
+        notifications.close_hub()
         agent_graph.close_agent_graph()
         rfp_lifecycle.shutdown()
         inventory_database.dispose_engine()
@@ -137,6 +147,8 @@ app.include_router(tasks_router)
 app.include_router(knowledge_router)
 app.include_router(agent_router)
 app.include_router(rfp_router)
+app.include_router(notifications_router)
+app.include_router(operations_router)
 
 # Error translation.
 #

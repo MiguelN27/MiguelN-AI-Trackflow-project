@@ -45,7 +45,7 @@ function formatDate(value: string): string {
  * move from "Analyzing" to "Intake complete" or "Discarded" without reloading.
  *
  * New tickets, whoever registers them, are pushed by the live stream (Milestone 10,
- * `RfpLiveProvider`): they join the list at once, with a "New" mark, without a reload and without
+ * `LiveProvider`): they join the list at once, with a "New" mark, without a reload and without
  * re-reading the list. The list is read from the API on arrival, after an upload, when a first or
  * resynced connection may have missed tickets (`snapshotEpoch`), and while a ticket is being
  * worked on, to follow its progress (`listPollDelay`).

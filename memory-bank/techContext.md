@@ -302,31 +302,57 @@ This repository currently contains two website implementations related to TrackF
     - `tests/pipelines/rfp_intake/approval/` (48), `tests/test_rfp_approval_api.py` (15), and opt-in Postgres (3 more: `PostgresSaver`, the status-check upgrade, the lease);
     - Jest `rfp.test.ts` (+8).
     - The autouse `isolated_rfp_intake` fixture sets `RFP_AUTO_REQUEST_APPROVAL=false` and `RFP_APPROVERS` to `RFP_TEST_APPROVERS`, and clears graphs and closes checkpointers.
-- Live RFP notifications (since 2026-11-26, Milestone 10 Part 1; brief `lead-instr.png` + `stages-todo.png`; design `docs/rfp/live-notifications.md`):
-  - What it is: a Server-Sent Events stream that pushes `rfp_ticket_created` the moment an RFP ticket is registered. No model or agent calls.
-  - Feed: the outbox table `rfp_ticket_notifications`, the eleventh `rfp_*` table (RLS on). Columns: `seq` int PK, `event`, `ticket_id` FK, `payload` JSONB = the ticket's `RfpTicketSummary`, `created_at`; unique `(ticket_id, event)`.
-    - `store.create_ticket` writes it in the ticket's transaction, after `pg_advisory_xact_lock(hashtext('rfp_ticket_notifications'))` on PostgreSQL, so seq order = commit order.
-    - Reads: `store.notifications_after(engine, seq, limit=)` and `latest_notification_seq`; `store.new_ticket_summary(ticket)` builds the payload.
-  - `services/rfp/notifications.py`:
-    - `NotificationHub`, one per process (`get_hub`, `wake`, `close_hub`, `reset_hub` for tests). One watcher task starts with the first subscriber and stops with the last, reading the feed via `anyio.to_thread` every `RFP_STREAM_POLL_SECONDS` or at once on `wake()` (thread-safe, the upload's first background task).
-    - `to_notification` validates with `RfpTicketSummary` and encodes the frame once. A ring of 256 events; per-connection `Subscription` (unbounded `asyncio.Queue` with its own cap → `slow_consumer`).
-    - `open_stream` subscribes first, then `_catch_up`: ring, else database; `rfp_stream_resync` for `cursor_unknown` / `cursor_invalid` / `cursor_expired` / `replay_limit`. Then `rfp_stream_ready` (cursor, replayed, heartbeat).
-    - `Stream.frames()`: the live loop, which never yields inside a cancel scope; it ends at the token's `exp` or after `RFP_STREAM_MAX_SECONDS`.
-  - Route: `GET /rfp/notifications/stream` (`StaffUser` + `oauth2_scheme` for `exp`, optional `Last-Event-ID` header), `EventSourceResponse` (sse-starlette 3.7.0, declared 2026-11-26) with `ping_message_factory` → `: keep-alive`, `send_timeout` 30 s, `sep="\n"`; 503 when the feed cannot be read. `lifecycle.shutdown` closes the hub.
-  - Settings (`RfpIntakeSettings`, `.env.example`): `RFP_STREAM_HEARTBEAT_SECONDS` 15, `RFP_STREAM_POLL_SECONDS` 2, `RFP_STREAM_REPLAY_HOURS` 24, `RFP_STREAM_REPLAY_LIMIT` 200, `RFP_STREAM_QUEUE_SIZE` 100, `RFP_STREAM_MAX_SECONDS` 900.
+- Live notification stream (since 2026-11-26, Milestone 10; RFP part: `docs/rfp/live-notifications.md`; alerts part: `docs/operations/inactivity-alerts.md`):
+  - What it is: one Server-Sent Events stream per staff tab, carrying every live event: `rfp_ticket_created` (Part 1) and the operational alert events (Part 2). No model or agent calls.
+  - Outbox (`data/notifications/`, imports nothing from `services/`):
+    - table `live_notifications`, with its own registry and RLS on. Columns: `seq` int PK, `event`, `subject` (text), `payload` JSONB, `created_at`; unique `(event, subject)`;
+    - `outbox.append(session, event=, subject=, payload=)` writes in the caller's transaction, after `pg_advisory_xact_lock(hashtext('live_notifications'))` on PostgreSQL, so seq order = commit order across event types;
+    - reads: `notifications_after(engine, seq, limit=)` and `latest_seq`; plus `initialize_schema`;
+    - `store.create_ticket` appends `rfp_ticket_created` (subject = ticket id, payload = `store.new_ticket_summary`). The Part 1 table `rfp_ticket_notifications` is no longer used and was not dropped.
+  - `services/notifications/stream.py` (moved from `services/rfp/notifications.py`):
+    - `NotificationHub`, one per process (`get_hub`, `wake`, `close_hub`, `reset_hub` for tests): one watcher task, started by the first subscriber and stopped with the last, reading the outbox via `anyio.to_thread`;
+    - `EVENT_MODELS` validates each event's payload (`RfpTicketSummary`, `OperationalAlert`); an unknown event is skipped and logged; frames are encoded once;
+    - a ring of 256 events; replay with `Last-Event-ID`, then `rfp_stream_ready`; `rfp_stream_resync` when replay is impossible; `Stream.frames()` never yields inside a cancel scope.
+  - Routes: `GET /notifications/stream` (`services/notifications/router.py`, `StaffUser`, `Last-Event-ID` header, `EventSourceResponse`, sse-starlette 3.7.0); `/rfp/notifications/stream` is the same handler, registered on the RFP router. A 503 reads "Live notifications unavailable". The lifespan closes the hub on shutdown.
+  - Settings (`services/notifications/config.py`, `.env.example`; renamed from `RFP_STREAM_*`): `LIVE_STREAM_HEARTBEAT_SECONDS` 15, `_POLL_SECONDS` 2, `_REPLAY_HOURS` 24, `_REPLAY_LIMIT` 200, `_QUEUE_SIZE` 100, `_MAX_SECONDS` 900.
   - Backoffice:
-    - `lib/rfp-stream.ts`: `openRfpStream` through `requestAuthenticatedApi`, `createSseParser`, `toRfpStreamEvent`, `backoffDelay` (equal jitter, 1 s base, 30 s cap), and `RfpStreamConnection`. The connection gives up for good on 401/403 (`unavailable`), retries everything else, re-arms the watchdog (3 heartbeats) after each chunk, and resumes at once after a healthy (≥ 10 s) normal end.
-    - `lib/rfp-live.ts`: `recordArrival`, `noteOwnUpload`, `markSeen` / `markAllSeen`, `mergeTickets`, `toastCopy`, `titleWithCount`.
-    - `components/rfp/RfpLiveProvider.tsx` (in `app/(protected)/layout.tsx`, staff roles only; `useSyncExternalStore` for online status and visibility): the context is in `RfpLiveContext.ts` (`useRfpLive`); `snapshotEpoch` bumps on a fresh ready, a resync, or the first ready after a failure.
-    - `NewRfpToast.tsx` (bottom-right, polite live region always mounted), `RfpLiveIndicator.tsx` (header actions), and the `counts` prop of `BackofficeNavShell` (the "RFP intake" count).
-    - `RfpIntakePage` renders `mergeTickets(snapshot, received)` and polls only for progress. `RfpTicketPage` calls `markSeen`.
-    - CSS: `--on-accent` (#0b2247 on the accent, 7.0:1) and the `rfp-toast-in` / `rfp-row-arrived` keyframes, used through `motion-safe:`.
+    - `lib/live-stream.ts` (moved from `rfp-stream.ts`): `openRfpStream`, `createSseParser`, `toLiveEvent` (tickets, alerts, ready, resync), `backoffDelay` (equal jitter, 1 s base, 30 s cap), and `LiveStreamConnection`. The connection advances its cursor past **any** numbered event, even one it cannot use, and gives up for good on 401/403.
+    - `lib/rfp-live.ts`: the RFP slice (unchanged). `lib/operations-live.ts`: the alerts slice (see below).
+    - `components/live/LiveProvider.tsx` (protected layout, staff roles only): one connection, two contexts, `RfpLiveContext` (`useRfpLive`) and `components/live/OperationsLiveContext.ts` (`useOperationalAlerts`). `snapshotEpoch` bumps on a fresh ready, a resync, or the first ready after a failure; alert events received while a snapshot is read are re-applied on top of it.
+    - RFP UI: `NewRfpToast.tsx`, `RfpLiveIndicator.tsx`, the "RFP intake" count, and `RfpIntakePage`'s merged list. CSS: `--on-accent` and the `rfp-toast-in` / `rfp-row-arrived` keyframes.
   - Tests:
-    - `tests/sse_support.py`: `parse_sse` and `SseReader`, a threaded httpx stream.
-    - `tests/test_rfp_stream_api.py`: TestClient buffers the whole body, so the stream is bounded with `RFP_STREAM_MAX_SECONDS`.
-    - `tests/test_rfp_stream_live.py`: uvicorn in a thread.
-    - `tests/test_rfp_notifications_hub.py`, `tests/pipelines/rfp_intake/test_notifications_store.py`, the opt-in Postgres commit-order test, and Jest `rfp-stream.test.ts`.
-    - The autouse `isolated_rfp_intake` fixture resets the hub.
+    - `tests/sse_support.py`: `parse_sse` and `SseReader(base_url, headers, path="/notifications/stream")`.
+    - RFP: `tests/test_rfp_stream_api.py` (through the alias route; bounded with `LIVE_STREAM_MAX_SECONDS`), `tests/test_rfp_stream_live.py`, `tests/test_live_notifications_hub.py`, `tests/pipelines/rfp_intake/test_notifications_store.py`.
+    - Jest `live-stream.test.ts`.
+    - Tests that patch the engine must patch it on **both** `services.rfp.router` and `services.notifications.router`. The autouse `isolated_rfp_intake` fixture resets the hub and the live stream settings.
+- Operational inactivity alerts (since 2026-11-26, Milestone 10 Part 2; design `docs/operations/inactivity-alerts.md`):
+  - What it is: alerts when expected activity does not happen within a defined period.
+  - Rules: `config/operational-activity-rules.json` (`OPS_ACTIVITY_RULES_PATH`), validated by `services/operations/rules.py`, a pydantic union on `source`. An invalid file raises `ConfigurationError` at start-up (`lifecycle.initialize_rules`). Four sources:
+    - `warehouse_orders`: `Warehouse` enum and the BRIEFING activity names, optional `client_id`;
+    - `scheduled_job`: `nightly_export` → `job_runs`; `weekly_warehouse_client_performance` → `reporting.pipeline_runs`, whose schema is `sources.PIPELINE_SCHEMA`;
+    - `rfp_approval`: a pending section of a `waiting_for_approval` ticket, from `ready_at`;
+    - `incidents`: TinyDB, one watch per branch, sorted by time only.
+    - Optional `operating_hours` (`timezone`, `days`, `start` < `end`).
+  - `schedule.active_minutes_between`: working minutes in the rule's timezone, compared in UTC (DST safe).
+  - `monitor.py`:
+    - `observe`: per rule; **any** exception skips only that rule this round;
+    - `plan`: pure; the reasons are `activity_resumed`, `slot_closed`, `rule_disabled` and `rule_removed`;
+    - `evaluate`: one transaction under `pg_advisory_xact_lock(hashtext('operational_alerts'))`, alert row + `outbox.append` together;
+    - `preview`: dry run; it tolerates an unreadable alerts table.
+  - Table `operational_alerts` (`services/operations/models.py`, own registry, RLS on), with the partial unique index `uq_operational_alert_open (rule_id, subject_key) WHERE status='open'`.
+  - Payload: `services/operations/schemas.py` `OperationalAlert` (the whole alert) for the three events `operational_inactivity_detected` / `operational_activity_resumed` / `operational_alert_acknowledged` and for the REST list.
+  - `lifecycle.py`: `initialize` (rules, outbox and alerts schema), plus an asyncio task (`start` / `stop`) that runs `evaluate` every `OPS_MONITOR_INTERVAL_SECONDS` (60) in a thread and wakes the hub on changes (`OPS_MONITOR_ENABLED`).
+  - Routes (staff): `GET /operations/alerts?status=open|resolved|all&since_hours=`; `POST /operations/alerts/{id}/acknowledge` (200, idempotent, 409 resolved, 404). The acknowledgement takes the same advisory lock.
+  - CLI `npm run ops -- rules | check [--dry-run] | alerts [--all]` (`scripts/operations_monitor.py`; exit 2 rules, 3 database).
+  - Backoffice:
+    - `lib/operations-live.ts`: validator, calls, `applyAlertEvent` (idempotent; an acknowledgement is never undone by an older copy), `applyAlertSnapshot` (snapshot + in-flight events), `alertDetail` (shows the year on old dates), `resumedCopy`;
+    - `components/operations/OperationalAlertBanner.tsx`: under the header in the protected layout; `--status-warning` / `--status-critical` marks, never as text; a "Critical" tag; at most three alerts; resolutions shown for 10 s; a polite region that ignores the ticking durations;
+    - `OperationsAlertsPage.tsx` at `/operations`;
+    - the "Alerts" nav link counts unacknowledged alerts.
+  - Tests:
+    - `tests/operations/` (support with `ops_engine`, one SQLite file holding inventory + `job_runs` + RFP + outbox + alerts): rules, schedule, monitor, API/wire, live socket, and the opt-in Postgres suite;
+    - Jest `operations-live.test.ts`;
+    - the autouse `isolated_operations_monitor` fixture sets `OPS_MONITOR_ENABLED=false` and clears the rules and settings caches; `isolated_postgres` makes `operations_lifecycle.initialize` a no-op.
 - `packages/shared/trackflow_shared/` is a Python package mapped into the wheel from `pyproject.toml` next to `services` and `scripts`. It carries rules that both the API and the `/scripts` tooling must agree on and that neither owns: the incident enumerations and lifecycle (`incidents.py`) and the helpdesk-CSV validation plus CSV -> model maps (`incidents_csv.py`). It imports no framework.
 - Error translation lives in `services/core/http_errors.py`. Domain errors (`ValidationFailed`, `IncidentNotFound`) are translated there, so the service layer stays HTTP-agnostic, and a bare `Exception` handler turns any unhandled failure into a 500 that names nothing about the exception, with the traceback going to the `trackflow.errors` logger. Every incident error body has the same `{detail: {field, message}}` shape. See `docs/INCIDENTS.md`.
 - **The 422 -> 400 remapping is scoped to `/api/incidents`, and must stay that way.** Starlette's exception handlers are global, so `make_validation_error_handler(prefixes)` takes the prefix (read off `incidents_router.prefix`) and hands everything else to FastAPI's own handler. Applying it app-wide breaks password recovery: `resetPassword` in `uis/*/services/auth-service.ts` reads **any** 400 as a spent reset token and replaces the form with "request a new link", so a too-short password would tell the user their link had expired. `changePassword` reads a 400 as "current password is wrong". `tests/test_error_contract.py` pins both halves.

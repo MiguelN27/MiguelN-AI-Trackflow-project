@@ -4,6 +4,8 @@ Every RFP that comes in is money on the table. Until now nobody noticed a new ti
 
 This is a communication layer only: nothing here calls a model or an agent.
 
+**Since Milestone 10 Part 2 the stream is shared.** It is now `GET /notifications/stream`, and the route below, `/rfp/notifications/stream`, serves the same handler. It also carries the operational inactivity alerts ([inactivity-alerts.md](../operations/inactivity-alerts.md)). The RFP announcements moved from their own `rfp_ticket_notifications` table into the general `live_notifications` outbox, so one cursor resumes every kind of event, and the settings were renamed from `RFP_STREAM_*` to `LIVE_STREAM_*`. An old `rfp_ticket_notifications` table is left unused and not dropped; a tab holding an old cursor gets `rfp_stream_resync`. Nothing in the RFP behaviour below changed.
+
 Sources:
 - the ticket and checklist: `lead-instr.png`, `stages-todo.png`;
 - the briefing, for the names: the root `agentic-workflow-context.md` (§2.3 Ticket: `ticket_id`, `rfp_id`, `status`, `created_at`, `updated_at`; the first status is `analyzing`).
@@ -12,12 +14,12 @@ Sources:
 
 | Layer | Path | Role |
 |---|---|---|
-| Feed (outbox) | `data/pipelines/rfp_intake/models.py` (`RfpTicketNotification`), `store.py` | `create_ticket` writes the ticket and its `rfp_ticket_created` row in one transaction. Also holds the reads `notifications_after` and `latest_notification_seq`. |
-| Stream | `services/rfp/notifications.py` | The hub one API process shares, the replay, and the SSE frames. |
-| Route | `services/rfp/router.py` | `GET /rfp/notifications/stream`. The upload's first background task is `notifications.wake`. |
-| Transport (browser) | `uis/backoffice/lib/rfp-stream.ts` | `fetch` + `ReadableStream`, the SSE parser, backoff, the watchdog, `Last-Event-ID`. |
+| Feed (outbox) | `data/notifications/` (`LiveNotification`, `outbox.py`); `data/pipelines/rfp_intake/store.py` | The shared `live_notifications` outbox. `create_ticket` appends its `rfp_ticket_created` in the ticket's transaction. Reads: `outbox.notifications_after`, `outbox.latest_seq`. |
+| Stream | `services/notifications/stream.py` | The hub one API process shares, the replay, the SSE frames, and the event registry (`EVENT_MODELS`). |
+| Route | `services/notifications/router.py`; `services/rfp/router.py` | `GET /notifications/stream`, also served as `/rfp/notifications/stream`. The upload's first background task is `notifications.wake`. |
+| Transport (browser) | `uis/backoffice/lib/live-stream.ts` | `fetch` + `ReadableStream`, the SSE parser, backoff, the watchdog, `Last-Event-ID`. |
 | Screen state | `uis/backoffice/lib/rfp-live.ts` | Dedupe by `ticket_id`, unseen tickets, own uploads, the notification's text, the tab title. |
-| UI | `components/rfp/RfpLiveProvider.tsx`, `RfpLiveContext.ts`, `NewRfpToast.tsx`, `RfpLiveIndicator.tsx`; `RfpIntakePage.tsx`; the nav | One stream per staff tab, opened in the protected layout. |
+| UI | `components/live/LiveProvider.tsx`; `components/rfp/RfpLiveContext.ts`, `NewRfpToast.tsx`, `RfpLiveIndicator.tsx`; `RfpIntakePage.tsx`; the nav | One stream per staff tab, opened in the protected layout. |
 
 ## Flow
 
@@ -29,17 +31,17 @@ CLI (npm run rfp -- run) ───┼─> store.create_ticket ─┤            
                             └─ notifications.wake ──────> (read the feed now)  └─> tab N
 ```
 
-1. **Registration.** `store.create_ticket` inserts the ticket (`analyzing`) and an `rfp_ticket_notifications` row (`seq`, `rfp_ticket_created`, the ticket as the list shows it) in one transaction.
-   - On PostgreSQL it first takes `pg_advisory_xact_lock(hashtext('rfp_ticket_notifications'))`. Registrations are serialized until their commit, so **seq order is commit order**: a reader that has seen seq N has seen everything below it.
+1. **Registration.** `store.create_ticket` inserts the ticket (`analyzing`) and a `live_notifications` row (`seq`, `rfp_ticket_created`, the ticket as the list shows it) in one transaction.
+   - On PostgreSQL it first takes `pg_advisory_xact_lock(hashtext('live_notifications'))`. Registrations are serialized until their commit, so **seq order is commit order**: a reader that has seen seq N has seen everything below it.
    - The lock is transaction-scoped, so it works behind Supabase's transaction pooler.
 2. **Wake-up.** After the 202, the upload's first background task is `notifications.wake()`. The hub's watcher reads the feed at once (in tests, under 100 ms to every open tab).
-   - A ticket registered by another process (the CLI, another worker) is picked up by the watcher's poll, every `RFP_STREAM_POLL_SECONDS` while anyone is connected.
+   - A ticket registered by another process (the CLI, another worker) is picked up by the watcher's poll, every `LIVE_STREAM_POLL_SECONDS` while anyone is connected.
 3. **Fan-out.** The watcher validates each row with `RfpTicketSummary`, encodes the SSE frame **once**, keeps it in a ring of 256, and puts it on every connection's queue.
 4. **Browser.** The backoffice inserts the ticket from the event's own data: no reload, no list re-read.
 
 ## Event contract
 
-`GET /rfp/notifications/stream` is **staff only**, with the same JWT as every other backoffice call (`Authorization: Bearer`, `StaffUser`).
+`GET /notifications/stream` (alias `/rfp/notifications/stream`) is **staff only**, with the same JWT as every other backoffice call (`Authorization: Bearer`, `StaffUser`).
 - A missing, invalid or expired token, or a password-reset token, gets **401**. A customer (`user`) account gets **403**. Both answers come before any event byte.
 - An optional `Last-Event-ID` header resumes after a drop.
 - Response headers: `Content-Type: text/event-stream; charset=utf-8`, `Cache-Control: no-store`, `Connection: keep-alive`, `X-Accel-Buffering: no` (so a proxy does not buffer it).
@@ -65,11 +67,11 @@ data: {"reason":"cursor_expired","cursor":57}
 | `rfp_ticket_created` | A new RFP ticket was registered. **Which one:** `ticket_id`, `rfp_id`, `original_filename`. **That it needs processing:** `status: analyzing`, the briefing's first status. | Exactly one row of `GET /rfp/tickets` (`RfpTicketSummary`), with the briefing's field names. Server paths, the uploader and the PDF hash are never sent. |
 | `rfp_stream_ready` | Caught up. The replay (if any) is done, and live events follow. | `cursor` (resume from it), `replayed`, `heartbeat_seconds`. |
 | `rfp_stream_resync` | The missed events cannot be replayed. Refetch the list once. | `reason`: `cursor_unknown`, `cursor_invalid`, `cursor_expired` or `replay_limit`; and `cursor`. |
-| `: keep-alive` | A comment frame every `RFP_STREAM_HEARTBEAT_SECONDS` while idle. It is not an event. | none |
+| `: keep-alive` | A comment frame every `LIVE_STREAM_HEARTBEAT_SECONDS` while idle. It is not an event. | none |
 
 Every dispatched event is named; there is never a generic `message`.
 
-A stream also ends normally: at its token's `exp`, or after `RFP_STREAM_MAX_SECONDS`, whichever comes first. The client then resumes at once with `Last-Event-ID`. That way an expired session stops receiving, and every connection is re-authenticated regularly.
+A stream also ends normally: at its token's `exp`, or after `LIVE_STREAM_MAX_SECONDS`, whichever comes first. The client then resumes at once with `Last-Event-ID`. That way an expired session stops receiving, and every connection is re-authenticated regularly.
 
 ## Design decisions
 
@@ -95,7 +97,7 @@ The designs this avoids, and where they break:
 | Each stream polling the database | 50 queries a second | Load grows with every viewer. |
 
 Safety measures:
-- **Slow client:** after `RFP_STREAM_QUEUE_SIZE` queued events it is disconnected once its backlog is sent, and it resumes by replay. sse-starlette's send timeout (30 s) cuts a client that stops reading. Nobody else waits on it.
+- **Slow client:** after `LIVE_STREAM_QUEUE_SIZE` queued events it is disconnected once its backlog is sent, and it resumes by replay. sse-starlette's send timeout (30 s) cuts a client that stops reading. Nobody else waits on it.
 - **Reconnect bursts:** jittered exponential backoff keeps an API restart from bringing every tab back in the same instant.
 
 Why an outbox table and not an in-memory queue: tickets are also registered by `npm run rfp -- run`, a separate process. And the Supabase transaction pooler (port 6543) does not support `LISTEN`. The table also makes replay survive an API restart.
@@ -149,9 +151,9 @@ After a connection **failed** (not after the server's routine end of a stream), 
 
 The live stream is opened for staff sessions only. Customer accounts never connect.
 
-**The provider.** `RfpLiveProvider`, in `app/(protected)/layout.tsx`, opens one stream per tab for the whole backoffice, so a new RFP is noticed on any page.
+**The provider.** `LiveProvider`, in `app/(protected)/layout.tsx`, opens one stream per tab for the whole backoffice, so a new RFP is noticed on any page.
 
-**The transport** (`lib/rfp-stream.ts`):
+**The transport** (`lib/live-stream.ts`):
 - `fetch` + `ReadableStream` through `requestAuthenticatedApi`, not `EventSource`, which cannot send the bearer header. A 401 therefore signs the user out like any other call, and a 403 stops the stream for good.
 - An incremental SSE parser that handles chunks split anywhere, CRLF included.
 - **Backoff:** "equal jitter": 0.5-1 s, 1-2 s, 2-4 s … capped at 30 s. A stream that stayed up 10 s resets it. A server's routine end of a stream reconnects at once.
@@ -173,20 +175,20 @@ The live stream is opened for staff sessions only. Customer accounts never conne
 
 ## Configuration
 
-All are optional. Defaults are in `data/pipelines/rfp_intake/config.py`, documented in `.env.example`.
+All are optional. Defaults are in `services/notifications/config.py`, documented in `.env.example`.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RFP_STREAM_HEARTBEAT_SECONDS` | 15 | Keep-alive comment interval. The browser's watchdog allows three. |
-| `RFP_STREAM_POLL_SECONDS` | 2 | The watcher's poll, for tickets registered by another process, only while someone is connected. |
-| `RFP_STREAM_REPLAY_HOURS` | 24 | Replay window for `Last-Event-ID`. |
-| `RFP_STREAM_REPLAY_LIMIT` | 200 | Most events replayed. Beyond, `rfp_stream_resync`. |
-| `RFP_STREAM_QUEUE_SIZE` | 100 | Events queued for one slow client before it is disconnected. |
-| `RFP_STREAM_MAX_SECONDS` | 900 | A stream's lifetime (or its token's expiry, if sooner). |
+| `LIVE_STREAM_HEARTBEAT_SECONDS` | 15 | Keep-alive comment interval. The browser's watchdog allows three. |
+| `LIVE_STREAM_POLL_SECONDS` | 2 | The watcher's poll, for tickets registered by another process, only while someone is connected. |
+| `LIVE_STREAM_REPLAY_HOURS` | 24 | Replay window for `Last-Event-ID`. |
+| `LIVE_STREAM_REPLAY_LIMIT` | 200 | Most events replayed. Beyond, `rfp_stream_resync`. |
+| `LIVE_STREAM_QUEUE_SIZE` | 100 | Events queued for one slow client before it is disconnected. |
+| `LIVE_STREAM_MAX_SECONDS` | 900 | A stream's lifetime (or its token's expiry, if sooner). |
 
 **Dependency:** `sse-starlette` 3.7.0 was already installed through `mcp`. It was declared with `uv add`, which changed no version. It also ends open streams when uvicorn shuts down or `--reload` restarts. Without that, an open backoffice tab would hang every reload.
 
-**Database:** the new table `rfp_ticket_notifications` (RLS on, no policies) is created by `store.initialize_schema` at API start-up. Inspect the live Supabase schema before the first start against it.
+**Database:** the shared outbox `live_notifications` (RLS on, no policies) is created by `store.initialize_schema` and by the operations start-up. Inspect the live Supabase schema before the first start against it.
 
 ## Tests
 
@@ -194,13 +196,13 @@ All are optional. Defaults are in `data/pipelines/rfp_intake/config.py`, documen
 |---|---|
 | `tests/test_rfp_stream_api.py` (16) | **On the wire**, through the real response bytes:<br>• `text/event-stream`, `Cache-Control`, `X-Accel-Buffering`;<br>• the named `event:`, the `id:`, and `data:` JSON validated by `RfpTicketSummary` with the briefing's fields;<br>• the `: keep-alive` comment frames;<br>• 401 (none, invalid, expired, reset token) and 403 before any event;<br>• replay after `Last-Event-ID`, in order;<br>• resync for unknown, malformed, too-old and too-many;<br>• reprocessing is not re-announced;<br>• an expired token ends the stream;<br>• the upload wakes the stream first;<br>• a 503 when the feed cannot be read. |
 | `tests/test_rfp_stream_live.py` (4) | **On a real socket** (uvicorn in a thread):<br>• an upload reaches two open dashboards in under 1.5 s with the poll at 30 s;<br>• a CLI-registered ticket arrives through the poll;<br>• **drop and recovery:** the tickets registered while disconnected are replayed once, then live delivery continues, and no `ticket_id` arrives twice;<br>• after an API restart, the replay comes from the database;<br>• a closed tab is noticed. |
-| `tests/test_rfp_notifications_hub.py` (8) | One frame object per event for every connection; no reads while nobody is connected; slow-client eviction; a wake-up from a worker thread; ring versus database; bad rows skipped; shutdown. |
+| `tests/test_live_notifications_hub.py` (8) | One frame object per event for every connection; no reads while nobody is connected; slow-client eviction; a wake-up from a worker thread; ring versus database; bad rows skipped; shutdown. |
 | `tests/pipelines/rfp_intake/test_notifications_store.py` (4) | The ticket and its announcement commit together or not at all; the payload equals the list row; seq order; reprocessing. |
 | `tests/test_rfp_postgres.py` (opt-in, +1) | On a real PostgreSQL: a registration waits behind another's open notification transaction, so seq order is commit order; RLS and JSONB on the new table. |
-| `tests/frontend/backoffice/rfp-stream.test.ts` (23) | The parser with arbitrary chunking; event validation; the bearer and `Last-Event-ID` headers; progressive backoff and its bounds; resuming from the last seq after a drop without repeating a ticket; immediate resume after a healthy end; the watchdog; 503 retried versus 401/403 stopping; the screen's dedupe (own upload, replay, snapshot overlap); the notification's text; the title. |
+| `tests/frontend/backoffice/live-stream.test.ts` (27) | The parser with arbitrary chunking; event validation; the bearer and `Last-Event-ID` headers; progressive backoff and its bounds; resuming from the last seq after a drop without repeating a ticket; immediate resume after a healthy end; the watchdog; 503 retried versus 401/403 stopping; the screen's dedupe (own upload, replay, snapshot overlap); the notification's text; the title. |
 
 Run them with:
-- `uv run pytest tests/test_rfp_stream_api.py tests/test_rfp_stream_live.py tests/test_rfp_notifications_hub.py tests/pipelines/rfp_intake/test_notifications_store.py`
+- `uv run pytest tests/test_rfp_stream_api.py tests/test_rfp_stream_live.py tests/test_live_notifications_hub.py tests/pipelines/rfp_intake/test_notifications_store.py`
 - `INVENTORY_TEST_DATABASE_URL=… uv run pytest tests/test_rfp_postgres.py`
 - `cd uis/backoffice && npm test`
 

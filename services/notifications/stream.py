@@ -1,18 +1,25 @@
-"""The live RFP notification stream: one hub per API process, one SSE response per tab.
+"""The backoffice's live notification stream: one hub per API process, one SSE response per tab.
 
-`GET /rfp/notifications/stream` pushes a named `rfp_ticket_created` event the
-moment an RFP ticket is registered, so nobody has to reload the dashboard. It is
-a communication layer only: nothing here calls a model or an agent.
+`GET /notifications/stream` (and its alias `/rfp/notifications/stream`) pushes
+named events the moment they happen, so nobody has to reload a page:
+- `rfp_ticket_created`: a new RFP ticket was registered;
+- `operational_inactivity_detected` / `operational_activity_resumed` /
+  `operational_alert_acknowledged`: an operational inactivity alert opened,
+  resolved, or was taken in charge.
+It is a communication layer only: nothing here calls a model or an agent.
 
-The feed is the `rfp_ticket_notifications` outbox (`store.create_ticket` writes
-one row in the same transaction as the ticket, under an advisory lock on
-PostgreSQL, so `seq` order is commit order). `seq` is the SSE `id:`.
+The feed is the `live_notifications` outbox (`data/notifications/`): every
+writer appends in the same transaction as its change, under an advisory lock on
+PostgreSQL, so `seq` order is commit order across every event type. `seq` is
+the SSE `id:`, so one cursor resumes everything. Each event's `data` is
+validated against its model in `EVENT_MODELS`; an event with no model is
+skipped (logged), never sent unvalidated.
 
 Every connection is independent at the edge (its own response, JWT check,
 cursor and bounded queue), and they all share one `NotificationHub` behind it:
 - **one watcher task** reads the feed while at least one tab is connected: at
-  once when an upload through this API wakes it (`wake`), otherwise every
-  `RFP_STREAM_POLL_SECONDS`, which catches tickets registered by another process
+  once when a write through this API wakes it (`wake`), otherwise every
+  `LIVE_STREAM_POLL_SECONDS`, which catches events written by another process
   (the CLI, another worker). Nobody connected: no query at all;
 - each event is validated and encoded **once**, then put on every queue;
 - a connection never queries the database by itself while live, never holds a
@@ -24,13 +31,16 @@ Recovery (`Last-Event-ID`): the stream subscribes first, then replays what the
 client missed (ring, else database), then sends `rfp_stream_ready` with the new
 cursor and goes live, skipping anything at or below that cursor: no gap, no
 double send. A cursor the replay cannot honour (unknown, older than
-`RFP_STREAM_REPLAY_HOURS`, more than `RFP_STREAM_REPLAY_LIMIT` events behind, or
-malformed) gets `rfp_stream_resync`: the client refetches the list once.
+`LIVE_STREAM_REPLAY_HOURS`, more than `LIVE_STREAM_REPLAY_LIMIT` events behind,
+or malformed) gets `rfp_stream_resync`: the client reloads its snapshots once.
+(The two control events kept their first names, so clients built for the RFP
+stream keep working.)
 
-A stream ends normally at its token's expiry or after `RFP_STREAM_MAX_SECONDS`;
+A stream ends normally at its token's expiry or after `LIVE_STREAM_MAX_SECONDS`;
 the client resumes it at once with `Last-Event-ID`. A client that falls more than
-`RFP_STREAM_QUEUE_SIZE` events behind is disconnected after its backlog, and
-resumes the same way. See `docs/rfp/live-notifications.md`.
+`LIVE_STREAM_QUEUE_SIZE` events behind is disconnected after its backlog, and
+resumes the same way. See `docs/rfp/live-notifications.md` and
+`docs/operations/inactivity-alerts.md`.
 """
 
 import asyncio
@@ -45,18 +55,27 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Final
 
 import anyio
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sse_starlette import ServerSentEvent
 
-from data.pipelines.rfp_intake import store
-from data.pipelines.rfp_intake.config import RfpIntakeSettings, get_rfp_settings
+from data.notifications import outbox
+from data.pipelines.rfp_intake.store import TICKET_CREATED_EVENT
+from services.notifications.config import LiveStreamSettings, get_live_stream_settings
+from services.operations import schemas as operations
 from services.rfp.models import RfpTicketSummary
 
-logger = logging.getLogger("api.rfp.stream")
+logger = logging.getLogger("api.notifications.stream")
 
-TICKET_CREATED: Final = store.TICKET_CREATED_EVENT
+TICKET_CREATED: Final = TICKET_CREATED_EVENT
+# Every event the stream sends, and the model its `data` must satisfy.
+EVENT_MODELS: Final[dict[str, type[BaseModel]]] = {
+    TICKET_CREATED: RfpTicketSummary,
+    operations.INACTIVITY_DETECTED: operations.OperationalAlert,
+    operations.ACTIVITY_RESUMED: operations.OperationalAlert,
+    operations.ALERT_ACKNOWLEDGED: operations.OperationalAlert,
+}
 STREAM_READY: Final = "rfp_stream_ready"
 STREAM_RESYNC: Final = "rfp_stream_resync"
 KEEP_ALIVE: Final = "keep-alive"
@@ -80,7 +99,9 @@ class Notification:
     """One feed row, validated and encoded once for every connection."""
 
     seq: int
-    ticket_id: str
+    event: str
+    # What the event is about: a ticket id, an alert id (the outbox's `subject`).
+    subject: str
     created_at: datetime
     frame: bytes
 
@@ -101,26 +122,33 @@ def keep_alive() -> ServerSentEvent:
 def to_notification(row: dict[str, Any]) -> Notification | None:
     """A feed row as a ready-to-send frame; None (logged) for a row the contract refuses.
 
-    The payload is validated by the list's own `RfpTicketSummary`, so the event
-    carries exactly what `GET /rfp/tickets` would show for that ticket.
+    The payload is validated by its event's model (`EVENT_MODELS`): a new ticket
+    by the list's own `RfpTicketSummary`, so the event carries exactly what
+    `GET /rfp/tickets` would show; an alert by `OperationalAlert`, the shape
+    `GET /operations/alerts` returns.
     """
     seq = int(row["seq"])
-    if row["event"] != TICKET_CREATED:
-        logger.warning("rfp stream: skipped seq %d, unknown event %r", seq, row["event"])
+    event = str(row["event"])
+    model = EVENT_MODELS.get(event)
+    if model is None:
+        logger.warning("live stream: skipped seq %d, unknown event %r", seq, event)
         return None
     try:
-        summary = RfpTicketSummary.model_validate(row["payload"])
+        payload = model.model_validate(row["payload"])
     except ValidationError as error:
         logger.error(
-            "rfp stream: skipped seq %d, payload refused (%d errors)", seq, error.error_count()
+            "live stream: skipped seq %d (%s), payload refused (%d errors)",
+            seq,
+            event,
+            error.error_count(),
         )
         return None
-    created_at = row["created_at"] or summary.created_at
     return Notification(
         seq=seq,
-        ticket_id=str(summary.ticket_id),
-        created_at=created_at,
-        frame=_frame(TICKET_CREATED, seq, summary.model_dump_json()),
+        event=event,
+        subject=str(row["subject"]),
+        created_at=row["created_at"],
+        frame=_frame(event, seq, payload.model_dump_json()),
     )
 
 
@@ -203,7 +231,7 @@ class NotificationHub:
         if not self.watching:
             self._engine = engine
             self._ready = asyncio.Event()
-            self._watcher = asyncio.create_task(self._watch(engine), name="rfp-stream-watcher")
+            self._watcher = asyncio.create_task(self._watch(engine), name="live-stream-watcher")
         try:
             with anyio.fail_after(READY_TIMEOUT_SECONDS):
                 await self._ready.wait()
@@ -270,15 +298,13 @@ class NotificationHub:
                 full_batch = False
                 try:
                     if not self._ready.is_set():
-                        latest = await anyio.to_thread.run_sync(
-                            store.latest_notification_seq, engine
-                        )
+                        latest = await anyio.to_thread.run_sync(outbox.latest_seq, engine)
                         self._cursor = self._floor = latest
                         self._ring.clear()
                         self._ready.set()
                     else:
                         rows = await anyio.to_thread.run_sync(
-                            lambda: store.notifications_after(
+                            lambda: outbox.notifications_after(
                                 engine, self._cursor, limit=WATCH_BATCH
                             )
                         )
@@ -289,7 +315,7 @@ class NotificationHub:
                     failures += 1
                     if failures == 1 or failures % 30 == 0:
                         logger.error(
-                            "rfp stream feed read failed (%d in a row): %s",
+                            "live stream feed read failed (%d in a row): %s",
                             failures,
                             type(error).__name__,
                         )
@@ -319,18 +345,16 @@ class NotificationHub:
 _hub: NotificationHub | None = None
 
 
-def get_hub(settings: RfpIntakeSettings | None = None) -> NotificationHub:
+def get_hub(settings: LiveStreamSettings | None = None) -> NotificationHub:
     global _hub
     if _hub is None:
-        settings = settings or get_rfp_settings()
-        _hub = NotificationHub(
-            poll_seconds=settings.stream_poll_seconds, queue_size=settings.stream_queue_size
-        )
+        settings = settings or get_live_stream_settings()
+        _hub = NotificationHub(poll_seconds=settings.poll_seconds, queue_size=settings.queue_size)
     return _hub
 
 
 def wake() -> None:
-    """Called right after an upload's 202 (its first background task): push the ticket now."""
+    """Read the outbox now: something was just committed (an upload's 202, an alert change)."""
     if _hub is not None:
         _hub.wake()
 
@@ -421,7 +445,7 @@ class Stream:
         finally:
             self.close()
             logger.info(
-                "rfp stream closed: %s (cursor %d, %d still connected)",
+                "live stream closed: %s (cursor %d, %d still connected)",
                 reason,
                 self.cursor,
                 self.hub.subscriber_count,
@@ -433,7 +457,7 @@ async def open_stream(
     *,
     last_event_id: str | None,
     token_expires_at: float,
-    settings: RfpIntakeSettings,
+    settings: LiveStreamSettings,
     hub: NotificationHub | None = None,
 ) -> Stream:
     """Subscribe, work out what the client missed, and return the stream to send.
@@ -449,7 +473,7 @@ async def open_stream(
         )
     except SQLAlchemyError as error:
         hub.unsubscribe(subscription)
-        logger.error("rfp stream replay failed: %s", type(error).__name__)
+        logger.error("live stream replay failed: %s", type(error).__name__)
         raise StreamUnavailable("the notification feed could not be read") from None
     except BaseException:
         hub.unsubscribe(subscription)
@@ -462,15 +486,15 @@ async def open_stream(
                 {
                     "cursor": cursor,
                     "replayed": replayed,
-                    "heartbeat_seconds": settings.stream_heartbeat_seconds,
+                    "heartbeat_seconds": settings.heartbeat_seconds,
                 }
             ),
         )
     )
     loop = asyncio.get_running_loop()
-    lifetime = min(settings.stream_max_seconds, max(0.0, token_expires_at - time.time()))
+    lifetime = min(settings.max_seconds, max(0.0, token_expires_at - time.time()))
     logger.info(
-        "rfp stream opened (cursor %d, replayed %d, %d connected)",
+        "live stream opened (cursor %d, replayed %d, %d connected)",
         cursor,
         replayed,
         hub.subscriber_count,
@@ -490,13 +514,14 @@ async def _catch_up(
     engine: Engine,
     subscription: Subscription,
     last_event_id: str | None,
-    settings: RfpIntakeSettings,
+    settings: LiveStreamSettings,
 ) -> tuple[list[bytes], int, int]:
-    """(frames to send first, the cursor after them, how many tickets were replayed)."""
+    """(frames to send first, the cursor after them, how many events were replayed)."""
     after = _parse_cursor(last_event_id)
     if after is None:
-        # A first connection: from now on. The client takes its list snapshot
-        # after `rfp_stream_ready`, so nothing falls between the two.
+        # A first connection: from now on. The client takes its snapshots (the
+        # ticket list, the open alerts) after `rfp_stream_ready`, so nothing
+        # falls between the two.
         return [], hub.cursor, 0
     if isinstance(after, str):
         return [_resync("cursor_invalid", hub.cursor)], hub.cursor, 0
@@ -504,23 +529,23 @@ async def _catch_up(
     missed = hub.replay_from_ring(after)
     if missed is None:
         rows = await anyio.to_thread.run_sync(
-            lambda: store.notifications_after(engine, after, limit=settings.stream_replay_limit + 1)
+            lambda: outbox.notifications_after(engine, after, limit=settings.replay_limit + 1)
         )
         if not rows and after > hub.cursor:
-            latest = await anyio.to_thread.run_sync(store.latest_notification_seq, engine)
+            latest = await anyio.to_thread.run_sync(outbox.latest_seq, engine)
             if after > latest:
                 # A cursor from the future: the database was reset, or another one.
                 return [_resync("cursor_unknown", hub.cursor)], hub.cursor, 0
-        if len(rows) > settings.stream_replay_limit:
+        if len(rows) > settings.replay_limit:
             return [_resync("replay_limit", hub.cursor)], hub.cursor, 0
         missed = [n for n in map(to_notification, rows) if n is not None]
         last_seq = int(rows[-1]["seq"]) if rows else after
     else:
-        if len(missed) > settings.stream_replay_limit:
+        if len(missed) > settings.replay_limit:
             return [_resync("replay_limit", hub.cursor)], hub.cursor, 0
         last_seq = missed[-1].seq if missed else after
 
-    oldest_allowed = datetime.now(timezone.utc) - timedelta(hours=settings.stream_replay_hours)
+    oldest_allowed = datetime.now(timezone.utc) - timedelta(hours=settings.replay_hours)
     if missed and missed[0].created_at < oldest_allowed:
         return [_resync("cursor_expired", hub.cursor)], hub.cursor, 0
     return [notification.frame for notification in missed], max(after, last_seq), len(missed)

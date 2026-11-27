@@ -2,6 +2,70 @@
 
 Last updated: 2026-11-26
 
+## Update 2026-11-26 (later) - Operational inactivity alerts on the live stream (Milestone 10 Part 2)
+
+Goals accomplished.
+- **Brief (the developer, in chat):** with the same technical bar as the RFP notifications (a named event, a structured payload, the same reconnection), alert when a process or a location fails to register expected activity within a defined period. Branch `feature/sse-notifications`. Design: `docs/operations/inactivity-alerts.md`.
+- **Decided with the developer:**
+  - four rule families: warehouse orders (location), scheduled jobs (process), RFP approvals past SLA (the "vacancy" case) and incidents left untouched (one alert per branch);
+  - the rules in a versioned JSON file;
+  - auto-resolve plus a REST acknowledgement, broadcast to every tab;
+  - one shared stream and outbox.
+- **Generalized the stream** (no behaviour change for RFPs):
+  - the outbox `data/notifications/` (`live_notifications`, a single seq);
+  - `services/notifications/` (hub, registry `EVENT_MODELS`, `GET /notifications/stream`; `/rfp/notifications/stream` is an alias);
+  - `LIVE_STREAM_*` replaces `RFP_STREAM_*`;
+  - `lib/live-stream.ts` and `components/live/LiveProvider.tsx`;
+  - **fixed:** the browser now advances its cursor past events it cannot use.
+- **The monitor** (`services/operations/`):
+  - rules validated at start-up;
+  - working-hours clock per timezone;
+  - read-only sources;
+  - a pure plan;
+  - `evaluate` under an advisory lock, with a partial unique index (one open alert per subject);
+  - the alert row and its live event in one transaction;
+  - an asyncio task in the lifespan (60 s);
+  - REST snapshot and acknowledgement;
+  - CLI `npm run ops`.
+- **Backoffice:**
+  - a persistent alert banner under the header (warning/critical marks, distinct from the RFP card), with a ticking "for …", the expected period and the evidence, plus Acknowledge / "Acknowledged by", and short "resumed" lines;
+  - the "Alerts" nav count;
+  - the `/operations` page (open + 7-day history).
+
+Verification.
+- **Backend:** full suite **2408 passed, 66 skipped, 0 failed** (without the stale `test_agent_evals.py`); `tests/operations` 39 passed after the final fixes. Opt-in PostgreSQL **15/15** (3 new + 12 RFP through the shared outbox).
+- **Backoffice:** Jest **359**; `tsc` and ESLint clean.
+- **Static checks:** ruff clean on every changed Python file; mypy (`--check-untyped-defs`) clean on the new code. The two older RFP test files keep their pre-existing findings, outside our hunks.
+- **Browser:** alerts **22/22**; the RFP verification re-run on the refactored stream **34/34**.
+  - live alert on two tabs 4 ms apart, without a re-read;
+  - acknowledgement across tabs;
+  - resolution by a real order;
+  - recovery after a real cut, exactly once;
+  - RFPs alongside;
+  - customer excluded;
+  - dark mode, reduced motion and 390 px.
+- **Real data** (`npm run ops -- check --dry-run`):
+  - Supabase was unreachable (`OperationalError`), so the DB rules were skipped as designed;
+  - on the real TinyDB it would open 3 incident alerts (Central 17 SLA-critical, Central 12, Zaragoza warehouse 1).
+  - It surfaced two defects, fixed with tests: identical incident timestamps crashed the sort, and one source's non-database error aborted the whole round.
+- **Found and fixed during the work:**
+  - the resolution reasons were redefined (`slot_closed`, not "filled", for a withdrawn RFP section);
+  - old dates in the banner now show their year;
+  - the dry run now reports reachable sources when the database is down.
+
+Still missing / next goals.
+1. **Commit when asked** (AGENTS.md workflow). Include `data/notifications/`, `services/notifications/`, `services/operations/`, `config/`, `scripts/operations_monitor.py`, `tests/operations/`, the moved tests, `docs/operations/`, `package.json` and `.env.example`.
+2. **Supabase:** it was unreachable on 2026-11-26, which is likely why the nightly export has failed since 11-13. Once it is back:
+   - inspect the schema (new `live_notifications` and `operational_alerts`; the old `rfp_ticket_notifications` is unused);
+   - run `npm run ops -- check --dry-run`, which should report `nightly-export` overdue.
+3. **Optional:**
+   - email escalation for critical alerts (Resend), stopped by an acknowledgement;
+   - public holidays in operating hours;
+   - thresholds calibrated on 4 weeks of real order volume;
+   - status-change events for RFP tickets on the same stream.
+4. **Pre-existing, unrelated:** `/incidents` overflows at 390 px (its table's `min-w-[56rem]`).
+5. **Still open from earlier:** Part 3's Supabase checks and `RFP_APPROVERS`; re-recording the agent evals; Auth0 and the MCP Playground.
+
 ## Update 2026-11-26 - Live RFP notifications over SSE (Milestone 10 Part 1)
 
 Goals accomplished.

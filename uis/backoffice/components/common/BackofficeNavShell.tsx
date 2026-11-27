@@ -13,6 +13,8 @@ const NAV_LINKS = [
   { href: "/knowledge", label: "Knowledge assistant" },
   // Sales uploads client RFPs and reads what each department needs (Milestone 9).
   { href: "/rfp", label: "RFP intake" },
+  // Operational inactivity alerts: expected activity that did not happen (Milestone 10).
+  { href: "/operations", label: "Alerts" },
   { href: "/incidents", label: "Incidents" },
   // Its own entry rather than a button buried in the list: the people the
   // incident manager is for are reporting from a warehouse terminal, and the
@@ -56,7 +58,8 @@ type BackofficeNavShellProps = {
   actions?: ReactNode;
   /**
    * A count shown on a link, keyed by its href: new RFP tickets nobody has looked at yet on
-   * "RFP intake" (Milestone 10). Zero or absent shows nothing.
+   * "RFP intake", open alerts nobody has taken in charge on "Alerts" (Milestone 10). Zero or
+   * absent shows nothing.
    */
   counts?: Partial<Record<string, number>>;
 };

@@ -1,14 +1,14 @@
 import {
   BACKOFF_MAX_MS,
-  RfpStreamConnection,
+  LiveStreamConnection,
   StreamProtocolError,
   backoffDelay,
   createSseParser,
   openRfpStream,
-  toRfpStreamEvent,
+  toLiveEvent,
   type ConnectionState,
-  type RfpStreamEvent,
-} from "@/lib/rfp-stream";
+  type LiveEvent,
+} from "@/lib/live-stream";
 import {
   EMPTY_LIVE_STATE,
   markAllSeen,
@@ -84,8 +84,8 @@ function sseResponse(stream: ReadableStream<Uint8Array>): Response {
 const flush = () => jest.advanceTimersByTimeAsync(0);
 
 type Harness = {
-  connection: RfpStreamConnection;
-  events: RfpStreamEvent[];
+  connection: LiveStreamConnection;
+  events: LiveEvent[];
   states: ConnectionState[];
   opens: Array<string | null>;
 };
@@ -95,10 +95,10 @@ function connect(
   streams: Array<ReturnType<typeof serverStream> | Error>,
   options: { random?: () => number } = {},
 ): Harness {
-  const events: RfpStreamEvent[] = [];
+  const events: LiveEvent[] = [];
   const states: ConnectionState[] = [];
   const opens: Array<string | null> = [];
-  const connection = new RfpStreamConnection({
+  const connection = new LiveStreamConnection({
     open: async (lastEventId) => {
       opens.push(lastEventId);
       const next = streams.shift();
@@ -114,7 +114,7 @@ function connect(
   return { connection, events, states, opens };
 }
 
-const ticketSeqs = (events: RfpStreamEvent[]) =>
+const ticketSeqs = (events: LiveEvent[]) =>
   events.flatMap((event) => (event.type === "ticket_created" ? [event.seq] : []));
 
 // --- The SSE wire format ---------------------------------------------------------------
@@ -147,17 +147,17 @@ describe("createSseParser", () => {
   });
 });
 
-describe("toRfpStreamEvent", () => {
+describe("toLiveEvent", () => {
   it("types the three named events and validates their data", () => {
-    expect(toRfpStreamEvent({ event: "rfp_ticket_created", id: "4", data: JSON.stringify(summary(4)) })).toEqual({
+    expect(toLiveEvent({ event: "rfp_ticket_created", id: "4", data: JSON.stringify(summary(4)) })).toEqual({
       type: "ticket_created",
       seq: 4,
       ticket: summary(4),
     });
     expect(
-      toRfpStreamEvent({ event: "rfp_stream_ready", id: "4", data: '{"cursor":4,"replayed":2,"heartbeat_seconds":15}' }, true),
+      toLiveEvent({ event: "rfp_stream_ready", id: "4", data: '{"cursor":4,"replayed":2,"heartbeat_seconds":15}' }, true),
     ).toEqual({ type: "ready", seq: 4, cursor: 4, replayed: 2, heartbeatSeconds: 15, fresh: true });
-    expect(toRfpStreamEvent({ event: "rfp_stream_resync", id: "9", data: '{"reason":"replay_limit","cursor":9}' })).toEqual({
+    expect(toLiveEvent({ event: "rfp_stream_resync", id: "9", data: '{"reason":"replay_limit","cursor":9}' })).toEqual({
       type: "resync",
       seq: 9,
       cursor: 9,
@@ -173,7 +173,7 @@ describe("toRfpStreamEvent", () => {
       { event: "rfp_ticket_created", id: "abc", data: JSON.stringify(summary(4)) },
       { event: "rfp_stream_ready", id: "4", data: '{"cursor":4}' },
     ];
-    expect(bad.map((message) => toRfpStreamEvent(message))).toEqual([null, null, null, null, null]);
+    expect(bad.map((message) => toLiveEvent(message))).toEqual([null, null, null, null, null]);
   });
 });
 
@@ -187,7 +187,7 @@ describe("openRfpStream", () => {
     await openRfpStream("7", new AbortController().signal);
     await openRfpStream(null, new AbortController().signal);
 
-    expect(requests[0].url).toBe(`${API}/rfp/notifications/stream`);
+    expect(requests[0].url).toBe(`${API}/notifications/stream`);
     expect(requests[0].headers).toMatchObject({
       Authorization: "Bearer staff-session",
       Accept: "text/event-stream",
@@ -215,7 +215,7 @@ describe("backoffDelay", () => {
   });
 });
 
-describe("RfpStreamConnection", () => {
+describe("LiveStreamConnection", () => {
   beforeEach(() => jest.useFakeTimers({ now: new Date("2026-11-26T10:00:00Z") }));
 
   it("goes live, and passes each new ticket on once", async () => {
@@ -343,7 +343,7 @@ describe("RfpStreamConnection", () => {
     const server = serverStream();
     scriptFetch(jsonResponse(503, { detail: "RFP storage unavailable" }), sseResponse(server.stream));
     const states: ConnectionState[] = [];
-    const retrying = new RfpStreamConnection({ onEvent: () => undefined, onState: (s) => states.push(s), random: () => 0 });
+    const retrying = new LiveStreamConnection({ onEvent: () => undefined, onState: (s) => states.push(s), random: () => 0 });
     retrying.start();
     await flush();
     expect(states.at(-1)).toMatchObject({ kind: "reconnecting", reason: "http_503" });
@@ -358,7 +358,7 @@ describe("RfpStreamConnection", () => {
       storeToken("staff-session");
       const requests = scriptFetch(jsonResponse(status, { detail: "no" }));
       const seen: ConnectionState[] = [];
-      const connection = new RfpStreamConnection({ onEvent: () => undefined, onState: (s) => seen.push(s) });
+      const connection = new LiveStreamConnection({ onEvent: () => undefined, onState: (s) => seen.push(s) });
       connection.start();
       await flush();
       await jest.advanceTimersByTimeAsync(60_000);
@@ -449,5 +449,109 @@ describe("live state", () => {
     expect(titleWithCount("TrackFlow Backoffice", 2)).toBe("(2) TrackFlow Backoffice");
     expect(titleWithCount("(2) TrackFlow Backoffice", 3)).toBe("(3) TrackFlow Backoffice");
     expect(titleWithCount("(3) TrackFlow Backoffice", 0)).toBe("TrackFlow Backoffice");
+  });
+});
+
+// --- Operational alerts on the same stream -------------------------------------------------------
+
+function alertPayload(n: number, overrides: Record<string, unknown> = {}) {
+  return {
+    alert_id: `20000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+    rule_id: "zaragoza-outbound",
+    source: "warehouse_orders",
+    activity: "outbound_order_created",
+    subject: { warehouse: "Zaragoza", client_id: null },
+    label: "No outbound order registered at Zaragoza",
+    severity: "warning",
+    status: "open",
+    expected_within_minutes: 120,
+    waiting_since: "2026-11-30T08:00:00Z",
+    last_activity_at: "2026-11-30T08:00:00Z",
+    detected_at: "2026-11-30T10:01:00Z",
+    overdue_minutes: 1,
+    details: { orders_table: "outbound_orders" },
+    acknowledged_at: null,
+    acknowledged_by: null,
+    resolved_at: null,
+    resolved_reason: null,
+    ...overrides,
+  };
+}
+
+const alertFrame = (seq: number, event: string, alert: object) =>
+  `id: ${seq}\nevent: ${event}\ndata: ${JSON.stringify(alert)}\n\n`;
+
+describe("operational alerts on the shared stream", () => {
+  it("types the three alert events, each carrying the whole alert", () => {
+    for (const name of [
+      "operational_inactivity_detected",
+      "operational_activity_resumed",
+      "operational_alert_acknowledged",
+    ]) {
+      const event = toLiveEvent({ event: name, id: "7", data: JSON.stringify(alertPayload(1)) });
+      expect(event).toEqual({ type: "alert", event: name, seq: 7, alert: alertPayload(1) });
+    }
+  });
+
+  it("refuses an alert that breaks the contract", () => {
+    const bad = [
+      alertPayload(1, { source: "telemetry" }),
+      alertPayload(1, { severity: "urgent" }),
+      alertPayload(1, { subject: { warehouse: 3 } }),
+      alertPayload(1, { resolved_reason: "fixed" }),
+      { ...alertPayload(1), label: undefined },
+    ];
+    expect(
+      bad.map((alert) => toLiveEvent({ event: "operational_inactivity_detected", id: "7", data: JSON.stringify(alert) })),
+    ).toEqual([null, null, null, null, null]);
+  });
+
+  describe("with fake timers", () => {
+    beforeEach(() => jest.useFakeTimers({ now: new Date("2026-11-30T10:00:00Z") }));
+
+    it("moves past events it cannot use, so a reconnect never asks for them again", async () => {
+      const first = serverStream();
+      const { connection, events: received, opens } = connect([first, serverStream()]);
+      await flush();
+
+      first.send(
+        ready(1) +
+          alertFrame(2, "operational_inactivity_detected", alertPayload(1)) +
+          `id: 3\nevent: rfp_ticket_withdrawn\ndata: {"ticket_id":"x"}\n\n` + // newer than this code
+          alertFrame(4, "operational_inactivity_detected", alertPayload(2, { severity: "urgent" })), // refused
+      );
+      await flush();
+      expect(connection.lastEventId).toBe("4");
+      expect(received.filter((event) => event.type === "alert")).toHaveLength(1);
+
+      first.drop();
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(opens).toEqual([null, "4"]);
+      connection.stop();
+    });
+
+    it("tickets and alerts share one cursor, and a replay never passes one on twice", async () => {
+      const first = serverStream();
+      const second = serverStream();
+      const { connection, events: received, opens } = connect([first, second]);
+      await flush();
+      first.send(ready(10) + created(11) + alertFrame(12, "operational_inactivity_detected", alertPayload(1)));
+      await flush();
+      first.drop();
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(opens).toEqual([null, "12"]);
+
+      second.send(
+        alertFrame(12, "operational_inactivity_detected", alertPayload(1)) + // overlap: already processed
+          alertFrame(13, "operational_alert_acknowledged", alertPayload(1, { acknowledged_at: "2026-11-30T10:05:00Z", acknowledged_by: "ana@trackflow.com" })) +
+          alertFrame(14, "operational_activity_resumed", alertPayload(1, { status: "resolved", resolved_at: "2026-11-30T10:20:00Z", resolved_reason: "activity_resumed" })) +
+          ready(14, 2),
+      );
+      await flush();
+
+      const seqs = received.flatMap((event) => (event.type === "alert" || event.type === "ticket_created" ? [event.seq] : []));
+      expect(seqs).toEqual([11, 12, 13, 14]);
+      connection.stop();
+    });
   });
 });

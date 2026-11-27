@@ -1,10 +1,11 @@
-"""`GET /rfp/notifications/stream`: the live RFP notification stream, asserted on the wire.
+"""`GET /rfp/notifications/stream`: the RFP notifications on the wire, through the route they
+shipped with (now an alias of the shared `GET /notifications/stream`).
 
 Each test reads the real response bytes and parses the SSE framing (`event:`,
 `id:`, `data:`, comment frames), then checks `data` against the list's own
 contract (`RfpTicketSummary`) and the briefing's Ticket fields (§2.3). Starlette's
 TestClient returns a body only once the response ends, so these tests bound the
-stream with a short `RFP_STREAM_MAX_SECONDS` (a stream also ends at its token's
+stream with a short `LIVE_STREAM_MAX_SECONDS` (a stream also ends at its token's
 expiry). Live delivery, dropped connections and recovery over a real socket are
 in `test_rfp_stream_live.py`.
 """
@@ -18,12 +19,15 @@ from sqlalchemy import update
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session
 
+from data.notifications import outbox
+from data.notifications.models import LiveNotification
 from data.pipelines.rfp_intake import runner, store
 from data.pipelines.rfp_intake.briefing import TicketStatus
-from data.pipelines.rfp_intake.config import get_rfp_settings
-from data.pipelines.rfp_intake.models import RfpTicketNotification, utcnow
+from data.pipelines.rfp_intake.models import utcnow
 from services.core import security
-from services.rfp import notifications
+from services.notifications import router as notifications_router
+from services.notifications import stream as notifications
+from services.notifications.config import get_live_stream_settings
 from services.rfp import router as rfp_router
 from services.rfp.models import RfpTicketSummary
 from tests.pipelines.rfp_intake.support import PDF_DIR, SAMPLES, sqlite_engine
@@ -42,6 +46,7 @@ NEVER_SENT = {"raw_pdf_path", "uploaded_by", "pdf_sha256", "markdown"}
 def engine(tmp_path, monkeypatch):
     engine = sqlite_engine(tmp_path / "rfp-stream.sqlite")
     monkeypatch.setattr(rfp_router, "get_engine", lambda: engine)
+    monkeypatch.setattr(notifications_router, "get_engine", lambda: engine)
     yield engine
     engine.dispose()
 
@@ -49,11 +54,11 @@ def engine(tmp_path, monkeypatch):
 @pytest.fixture
 def bounded(monkeypatch):
     """Streams that end on their own: short lifetime, frequent heartbeats."""
-    monkeypatch.setenv("RFP_STREAM_MAX_SECONDS", "0.5")
-    monkeypatch.setenv("RFP_STREAM_HEARTBEAT_SECONDS", "0.2")
-    get_rfp_settings.cache_clear()
+    monkeypatch.setenv("LIVE_STREAM_MAX_SECONDS", "0.5")
+    monkeypatch.setenv("LIVE_STREAM_HEARTBEAT_SECONDS", "0.2")
+    get_live_stream_settings.cache_clear()
     yield
-    get_rfp_settings.cache_clear()
+    get_live_stream_settings.cache_clear()
 
 
 @pytest.fixture
@@ -182,8 +187,8 @@ def test_a_customer_account_receives_no_event(staff, client):
 
 def test_the_stream_ends_when_its_token_expires(staff, monkeypatch):
     client, _, user_id = staff
-    monkeypatch.setenv("RFP_STREAM_MAX_SECONDS", "60")
-    get_rfp_settings.cache_clear()
+    monkeypatch.setenv("LIVE_STREAM_MAX_SECONDS", "60")
+    get_live_stream_settings.cache_clear()
     token, expires_at = security._encode(
         {"sub": user_id, "role": "manager", "typ": "access"}, timedelta(seconds=2)
     )
@@ -247,8 +252,8 @@ def test_a_cursor_that_cannot_be_replayed_asks_for_a_resync(staff, last_event_id
 
 def test_too_many_missed_tickets_ask_for_a_resync_instead_of_a_flood(staff, monkeypatch):
     client, headers, _ = staff
-    monkeypatch.setenv("RFP_STREAM_REPLAY_LIMIT", "2")
-    get_rfp_settings.cache_clear()
+    monkeypatch.setenv("LIVE_STREAM_REPLAY_LIMIT", "2")
+    get_live_stream_settings.cache_clear()
     for n in range(3):
         upload(client, headers, f"rfp-{n}.pdf")
 
@@ -262,9 +267,7 @@ def test_missed_tickets_older_than_the_replay_window_ask_for_a_resync(staff, eng
     client, headers, _ = staff
     upload(client, headers)
     with Session(engine) as session:
-        session.execute(
-            update(RfpTicketNotification).values(created_at=utcnow() - timedelta(hours=25))
-        )
+        session.execute(update(LiveNotification).values(created_at=utcnow() - timedelta(hours=25)))
         session.commit()
     notifications.reset_hub()
 
@@ -306,9 +309,9 @@ def test_an_unreadable_feed_is_a_503_before_any_event(staff, monkeypatch):
     def down(*args, **kwargs):
         raise OperationalError("SELECT", {}, Exception("down"))
 
-    monkeypatch.setattr(store, "latest_notification_seq", down)
+    monkeypatch.setattr(outbox, "latest_seq", down)
 
     response = client.get(STREAM, headers=headers)
 
     assert response.status_code == 503
-    assert response.json() == {"detail": "RFP storage unavailable"}
+    assert response.json() == {"detail": "Live notifications unavailable"}

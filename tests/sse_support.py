@@ -80,24 +80,26 @@ class SseReader:
     stops at the next frame (heartbeats keep frames coming) and the socket closes.
     """
 
-    def __init__(self, base_url: str, headers: dict[str, str]) -> None:
+    def __init__(
+        self, base_url: str, headers: dict[str, str], path: str = "/notifications/stream"
+    ) -> None:
         self.frames: queue.Queue[Frame | BaseException] = queue.Queue()
         self.status: int | None = None
         self.headers: httpx.Headers | None = None
         self._opened = threading.Event()
         self._stop = threading.Event()
         self._thread = threading.Thread(
-            target=self._run, args=(base_url, headers), name="sse-reader", daemon=True
+            target=self._run, args=(base_url, headers, path), name="sse-reader", daemon=True
         )
         self._thread.start()
         if not self._opened.wait(10):
             raise AssertionError("the stream did not answer")
 
-    def _run(self, base_url: str, headers: dict[str, str]) -> None:
+    def _run(self, base_url: str, headers: dict[str, str], path: str) -> None:
         try:
             with (
                 httpx.Client(base_url=base_url, timeout=httpx.Timeout(10.0)) as client,
-                client.stream("GET", "/rfp/notifications/stream", headers=headers) as response,
+                client.stream("GET", path, headers=headers) as response,
             ):
                 self.status = response.status_code
                 self.headers = response.headers

@@ -1,7 +1,7 @@
 /**
- * The live RFP notification stream, as the backoffice consumes it (Milestone 10).
+ * The backoffice's live notification stream, as the browser consumes it (Milestone 10).
  *
- * `GET /rfp/notifications/stream` is Server-Sent Events, read with `fetch` and a
+ * `GET /notifications/stream` is Server-Sent Events, read with `fetch` and a
  * `ReadableStream` rather than `EventSource`: `EventSource` cannot send the
  * `Authorization: Bearer` header the API requires, and it hides the status code
  * we need to tell an expired session (401) from a customer account (403) from
@@ -9,11 +9,14 @@
  * token, the 401 handling (sign in again) and telemetry are the same as every
  * other protected call.
  *
- * Named events (see `services/rfp/notifications.py`):
- * - `rfp_ticket_created`: a new RFP ticket, `id:` = the feed's seq, `data:` =
- *   the ticket as the list shows it;
+ * Named events (see `services/notifications/stream.py`), every one with `id:` = the shared
+ * outbox's seq, so one cursor resumes them all:
+ * - `rfp_ticket_created`: a new RFP ticket, `data:` = the ticket as the list shows it;
+ * - `operational_inactivity_detected` / `operational_activity_resumed` /
+ *   `operational_alert_acknowledged`: an inactivity alert opened, resolved or was taken in
+ *   charge, `data:` = the whole alert (`lib/operations-live.ts`);
  * - `rfp_stream_ready`: caught up, with the cursor to resume from;
- * - `rfp_stream_resync`: missed events cannot be replayed, refetch the list once.
+ * - `rfp_stream_resync`: missed events cannot be replayed, reload the snapshots once.
  *
  * Recovery: the connection remembers the last seq it processed and sends it as
  * `Last-Event-ID` when it reconnects, so the server replays what was missed.
@@ -24,9 +27,10 @@
  */
 
 import { ApiError, requestAuthenticatedApi, UnauthorizedError } from "@/lib/api-client";
+import { ALERT_EVENTS, isOperationalAlert, type AlertEventName, type OperationalAlert } from "@/lib/operations-live";
 import { isRfpTicketSummary, type RfpTicketSummary } from "@/lib/rfp";
 
-export const RFP_STREAM_API = "/rfp/notifications/stream";
+export const LIVE_STREAM_API = "/notifications/stream";
 export const TICKET_CREATED_EVENT = "rfp_ticket_created";
 export const STREAM_READY_EVENT = "rfp_stream_ready";
 export const STREAM_RESYNC_EVENT = "rfp_stream_resync";
@@ -119,7 +123,12 @@ export type StreamReadyEvent = {
   fresh: boolean;
 };
 export type StreamResyncEvent = { type: "resync"; seq: number; cursor: number; reason: string };
-export type RfpStreamEvent = TicketCreatedEvent | StreamReadyEvent | StreamResyncEvent;
+export type AlertEvent = { type: "alert"; event: AlertEventName; seq: number; alert: OperationalAlert };
+export type LiveEvent = TicketCreatedEvent | AlertEvent | StreamReadyEvent | StreamResyncEvent;
+
+function isAlertEvent(name: string): name is AlertEventName {
+  return (ALERT_EVENTS as readonly string[]).includes(name);
+}
 
 function parseSeq(id: string): number | null {
   return /^\d+$/.test(id) ? Number(id) : null;
@@ -142,12 +151,15 @@ function isCount(value: unknown): value is number {
 }
 
 /** The typed event, or null for anything the contract does not define (ignored, never rendered). */
-export function toRfpStreamEvent(message: SseMessage, fresh = false): RfpStreamEvent | null {
+export function toLiveEvent(message: SseMessage, fresh = false): LiveEvent | null {
   const seq = parseSeq(message.id);
   if (seq === null) return null;
   const data = parseJson(message.data);
   if (message.event === TICKET_CREATED_EVENT) {
     return isRfpTicketSummary(data) ? { type: "ticket_created", seq, ticket: data } : null;
+  }
+  if (isAlertEvent(message.event)) {
+    return isOperationalAlert(data) ? { type: "alert", event: message.event, seq, alert: data } : null;
   }
   if (!isRecord(data) || !isCount(data.cursor)) return null;
   if (message.event === STREAM_READY_EVENT) {
@@ -168,7 +180,7 @@ export class StreamProtocolError extends Error {}
 
 /** Open the stream: `Authorization: Bearer`, `Accept: text/event-stream`, and the resume point. */
 export async function openRfpStream(lastEventId: string | null, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
-  const response = await requestAuthenticatedApi(RFP_STREAM_API, {
+  const response = await requestAuthenticatedApi(LIVE_STREAM_API, {
     headers: {
       Accept: "text/event-stream",
       ...(lastEventId === null ? {} : { "Last-Event-ID": lastEventId }),
@@ -200,8 +212,8 @@ export type ConnectionState =
   | { kind: "unavailable"; reason: "unauthorized" | "forbidden" }
   | { kind: "stopped" };
 
-export type RfpStreamConnectionOptions = {
-  onEvent: (event: RfpStreamEvent) => void;
+export type LiveStreamConnectionOptions = {
+  onEvent: (event: LiveEvent) => void;
   onState: (state: ConnectionState) => void;
   open?: (lastEventId: string | null, signal: AbortSignal) => Promise<ReadableStream<Uint8Array>>;
   random?: () => number;
@@ -222,10 +234,10 @@ function failureReason(failure: unknown): string {
  * `Last-Event-ID`, until `stop()`. A 401 (the session expired: the API client has
  * already sent the user to sign in) or a 403 (not a staff account) stops it for good.
  */
-export class RfpStreamConnection {
+export class LiveStreamConnection {
   state: ConnectionState = { kind: "idle" };
-  private readonly options: RfpStreamConnectionOptions;
-  private readonly open: NonNullable<RfpStreamConnectionOptions["open"]>;
+  private readonly options: LiveStreamConnectionOptions;
+  private readonly open: NonNullable<LiveStreamConnectionOptions["open"]>;
   private readonly now: () => number;
   private stopped = true;
   private attempt = 0;
@@ -235,7 +247,7 @@ export class RfpStreamConnection {
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   private watchdogMs = DEFAULT_WATCHDOG_MS;
 
-  constructor(options: RfpStreamConnectionOptions) {
+  constructor(options: LiveStreamConnectionOptions) {
     this.options = options;
     this.open = options.open ?? openRfpStream;
     this.now = options.now ?? Date.now;
@@ -349,9 +361,15 @@ export class RfpStreamConnection {
   }
 
   private dispatch(message: SseMessage, fresh: boolean, session: { liveSince: number | null }) {
-    const event = toRfpStreamEvent(message, fresh);
-    if (event === null) return;
-    if (event.type === "ticket_created") {
+    const event = toLiveEvent(message, fresh);
+    if (event === null) {
+      // An event this tab cannot use (newer than this code, or refused): still past it, so a
+      // reconnect never asks for it again. Control events always parse, so this is data.
+      const seq = parseSeq(message.id);
+      if (seq !== null && (this.lastSeq === null || seq > this.lastSeq)) this.lastSeq = seq;
+      return;
+    }
+    if (event.type === "ticket_created" || event.type === "alert") {
       // Already processed (a replay overlapping what this tab had seen): never twice.
       if (this.lastSeq !== null && event.seq <= this.lastSeq) return;
       this.lastSeq = event.seq;

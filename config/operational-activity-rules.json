@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "rule_id": "monterrey-outbound",
+      "description": "Monterrey ships client orders all working day; two working hours without one is unusual.",
+      "source": "warehouse_orders",
+      "warehouse": "Monterrey",
+      "activity": "outbound_order_created",
+      "expected_within_minutes": 120,
+      "severity": "warning",
+      "operating_hours": { "timezone": "America/Monterrey", "days": ["mon", "tue", "wed", "thu", "fri", "sat"], "start": "08:00", "end": "20:00" }
+    },
+    {
+      "rule_id": "zaragoza-outbound",
+      "description": "Zaragoza ships client orders all working day; two working hours without one is unusual.",
+      "source": "warehouse_orders",
+      "warehouse": "Zaragoza",
+      "activity": "outbound_order_created",
+      "expected_within_minutes": 120,
+      "severity": "warning",
+      "operating_hours": { "timezone": "Europe/Madrid", "days": ["mon", "tue", "wed", "thu", "fri"], "start": "08:00", "end": "20:00" }
+    },
+    {
+      "rule_id": "monterrey-inbound",
+      "description": "A working day with no receipt at Monterrey.",
+      "source": "warehouse_orders",
+      "warehouse": "Monterrey",
+      "activity": "inbound_order_created",
+      "expected_within_minutes": 720,
+      "severity": "warning",
+      "operating_hours": { "timezone": "America/Monterrey", "days": ["mon", "tue", "wed", "thu", "fri", "sat"], "start": "08:00", "end": "20:00" }
+    },
+    {
+      "rule_id": "zaragoza-inbound",
+      "description": "A working day with no receipt at Zaragoza.",
+      "source": "warehouse_orders",
+      "warehouse": "Zaragoza",
+      "activity": "inbound_order_created",
+      "expected_within_minutes": 720,
+      "severity": "warning",
+      "operating_hours": { "timezone": "Europe/Madrid", "days": ["mon", "tue", "wed", "thu", "fri"], "start": "08:00", "end": "20:00" }
+    },
+    {
+      "rule_id": "nightly-export",
+      "description": "The nightly telemetry export (DEV-53, cron 03:30) completes every day.",
+      "source": "scheduled_job",
+      "job_name": "nightly_export",
+      "expected_within_minutes": 1560,
+      "severity": "critical"
+    },
+    {
+      "rule_id": "weekly-report",
+      "description": "The weekly warehouse & client report completes every Monday by 06:00 Monterrey, plus three hours' grace.",
+      "source": "scheduled_job",
+      "job_name": "weekly_warehouse_client_performance",
+      "expected_within_minutes": 10260,
+      "severity": "critical"
+    },
+    {
+      "rule_id": "rfp-approval-sla",
+      "description": "A department owner decides on their RFP section within a day.",
+      "source": "rfp_approval",
+      "expected_within_minutes": 1440,
+      "severity": "warning"
+    },
+    {
+      "rule_id": "incidents-sla-critical",
+      "description": "Lost parcels and carrier issues bite into client SLAs: picked up within four hours.",
+      "source": "incidents",
+      "categories": ["lost_parcel", "carrier_issue"],
+      "expected_within_minutes": 240,
+      "severity": "critical"
+    },
+    {
+      "rule_id": "incidents-open",
+      "description": "Every other incident is picked up within a day.",
+      "source": "incidents",
+      "categories": ["delivery_failure", "inventory_discrepancy", "returns_issue", "warehouse_incident", "system_failure", "client_complaint", "other"],
+      "expected_within_minutes": 1440,
+      "severity": "warning"
+    }
+  ]
+}

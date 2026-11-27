@@ -1,4 +1,4 @@
-"""The hub every live-stream connection shares (`services/rfp/notifications.py`).
+"""The hub every live-stream connection shares (`services/notifications/stream.py`).
 
 What makes 2 or 50 open dashboards cost the same to the database: one watcher
 per process, started by the first connection and stopped with the last, each
@@ -12,9 +12,13 @@ from typing import Any
 
 import pytest
 
-from data.pipelines.rfp_intake import store
-from services.rfp import notifications
-from services.rfp.notifications import NotificationHub, StreamUnavailable, Subscription
+from data.notifications import outbox
+from services.notifications import stream as notifications
+from services.notifications.stream import (
+    NotificationHub,
+    StreamUnavailable,
+    Subscription,
+)
 from tests.pipelines.rfp_intake.support import new_ticket, sqlite_engine
 
 
@@ -47,7 +51,8 @@ def test_one_event_is_encoded_once_and_reaches_every_connection(engine, tmp_path
 
     ticket_id, received = asyncio.run(scenario())
 
-    assert {item.ticket_id for item in received} == {str(ticket_id)}
+    assert {item.subject for item in received} == {str(ticket_id)}
+    assert {item.event for item in received} == {"rfp_ticket_created"}
     # The very same object: validated and framed once, not once per tab.
     assert received[0] is received[1] is received[2]
     assert received[0].frame.startswith(b"id: 1\nevent: rfp_ticket_created\ndata: {")
@@ -57,7 +62,7 @@ def test_the_watcher_reads_nothing_while_nobody_is_connected(engine, monkeypatch
     reads: list[str] = []
 
     def counted(name: str):
-        original = getattr(store, name)
+        original = getattr(outbox, name)
 
         def read(*args: Any, **kwargs: Any) -> Any:
             reads.append(name)
@@ -65,8 +70,8 @@ def test_the_watcher_reads_nothing_while_nobody_is_connected(engine, monkeypatch
 
         return read
 
-    for name in ("latest_notification_seq", "notifications_after"):
-        monkeypatch.setattr(store, name, counted(name))
+    for name in ("latest_seq", "notifications_after"):
+        monkeypatch.setattr(outbox, name, counted(name))
 
     async def scenario():
         hub = NotificationHub(poll_seconds=0.05, queue_size=10)
@@ -84,7 +89,7 @@ def test_the_watcher_reads_nothing_while_nobody_is_connected(engine, monkeypatch
 
     count = asyncio.run(scenario())
 
-    assert reads[0] == "latest_notification_seq"
+    assert reads[0] == "latest_seq"
     assert len(reads) == count, "the watcher kept polling after the last connection left"
 
 
@@ -166,7 +171,7 @@ def test_a_row_the_contract_refuses_is_skipped_and_the_feed_moves_on(engine, tmp
     assert [notifications.to_notification(row) for row in rows] == [None, None]
 
     new_ticket(engine, tmp_path)
-    [valid] = store.notifications_after(engine, 0, limit=1)
+    [valid] = outbox.notifications_after(engine, 0, limit=1)
 
     async def scenario():
         hub = NotificationHub(poll_seconds=30, queue_size=10)

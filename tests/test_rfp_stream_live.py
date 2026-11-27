@@ -24,12 +24,18 @@ import pytest
 import uvicorn
 
 from data.pipelines.rfp_intake import runner
-from data.pipelines.rfp_intake.config import get_rfp_settings
 from services.core import security
 from services.main import app
-from services.rfp import notifications
+from services.notifications import router as notifications_router
+from services.notifications import stream as notifications
+from services.notifications.config import get_live_stream_settings
 from services.rfp import router as rfp_router
-from tests.pipelines.rfp_intake.support import PDF_DIR, SAMPLES, new_ticket, sqlite_engine
+from tests.pipelines.rfp_intake.support import (
+    PDF_DIR,
+    SAMPLES,
+    new_ticket,
+    sqlite_engine,
+)
 from tests.sse_support import Frame, SseReader
 from tests.test_agent_api import sign_in
 
@@ -53,6 +59,7 @@ def _until(condition, timeout: float = 5.0, message: str = "condition not met") 
 def engine(tmp_path, monkeypatch):
     engine = sqlite_engine(tmp_path / "rfp-live.sqlite")
     monkeypatch.setattr(rfp_router, "get_engine", lambda: engine)
+    monkeypatch.setattr(notifications_router, "get_engine", lambda: engine)
     yield engine
     engine.dispose()
 
@@ -61,12 +68,12 @@ def engine(tmp_path, monkeypatch):
 def settings(monkeypatch):
     # A watcher poll far longer than any assertion below, unless a test lowers it:
     # what arrives at once arrived through the upload's wake-up, not a poll.
-    monkeypatch.setenv("RFP_STREAM_POLL_SECONDS", "30")
-    monkeypatch.setenv("RFP_STREAM_HEARTBEAT_SECONDS", "0.2")
-    monkeypatch.setenv("RFP_STREAM_MAX_SECONDS", "60")
-    get_rfp_settings.cache_clear()
+    monkeypatch.setenv("LIVE_STREAM_POLL_SECONDS", "30")
+    monkeypatch.setenv("LIVE_STREAM_HEARTBEAT_SECONDS", "0.2")
+    monkeypatch.setenv("LIVE_STREAM_MAX_SECONDS", "60")
+    get_live_stream_settings.cache_clear()
     yield
-    get_rfp_settings.cache_clear()
+    get_live_stream_settings.cache_clear()
 
 
 @pytest.fixture
@@ -149,8 +156,8 @@ def test_a_ticket_registered_by_another_process_arrives_within_the_poll_interval
     api, engine, tmp_path, monkeypatch
 ):
     base_url, headers = api
-    monkeypatch.setenv("RFP_STREAM_POLL_SECONDS", "0.3")
-    get_rfp_settings.cache_clear()
+    monkeypatch.setenv("LIVE_STREAM_POLL_SECONDS", "0.3")
+    get_live_stream_settings.cache_clear()
     notifications.reset_hub()
     reader = SseReader(base_url, headers)
     try:

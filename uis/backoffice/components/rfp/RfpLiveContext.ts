@@ -2,7 +2,7 @@
 
 import { createContext, useContext } from "react";
 import { EMPTY_LIVE_STATE, type LiveState } from "@/lib/rfp-live";
-import type { ConnectionState } from "@/lib/rfp-stream";
+import type { ConnectionState } from "@/lib/live-stream";
 
 export type RfpLiveValue = {
   /** A staff session: only admin and manager accounts open the stream (the API is staff-only). */
@@ -38,7 +38,7 @@ export const DISABLED_RFP_LIVE: RfpLiveValue = {
 
 export const RfpLiveContext = createContext<RfpLiveValue>(DISABLED_RFP_LIVE);
 
-/** The live RFP notifications (`RfpLiveProvider`), or a disabled value outside it. */
+/** The live RFP notifications (`LiveProvider`), or a disabled value outside it. */
 export function useRfpLive(): RfpLiveValue {
   return useContext(RfpLiveContext);
 }
