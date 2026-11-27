@@ -4,6 +4,7 @@ import Link from "next/link";
 import { type ReactNode, useEffect, useState } from "react";
 import { StateMessage } from "@/components/common/StateMessage";
 import { MarkdownBlocks, ProposalSectionCard, parseSectionMarkdown } from "@/components/rfp/ProposalSectionCard";
+import { useRfpLive } from "@/components/rfp/RfpLiveContext";
 import { RfpStatusBadge } from "@/components/rfp/RfpStatusBadge";
 import {
   COUNTRY_NAMES,
@@ -577,6 +578,10 @@ export function RfpTicketPage({ ticketId }: { ticketId: string }) {
   const [ticket, setTicket] = useState<RfpTicketDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const { markSeen } = useRfpLive();
+
+  // Opening a ticket means its live notification was seen (Milestone 10).
+  useEffect(() => markSeen(ticketId), [markSeen, ticketId]);
 
   useEffect(() => {
     let active = true;

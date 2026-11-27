@@ -52,6 +52,7 @@ TABLES = (
     "rfp_approval_runs",
     "rfp_approval_decisions",
     "rfp_final_documents",
+    "rfp_ticket_notifications",
 )
 
 
@@ -373,3 +374,48 @@ def test_one_worker_at_a_time_resumes_a_ticket(checkpoints, tmp_path):
     approval_store.release_lease(engine, approval.ticket_id, "worker-a")
     assert approval.apply() == "waiting_for_approval"
     assert approval.sections()["lastmile"].approval_status == "approved"
+
+
+# --- Milestone 10: the live notification feed ------------------------------------------
+
+
+def test_announcements_are_numbered_in_commit_order(postgres, tmp_path):
+    """A registration waits behind another's lock until it commits: a later seq is
+    never visible before an earlier one, so a reader's cursor never skips a ticket."""
+    import threading
+    import time
+
+    engine, _ = postgres
+    holding, release = threading.Event(), threading.Event()
+    order: list[str] = []
+
+    def first_writer():
+        with Session(engine) as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                {"key": store.NOTIFICATION_LOCK},
+            )
+            holding.set()
+            release.wait(10)
+            session.commit()
+            order.append("first committed")
+
+    def second_writer():
+        new_ticket(engine, tmp_path)
+        order.append("second registered")
+
+    first = threading.Thread(target=first_writer)
+    first.start()
+    assert holding.wait(10)
+    second = threading.Thread(target=second_writer)
+    second.start()
+    time.sleep(0.5)
+    assert order == [], "the registration did not wait for the open notification transaction"
+    release.set()
+    first.join(10)
+    second.join(10)
+
+    assert order == ["first committed", "second registered"]
+    [row] = store.notifications_after(engine, 0, limit=10)
+    assert row["event"] == "rfp_ticket_created"
+    assert isinstance(row["payload"], dict) and row["payload"]["status"] == "analyzing"

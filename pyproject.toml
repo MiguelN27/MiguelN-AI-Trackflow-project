@@ -39,6 +39,10 @@ dependencies = [
     # binary wheel brings libpq, which macOS here does not have.
     "langgraph-checkpoint-postgres>=3.2.1",
     "psycopg[binary]>=3.3.9",
+    # Milestone 10: the live RFP notification stream (Server-Sent Events). It was
+    # already installed through mcp; declared because services/rfp imports it, and
+    # it closes open streams when uvicorn shuts down or --reload restarts.
+    "sse-starlette>=3.7.0",
 ]
 
 [project.scripts]

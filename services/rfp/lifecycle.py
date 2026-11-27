@@ -9,7 +9,8 @@ Start-up:
   and applies decisions it recorded but never applied. Recovery can redraft a
   section, so it never delays start-up.
 
-Shutdown closes the checkpointer's connections.
+Shutdown ends the live notification streams (`notifications.close_hub`) and closes
+the checkpointer's connections.
 """
 
 import logging
@@ -23,6 +24,7 @@ from data.pipelines.rfp_intake.approval import runner as approval_runner
 from data.pipelines.rfp_intake.config import get_rfp_settings
 from services.core.config import ConfigurationError
 from services.inventory.database import get_engine
+from services.rfp import notifications
 
 logger = logging.getLogger("api.rfp")
 
@@ -55,4 +57,5 @@ def initialize() -> None:
 
 
 def shutdown() -> None:
+    notifications.close_hub()
     checkpoint.close_checkpointers()

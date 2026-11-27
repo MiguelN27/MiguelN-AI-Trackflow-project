@@ -1,9 +1,13 @@
-"""RFP routes: upload a PDF, list and read tickets, owners' decisions, the final document.
+"""RFP routes: upload a PDF, list and read tickets, owners' decisions, the final document,
+and the live notification stream.
 
 HTTP only (briefing §2.4: "Routers import and trigger; they do not own agent
 logic"). The upload validates and stores the PDF under `data/raw/rfp/`,
-creates the ticket (`analyzing`) and answers 202 at once. Background tasks
-then run in this same API process, in order:
+creates the ticket (`analyzing`, with its `rfp_ticket_created` announcement in
+the same transaction) and answers 202 at once. Background tasks then run in this
+same API process, in order:
+- the live stream's wake-up (`notifications.wake`), so every connected
+  dashboard shows the new ticket at once;
 - the `rfp_intake` graph (`runner.run_intake`);
 - with `RFP_AUTO_DRAFT` on, the proposal drafting queue
   (`proposal.runner.run_pending`), which picks up the handoff the intake has
@@ -15,7 +19,9 @@ then run in this same API process, in order:
 An owner's decision (`POST .../sections/{department}/decision`) is validated
 and recorded at once (202); the graph is resumed with it in the background
 (`approval.runner.apply_decisions`). None of the background tasks ever
-raises. The UI polls the ticket.
+raises. The UI follows a ticket's progress by polling it; new tickets reach it
+through `GET /rfp/notifications/stream` (Server-Sent Events, see
+`services/rfp/notifications.py`), never by polling.
 
 Staff only (admin or manager): RFPs carry client budgets and volumes, and a
 self-registered account is a customer. Database failures are a 503 that names
@@ -29,8 +35,20 @@ from pathlib import Path
 from typing import Annotated, Final, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.exc import SQLAlchemyError
+from sse_starlette import EventSourceResponse
+from starlette.background import BackgroundTask
 
 from data.pipelines.rfp_intake import runner, store
 from data.pipelines.rfp_intake.approval import detail as approval_detail
@@ -39,8 +57,10 @@ from data.pipelines.rfp_intake.approval import trace as approval_trace
 from data.pipelines.rfp_intake.approval.decisions import REFUSAL_STATUS, DecisionRefused
 from data.pipelines.rfp_intake.config import ROOT_DIR, get_rfp_settings
 from data.pipelines.rfp_intake.proposal import runner as proposal_runner
-from services.auth.dependencies import StaffUser
+from services.auth.dependencies import StaffUser, oauth2_scheme
+from services.core.security import decode_access_token
 from services.inventory.database import get_engine
+from services.rfp import notifications
 from services.rfp.models import (
     RfpApprovalDecision,
     RfpDecisionRequest,
@@ -159,6 +179,8 @@ def upload_rfp(
         raise _unavailable(error, "rfp ticket creation") from None
 
     logger.info("rfp ticket %s created (%d bytes); analysis scheduled", ticket_id, len(data))
+    # First, right after the 202: push the new ticket to every connected dashboard.
+    background.add_task(notifications.wake)
     background.add_task(runner.run_intake, ticket_id, engine)
     if settings.auto_draft:
         # Runs after the intake: drafting starts from the handoff it queues.
@@ -184,6 +206,57 @@ def list_rfp_tickets(user: StaffUser) -> RfpTicketList:
     except SQLAlchemyError as error:
         raise _unavailable(error, "rfp ticket list") from None
     return RfpTicketList(tickets=[RfpTicketSummary.model_validate(row) for row in rows])
+
+
+@router.get(
+    "/notifications/stream",
+    response_class=EventSourceResponse,
+    responses={
+        200: {
+            "description": (
+                "A Server-Sent Events stream. Named events: `rfp_ticket_created` (`id:` = "
+                "the feed's seq, `data:` = the ticket as `GET /rfp/tickets` lists it), "
+                "`rfp_stream_ready` (caught up; `data:` = cursor, replayed count, heartbeat), "
+                "`rfp_stream_resync` (the missed events cannot be replayed: refetch the "
+                "list once). `: keep-alive` comment frames while idle."
+            ),
+            "content": {"text/event-stream": {}},
+        },
+        503: {"description": "The notification feed cannot be read; retry with backoff."},
+    },
+)
+async def stream_rfp_notifications(
+    user: StaffUser,
+    token: Annotated[str, Depends(oauth2_scheme)],
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+) -> EventSourceResponse:
+    """Push every newly registered RFP ticket to this dashboard, the moment it is registered.
+
+    Staff only, with the same bearer JWT as every other route: 401/403 before any
+    event byte. `Last-Event-ID` resumes after a dropped connection: the events
+    missed since that id are replayed first. The stream ends normally when the
+    token expires or after `RFP_STREAM_MAX_SECONDS`; the client resumes it.
+    """
+    claims = decode_access_token(token) or {}
+    settings = get_rfp_settings()
+    try:
+        stream = await notifications.open_stream(
+            get_engine(),
+            last_event_id=last_event_id,
+            token_expires_at=float(claims.get("exp", 0)),
+            settings=settings,
+        )
+    except notifications.StreamUnavailable as error:
+        raise _unavailable(error, "rfp notification stream") from None
+    return EventSourceResponse(
+        stream.frames(),
+        ping=settings.stream_heartbeat_seconds,
+        ping_message_factory=notifications.keep_alive,
+        send_timeout=notifications.SEND_TIMEOUT_SECONDS,
+        sep=notifications.SEP,
+        # The generator's own cleanup does this too; this covers a stream that never started.
+        background=BackgroundTask(stream.close),
+    )
 
 
 @router.get("/tickets/{ticket_id}", response_model=RfpTicketDetail)

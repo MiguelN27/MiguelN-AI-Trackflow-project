@@ -54,6 +54,11 @@ function activeHref(pathname: string): string | null {
 type BackofficeNavShellProps = {
   /** Session controls, when there is a session. Absent on the sign-in screens. */
   actions?: ReactNode;
+  /**
+   * A count shown on a link, keyed by its href: new RFP tickets nobody has looked at yet on
+   * "RFP intake" (Milestone 10). Zero or absent shows nothing.
+   */
+  counts?: Partial<Record<string, number>>;
 };
 
 /**
@@ -64,7 +69,7 @@ type BackofficeNavShellProps = {
  * destinations still point at protected routes; following one simply returns
  * the visitor to `/login`.
  */
-export function BackofficeNavShell({ actions }: BackofficeNavShellProps) {
+export function BackofficeNavShell({ actions, counts }: BackofficeNavShellProps) {
   const pathname = usePathname();
   const currentHref = activeHref(pathname);
 
@@ -85,19 +90,26 @@ export function BackofficeNavShell({ actions }: BackofficeNavShellProps) {
           <ul className="flex flex-wrap items-center gap-1">
             {NAV_LINKS.map((link) => {
               const isActive = link.href === currentHref;
+              const count = counts?.[link.href] ?? 0;
 
               return (
                 <li key={link.href}>
                   <Link
                     href={link.href}
                     aria-current={isActive ? "page" : undefined}
-                    className={`block rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                    className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-semibold transition ${
                       isActive
                         ? "bg-[color:var(--brand-primary)]/10 text-[color:var(--brand-primary)]"
                         : "text-slate-600 hover:bg-[color:var(--brand-primary)]/5 hover:text-[color:var(--brand-primary)]"
                     }`}
                   >
                     {link.label}
+                    {count > 0 ? (
+                      <span className="inline-grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--brand-accent)] px-1.5 text-[0.7rem] font-bold leading-none text-[color:var(--on-accent)]">
+                        {count}
+                        <span className="sr-only"> new</span>
+                      </span>
+                    ) : null}
                   </Link>
                 </li>
               );

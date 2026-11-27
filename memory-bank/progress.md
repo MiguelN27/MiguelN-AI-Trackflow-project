@@ -1,6 +1,75 @@
 # Development Progress
 
-Last updated: 2026-11-23
+Last updated: 2026-11-26
+
+## Update 2026-11-26 - Live RFP notifications over SSE (Milestone 10 Part 1)
+
+Goals accomplished.
+- **Brief:** the new `lead-instr.png` (the Sales team's RFI, turned into a ticket: push a notification the moment an RFP ticket is registered, replacing the manual refresh), with the checklist in `stages-todo.png` (Backend, Frontend, Testing). No model or agent calls: a communication layer only.
+- **Branch:** `feature/sse-notifications`. **Design:** `docs/rfp/live-notifications.md`.
+
+Decided with the developer, after answering the CTO's three design questions (shared layer and 50 viewers, recovery and duplicates, SSE versus WebSockets):
+- **Event feed:** an outbox table, `rfp_ticket_notifications`, written in the same transaction as the ticket, plus one shared hub per API process. It catches tickets the CLI registers from its own process, and replay survives restarts.
+- **Scope:** the whole backoffice for staff. Customer accounts never connect.
+- **Library:** `sse-starlette` 3.7.0 (already installed through `mcp`), declared with `uv add`. No version changed and `requirements.txt` was already pinned.
+
+What was built.
+- **Backend:**
+  - `store.create_ticket` writes the ticket and its `rfp_ticket_created` row atomically. On PostgreSQL it does so under `pg_advisory_xact_lock`, so seq order is commit order.
+  - New reads `notifications_after` and `latest_notification_seq`; settings `RFP_STREAM_*` (heartbeat, poll, replay window and limit, queue size, max lifetime).
+  - `services/rfp/notifications.py`:
+    - a `NotificationHub` with one watcher per process, which runs only while someone is connected;
+    - each frame encoded once, a ring of 256 events, and slow-client eviction;
+    - a thread-safe `wake()`.
+    - The stream subscribes first, then replays from the ring or the database, then sends `rfp_stream_ready`, then goes live. A cursor the replay cannot honour gets `rfp_stream_resync`.
+  - `GET /rfp/notifications/stream`: `StaffUser`, so the same JWT (401/403 before any byte), and `EventSourceResponse` with `: keep-alive` comment frames and `X-Accel-Buffering: no`. It ends at the token's expiry or after the lifetime.
+  - The upload's first background task is `notifications.wake`, and the lifespan's shutdown closes the hub.
+- **Frontend:**
+  - `lib/rfp-stream.ts`: `fetch` + `ReadableStream` through `requestAuthenticatedApi` (bearer, 401 → sign in), an incremental SSE parser, event validation, equal-jitter backoff (0.5-1 s … 30 s), a watchdog (3 heartbeats), and resume by `Last-Event-ID`.
+  - `lib/rfp-live.ts`: dedupe by `ticket_id`, unseen tickets, own uploads, the notification's text, the title count.
+  - `RfpLiveProvider` in the protected layout. On screen:
+    - the floating notification `NewRfpToast` (Cream Orange edge, bell, "needs processing", "arrived while you were offline");
+    - `RfpLiveIndicator` in the header (Live / Reconnecting in N s · Retry now / Offline);
+    - a count on "RFP intake";
+    - New rows on `/rfp`, merged with the snapshot, without a re-read;
+    - "(n)" in a background tab's title;
+    - `--on-accent` token and `motion-safe` keyframes.
+  - The list is read again once only when it may be stale: a first connection, a resync, or the recovery after a failed connection.
+- **Docs:** `docs/rfp/live-notifications.md` (contract, the three design answers, the recovery strategy, configuration, tests, verification, limits). `docs/rfp/rfp-intake.md` updated; `.env.example` documents the settings.
+
+Verification.
+- **Backend:**
+  - new `tests/test_rfp_stream_api.py` (16, on the wire), `tests/test_rfp_stream_live.py` (4, real socket: push, CLI ticket, drop and recovery without duplicates, restart), `tests/test_rfp_notifications_hub.py` (8) and `tests/pipelines/rfp_intake/test_notifications_store.py` (4); the existing schema tests now include the new table.
+  - The full suite: **2370 passed, 63 skipped, 0 failed** (with `tests/test_core_db.py`). It was run with `.venv/bin/python` and `DYLD_LIBRARY_PATH` for XGBoost, without `test_agent_evals.py`, the known stale recording.
+  - Opt-in PostgreSQL on a throwaway `postgres:17-alpine`: **12/12**, including the new commit-order test.
+- **Backoffice:** Jest **345** (23 new, `rfp-stream.test.ts`); `tsc` and ESLint clean.
+- **Static checks:** `ruff format` / `ruff check --isolated` clean on every changed Python file, with only our hunks; mypy (`--check-untyped-defs`) clean on the new and changed modules and tests.
+- **In the browser** (Chrome via playwright-core, the real API on a throwaway Postgres behind a cuttable TCP proxy, two Sales accounts and a customer): **33/34 checks** on the first run, **34/34** after the TinyDB fix, with no 500 in the API log.
+  - B was notified 79-101 ms after A's upload, without a list re-read. The uploader got no notification of its own upload.
+  - Notified on `/incidents` too, with the nav count.
+  - After a real connection drop, B resumed with `Last-Event-ID` and showed "2 RFPs arrived while you were offline", each row once.
+  - During an API outage the backoff grew (1, 2, 4, 5, 12 s). A ticket registered by the CLI meanwhile was recovered after the restart, and no row was duplicated.
+  - The customer opened no stream. Also checked: the title count, reduced motion, 390 px and dark mode.
+  - The one failure was the pre-existing TinyDB concurrent-read 500 in `get_current_user` on a list read, which bypasses CORS. Fixed the same day (below).
+- **TinyDB race fixed** (asked by the developer):
+  - FastAPI's threadpool shared TinyDB's single file handle. In a reproduction with 8 threads × 60 operations: 458 `JSONDecodeError`s, 475 of 481 inserts lost, and a corrupt file ("Extra data").
+  - `services/core/db.py` now opens `ThreadSafeTinyDB`, with one re-entrant lock shared by `ThreadSafeJSONStorage` (each read and write) and `ThreadSafeTable` (`_update_table`'s read-modify-write, `search` with its query cache, `clear_cache`).
+  - The same reproduction: 481/481, no error, five runs out of five.
+  - New `tests/test_core_db.py` (3): concurrent reads and writes, the file staying valid JSON, and 80 concurrent `GET /auth/me` all 200. Both behaviour tests fail on the old handle.
+  - The lock is per process; two processes writing the same file (the API and a seed script) are still not coordinated.
+- **Found and fixed during the work:**
+  - the browser's watchdog took the announced heartbeat only from the next chunk;
+  - closed streams were logged as `lifetime` when the client had disconnected;
+  - after an outage the list error stayed up and the listed statuses were stale (the list is now read once on recovery).
+
+Still missing / next goals.
+1. **Commit when asked** (AGENTS.md workflow). Include the new tests, `tests/sse_support.py`, `docs/rfp/live-notifications.md`, `uv.lock` and `pyproject.toml`, and ask about the replaced `lead-instr.png` / `stages-todo.png` (and the deleted `visual-ref.png`).
+2. **Supabase:** inspect the live `rfp_*` schema before the first API start against it (the new table `rfp_ticket_notifications`, RLS on).
+3. **Push status changes too** (`rfp_ticket_status_changed` on the same stream), then drop the list's progress polling.
+4. **Optional:**
+   - a leader tab sharing one stream through `BroadcastChannel`, against the browser's 6-connections-per-origin limit under HTTP/1.1;
+   - HTTP/2 at a proxy.
+5. **Still open from earlier:** Part 3's Supabase checks and `RFP_APPROVERS`; re-recording the agent evals; Auth0 and the MCP Playground.
 
 ## Update 2026-11-23 (later) - RFP human approval and document completion (Milestone 9 Part 3)
 

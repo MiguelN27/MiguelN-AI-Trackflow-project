@@ -72,6 +72,24 @@ class RfpIntakeSettings(BaseSettings):
     # PostgreSQL schema of the approval graph's checkpoint tables.
     checkpoint_schema: str = "rfp_graph"
 
+    # --- Milestone 10: the live notification stream (`GET /rfp/notifications/stream`) ---
+    # A `: keep-alive` comment this often, so proxies and the browser's watchdog
+    # know the stream is alive while no ticket arrives.
+    stream_heartbeat_seconds: float = Field(default=15.0, gt=0, le=120)
+    # How often the API's single watcher reads the feed while someone is
+    # connected. An upload through this API wakes it at once; the poll catches
+    # tickets registered by another process (the CLI, another worker).
+    stream_poll_seconds: float = Field(default=2.0, gt=0, le=60)
+    # Replay after a reconnect (`Last-Event-ID`): at most this many events, none
+    # older than this. Beyond either, the client is told to resync (refetch the list once).
+    stream_replay_hours: int = Field(default=24, ge=1, le=24 * 7)
+    stream_replay_limit: int = Field(default=200, ge=1, le=1000)
+    # Events waiting for one slow client before it is disconnected (it then resumes by replay).
+    stream_queue_size: int = Field(default=100, ge=1, le=10_000)
+    # A stream ends normally after this long (or when its token expires, if sooner),
+    # and the client resumes it at once: periodic re-authentication, bounded connections.
+    stream_max_seconds: float = Field(default=900.0, gt=0, le=24 * 60 * 60)
+
     @field_validator("*", mode="before")
     @classmethod
     def blank_is_default(cls, value: Any) -> Any:

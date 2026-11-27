@@ -2,11 +2,12 @@
 
 PostgreSQL (Supabase) is the source of truth, through the same SQLModel stack
 as inventory: TinyDB and JSON files are not acceptable for these entities.
-`store.initialize_schema` creates exactly these ten tables: the five of
-Part 1, `rfp_section_drafts` and `rfp_proposal_handoffs` for Part 2, and
+`store.initialize_schema` creates exactly these eleven tables: the five of
+Part 1, `rfp_section_drafts` and `rfp_proposal_handoffs` for Part 2,
 `rfp_approval_runs`, `rfp_approval_decisions` and `rfp_final_documents` for
-Part 3. (The approval graph's checkpoints are LangGraph's own tables, in their
-own schema: see `approval/checkpoint.py`.)
+Part 3, and `rfp_ticket_notifications`, the feed of the live notification stream
+(Milestone 10). (The approval graph's checkpoints are LangGraph's own tables, in
+their own schema: see `approval/checkpoint.py`.)
 
 Portability: JSON columns are JSONB on PostgreSQL and JSON elsewhere, and every
 check is a plain `IN (...)` list, so the offline tests run the same models on
@@ -466,6 +467,32 @@ class RfpFinalDocument(RfpModel, table=True):
     generated_at: datetime = _timestamp()
 
 
+class RfpTicketNotification(RfpModel, table=True):
+    """One announcement of the live notification stream (`GET /rfp/notifications/stream`).
+
+    An outbox: `store.create_ticket` writes the `rfp_ticket_created` row in the
+    same transaction as the ticket, so a ticket registered by any process (the
+    API or the CLI) is announced, and a ticket that was never committed never is.
+    `seq` is the stream's event id (`Last-Event-ID`). It is assigned under a
+    transaction-scoped advisory lock on PostgreSQL, so seq order is commit order
+    and a reader that has seen seq N has seen every row below it. One row per
+    ticket and event: reprocessing a ticket never announces it again. Not the
+    run trace, which is `rfp_ticket_events`.
+    """
+
+    __tablename__ = "rfp_ticket_notifications"
+    __table_args__ = (
+        UniqueConstraint("ticket_id", "event", name="uq_rfp_notification_ticket_event"),
+    )
+
+    seq: int | None = Field(default=None, primary_key=True)
+    event: str = Field(max_length=64, nullable=False)
+    ticket_id: UUID = Field(foreign_key="rfp_tickets.id", nullable=False)
+    # The event's `data`: the ticket as the list shows it (`RfpTicketSummary`), as JSON.
+    payload: dict[str, Any] = Field(sa_column=Column(JSON_TYPE, nullable=False))
+    created_at: datetime = _timestamp()
+
+
 TABLES: Final = (
     RfpTicket,
     RfpMetadata,
@@ -477,4 +504,5 @@ TABLES: Final = (
     RfpApprovalRun,
     RfpApprovalDecision,
     RfpFinalDocument,
+    RfpTicketNotification,
 )

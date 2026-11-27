@@ -32,6 +32,7 @@ from services.incidents.read_cache import clear_read_cache
 from services.inventory import database as inventory_database
 from services.main import app
 from services.rfp import lifecycle as rfp_lifecycle
+from services.rfp import notifications as rfp_notifications
 from services.tasks.celery_app import celery_app
 from services.telemetry import database as telemetry_database
 
@@ -230,6 +231,7 @@ def isolated_rfp_intake(tmp_path, monkeypatch):
     and a knowledge-base search always falls back to the local documents. The
     department owners' accounts are the test ones (`RFP_TEST_APPROVERS`), and
     the approval graph's checkpoint connections are closed after each test.
+    Every test starts with a fresh live-notification hub (its own event loop).
     """
     monkeypatch.setenv("RFP_UPLOAD_DIR", str(tmp_path / "rfp-uploads"))
     monkeypatch.setenv("RFP_AUTO_DRAFT", "false")
@@ -245,7 +247,9 @@ def isolated_rfp_intake(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rfp_llm, "_client", forbid_model)
     monkeypatch.setattr(rfp_knowledge, "search", no_vector_search)
+    rfp_notifications.reset_hub()
     yield
+    rfp_notifications.reset_hub()
     rfp_config.get_rfp_settings.cache_clear()
     rfp_approval_graph.clear_graphs()
     rfp_checkpoint.close_checkpointers()

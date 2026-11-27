@@ -28,6 +28,8 @@ const config: Config = {
     "lib/inventory.ts",
     "lib/knowledge.ts",
     "lib/rfp.ts",
+    "lib/rfp-live.ts",
+    "lib/rfp-stream.ts",
     "services/auth-service.ts",
   ],
 };

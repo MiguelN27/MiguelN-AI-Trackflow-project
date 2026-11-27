@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { type ChangeEvent, type DragEvent, useEffect, useId, useState } from "react";
+import { type ChangeEvent, type DragEvent, useEffect, useId, useMemo, useState } from "react";
 import { StateMessage } from "@/components/common/StateMessage";
+import { useRfpLive } from "@/components/rfp/RfpLiveContext";
 import { RfpStatusBadge } from "@/components/rfp/RfpStatusBadge";
 import {
   COUNTRY_NAMES,
@@ -21,6 +22,7 @@ import {
   uploadRfp,
   type RfpTicketSummary,
 } from "@/lib/rfp";
+import { mergeTickets } from "@/lib/rfp-live";
 
 type UploadResult =
   | { name: string; state: "accepted"; ticketId: string }
@@ -41,9 +43,16 @@ function formatDate(value: string): string {
 /**
  * RFP intake (Milestone 9 Part 1): upload PDFs, one ticket each, and watch them
  * move from "Analyzing" to "Intake complete" or "Discarded" without reloading.
+ *
+ * New tickets, whoever registers them, are pushed by the live stream (Milestone 10,
+ * `RfpLiveProvider`): they join the list at once, with a "New" mark, without a reload and without
+ * re-reading the list. The list is read from the API on arrival, after an upload, when a first or
+ * resynced connection may have missed tickets (`snapshotEpoch`), and while a ticket is being
+ * worked on, to follow its progress (`listPollDelay`).
  */
 export function RfpIntakePage() {
-  const [tickets, setTickets] = useState<RfpTicketSummary[] | null>(null);
+  const { live, snapshotEpoch, noteOwnUpload, markAllSeen } = useRfpLive();
+  const [snapshot, setSnapshot] = useState<RfpTicketSummary[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [staffOnly, setStaffOnly] = useState(false);
   const [refresh, setRefresh] = useState(0);
@@ -55,17 +64,11 @@ export function RfpIntakePage() {
 
   useEffect(() => {
     let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     listRfpTickets()
       .then((items) => {
         if (!active) return;
-        setTickets(items);
+        setSnapshot(items);
         setListError(null);
-        // Keep reading while anything is being analysed or drafted.
-        const delay = listPollDelay(items);
-        if (delay !== null) {
-          timer = setTimeout(() => setRefresh((value) => value + 1), delay);
-        }
       })
       .catch((failure: unknown) => {
         if (!active) return;
@@ -74,9 +77,24 @@ export function RfpIntakePage() {
       });
     return () => {
       active = false;
-      if (timer) clearTimeout(timer);
     };
-  }, [refresh]);
+  }, [refresh, snapshotEpoch]);
+
+  // The snapshot plus every pushed ticket it does not have yet: one row per ticket_id.
+  const received = useMemo(() => live.received.map((arrival) => arrival.ticket), [live.received]);
+  const tickets = useMemo(() => (snapshot ? mergeTickets(snapshot, received) : null), [snapshot, received]);
+
+  // Follow the progress of tickets being analysed or drafted (a pushed ticket starts `analyzing`).
+  useEffect(() => {
+    if (!tickets || listError) return;
+    const delay = listPollDelay(tickets);
+    if (delay === null) return;
+    const timer = setTimeout(() => setRefresh((value) => value + 1), delay);
+    return () => clearTimeout(timer);
+  }, [tickets, listError]);
+
+  // Leaving the list means its new tickets were seen.
+  useEffect(() => markAllSeen, [markAllSeen]);
 
   async function uploadFiles(files: File[]) {
     if (files.length === 0 || uploading) return;
@@ -90,6 +108,8 @@ export function RfpIntakePage() {
       setUploading(file.name);
       try {
         const ticket = await uploadRfp(file);
+        // Shown in the list like any other, but never announced to the person who uploaded it.
+        noteOwnUpload(ticket.ticket_id);
         outcomes.push({ name: file.name, state: "accepted", ticketId: ticket.ticket_id });
       } catch (failure: unknown) {
         outcomes.push({ name: file.name, state: "refused", message: describeRfpError(failure) });
@@ -234,15 +254,34 @@ export function RfpIntakePage() {
                     </tr>
                   </thead>
                   <tbody className="block divide-y divide-slate-100 sm:table-row-group">
-                    {tickets.map((ticket) => (
-                      <tr key={ticket.ticket_id} className="grid grid-cols-2 gap-3 p-4 sm:table-row sm:p-0">
-                        <th scope="row" className="col-span-2 min-w-0 break-words font-semibold sm:px-3 sm:py-4">
+                    {tickets.map((ticket) => {
+                      const isNew = live.unseen.includes(ticket.ticket_id);
+                      return (
+                      <tr
+                        key={ticket.ticket_id}
+                        className={`grid grid-cols-2 gap-3 p-4 sm:table-row sm:p-0 ${
+                          isNew
+                            ? "bg-[color:var(--brand-accent)]/10 motion-safe:animate-[rfp-row-arrived_2.4s_ease-out_forwards]"
+                            : ""
+                        }`}
+                      >
+                        <th
+                          scope="row"
+                          className={`col-span-2 min-w-0 break-words font-semibold sm:px-3 sm:py-4 ${
+                            isNew ? "shadow-[inset_4px_0_0_0_var(--brand-accent)] pl-3" : ""
+                          }`}
+                        >
                           <Link
                             href={`${RFP_PATH}/${ticket.ticket_id}`}
                             className="text-[color:var(--brand-primary)] underline-offset-2 hover:underline"
                           >
                             {ticket.original_filename}
                           </Link>
+                          {isNew ? (
+                            <span className="ml-2 inline-flex items-center rounded-full bg-[color:var(--brand-accent)] px-2 py-0.5 align-middle text-[0.7rem] font-bold uppercase tracking-wide text-[color:var(--on-accent)]">
+                              New
+                            </span>
+                          ) : null}
                         </th>
                         <td className="min-w-0 sm:px-3 sm:py-4">
                           <span className="mb-1 block text-xs text-slate-600 sm:hidden">Client</span>
@@ -273,7 +312,8 @@ export function RfpIntakePage() {
                           <time dateTime={ticket.created_at}>{formatDate(ticket.created_at)}</time>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

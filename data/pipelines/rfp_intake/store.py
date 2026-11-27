@@ -1,8 +1,8 @@
 """Every read and write of the RFP intake tables. Each function takes the engine.
 
-The API passes its own (`services/inventory/database.get_engine`); the CLI
-builds one with `data/pipelines/reporting_db.get_pipeline_engine`; tests pass
-SQLite. Status changes are conditional updates: a step that finds its ticket
+The API and the CLI (`scripts/rfp_intake.py`, its own process) both pass
+`services/inventory/database.get_engine`; tests pass SQLite. Status changes are
+conditional updates: a step that finds its ticket
 no longer in the status its graph works on (`analyzing` for Part 1, `drafting`
 or `under_evaluation` for Part 2; swept as abandoned, or reset) raises
 `TicketStateError` instead of overwriting the newer state.
@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Final
 from uuid import UUID
 
-from sqlalchemy import delete, inspect, select, text, update
+from sqlalchemy import delete, func, inspect, select, text, update
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col
 
@@ -39,6 +39,7 @@ from data.pipelines.rfp_intake.models import (
     RfpSectionDraft,
     RfpTicket,
     RfpTicketEvent,
+    RfpTicketNotification,
     utcnow,
 )
 
@@ -51,6 +52,12 @@ IN_PROGRESS: Final = ANALYZING_ONLY | PART_2_ACTIVE
 REPROCESSABLE: Final = frozenset({TicketStatus.FAILED.value, TicketStatus.DISCARDED.value})
 LIST_LIMIT: Final = 50
 ABANDONED_STAGE: Final = "abandoned"
+# The live stream's event for a new ticket (`rfp_ticket_notifications.event`).
+TICKET_CREATED_EVENT: Final = "rfp_ticket_created"
+# Serializes the notification writers on PostgreSQL (`hashtext` of this name), so
+# `seq` order is commit order. Transaction-scoped: it works behind the
+# transaction pooler, and is released by the commit.
+NOTIFICATION_LOCK: Final = "rfp_ticket_notifications"
 
 
 class TicketNotFound(LookupError):
@@ -133,7 +140,7 @@ def _ensure_checks(connection: Any) -> None:
 
 
 def initialize_schema(engine: Engine) -> None:
-    """Create the ten tables when missing, with RLS on and no policies (as inventory).
+    """Create the eleven tables when missing, with RLS on and no policies (as inventory).
 
     Initialization, not migration: `create_all` never alters an existing table,
     so the later parts' section columns and check values are added separately.
@@ -164,6 +171,13 @@ def create_ticket(
     pdf_bytes: int,
     uploaded_by: str,
 ) -> RfpTicket:
+    """Register a ticket (`analyzing`) and its `rfp_ticket_created` announcement, atomically.
+
+    Both rows commit together or not at all, whichever process registers the
+    ticket, so the live stream announces exactly the tickets that exist. On
+    PostgreSQL the advisory lock taken first serializes registrations until
+    their commit, so a later `seq` is never visible before an earlier one.
+    """
     ticket = RfpTicket(
         id=ticket_id,
         status=ANALYZING,
@@ -175,7 +189,19 @@ def create_ticket(
         uploaded_by=uploaded_by,
     )
     with Session(engine, expire_on_commit=False) as session:
+        if session.get_bind().dialect.name == "postgresql":
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": NOTIFICATION_LOCK}
+            )
         session.add(ticket)
+        session.flush()
+        session.add(
+            RfpTicketNotification(
+                event=TICKET_CREATED_EVENT,
+                ticket_id=ticket.id,
+                payload=new_ticket_summary(ticket),
+            )
+        )
         session.commit()
     return ticket
 
@@ -525,6 +551,56 @@ def _ticket_fields(ticket: RfpTicket) -> dict[str, Any]:
         "created_at": as_utc(ticket.created_at),
         "updated_at": as_utc(ticket.updated_at),
     }
+
+
+def new_ticket_summary(ticket: RfpTicket) -> dict[str, Any]:
+    """A just-registered ticket as the list shows it (`RfpTicketSummary`), JSON-ready.
+
+    No metadata exists yet: no client, no country, no departments.
+    """
+    fields = _ticket_fields(ticket)
+    return {
+        **fields,
+        "ticket_id": str(fields["ticket_id"]),
+        "rfp_id": str(fields["rfp_id"]),
+        "created_at": fields["created_at"].isoformat(),
+        "updated_at": fields["updated_at"].isoformat(),
+        "client_name": None,
+        "client_country": None,
+        "departments_needed": [],
+    }
+
+
+def latest_notification_seq(engine: Engine) -> int:
+    """The newest `seq` of the live stream's feed, 0 when nothing was ever announced."""
+    with Session(engine) as session:
+        latest = session.execute(select(func.max(col(RfpTicketNotification.seq)))).scalar_one()
+    return int(latest or 0)
+
+
+def notifications_after(engine: Engine, seq: int, *, limit: int) -> list[dict[str, Any]]:
+    """The announcements after `seq`, oldest first, at most `limit` of them."""
+    with Session(engine) as session:
+        rows = (
+            session.execute(
+                select(RfpTicketNotification)
+                .where(col(RfpTicketNotification.seq) > seq)
+                .order_by(col(RfpTicketNotification.seq))
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        {
+            "seq": row.seq,
+            "event": row.event,
+            "ticket_id": str(row.ticket_id),
+            "payload": row.payload,
+            "created_at": as_utc(row.created_at),
+        }
+        for row in rows
+    ]
 
 
 def list_tickets(engine: Engine, *, limit: int = LIST_LIMIT) -> list[dict[str, Any]]:

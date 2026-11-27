@@ -19,7 +19,7 @@ Sources:
 
 | Layer | Path | Role |
 |---|---|---|
-| UI | `uis/backoffice/app/(protected)/rfp/`, `components/rfp/`, `lib/rfp.ts` | Upload, ticket list, Sales view. Polls while a ticket is `analyzing`. |
+| UI | `uis/backoffice/app/(protected)/rfp/`, `components/rfp/`, `lib/rfp.ts` | Upload, ticket list, Sales view. New tickets are pushed live (Milestone 10, [live-notifications.md](live-notifications.md)); it polls while a ticket is `analyzing`. |
 | HTTP | `services/rfp/router.py`, `models.py`, `lifecycle.py` | Staff-only routes on the existing API. It only triggers and queries. |
 | Graph and agents | `data/pipelines/rfp_intake/` | The `rfp_intake` LangGraph graph, the five agents, persistence, the handoff. |
 | CLI | `scripts/rfp_intake.py` (`npm run rfp`) | Run, reprocess, show, list, handoff, the live smoke run. |
@@ -211,13 +211,15 @@ All routes need a staff account: `admin` or `manager`. A self-registered `user` 
 | `POST /rfp/tickets` (multipart `file`) | **202** `{ticket_id, rfp_id, status, original_filename}`.<br>**415** not a PDF, **413** too large, **422** empty, **503** storage failure (the stored PDF is removed). |
 | `GET /rfp/tickets` | The 50 newest tickets, with the client and departments when known. It runs the stale sweep first. |
 | `GET /rfp/tickets/{id}` | Everything the Sales view shows: classification, metadata with readability, sections, Sales brief, handoff status and events. No Markdown. **404** unknown, **422** malformed id. |
+| `GET /rfp/notifications/stream` (Milestone 10) | Server-Sent Events: a named `rfp_ticket_created` the moment a ticket is registered, with resume by `Last-Event-ID`. See [live-notifications.md](live-notifications.md). |
 
 ## Backoffice
 
 The protected route `/rfp` ("RFP intake" in the nav):
 - **Upload:** a drop zone or file picker, several PDFs at once, one ticket each, with a result line per file.
 - **Ticket list:** status badges, plus the live stage while a ticket is analysing.
-- **Polling:** every 3 s while any ticket is `analyzing`, without a reload.
+- **New tickets** arrive by themselves, from any uploader or the CLI, through the live stream (Milestone 10, [live-notifications.md](live-notifications.md)): a notification on any backoffice page, a count on "RFP intake", and a new row marked "New".
+- **Polling:** every 3 s while any ticket is `analyzing`, without a reload, to follow its progress.
 
 `/rfp/[id]`, the Sales view:
 - **The Sales brief:** the summary, "Ask the client", the risks, and what no department covers.
