@@ -1,8 +1,10 @@
 """The agent graph: node contracts, transitions, compilation and its checks.
 
-    START -> receive_question
+    START -> receive_question -> guard_input
                --route_question--> END                                    (empty question)
+               --route_question--> refuse_request -> compose_response    (the guard stopped it)
                --route_question--> classify_memory_reply       (a memory proposal is pending)
+               --route_question--> generate_answer                 (small talk: no tools)
                --route_question--> recall_memory
     classify_memory_reply -> resolve_memory_proposal
                --route_after_memory_reply--> recall_memory (the message says more)
@@ -14,8 +16,16 @@
     lookup_stock_mcp  --route_after_stock-->    retrieve | generate_answer | answer_lookup_failed
     retrieve      --route_after_retrieve--> generate_answer | answer_lookup_failed
                                             | answer_no_information
-    generate_answer --route_after_answer--> propose_memory | compose_response
+    generate_answer -> validate_output --route_after_answer--> propose_memory | compose_response
     propose_memory, answer_lookup_failed, answer_no_information -> compose_response -> END
+
+The harness (SEC-114) adds three nodes that never call a model: `guard_input`
+inspects every message first (instruction changes, personal-chatbot use, other
+customers' orders, policy mixing, small talk), `refuse_request` gives the fixed
+refusal when it stops the run, and `validate_output` checks every generated
+answer before anyone reads it. The routing between them is unchanged for a
+question the guard allows: `route_question` keeps its decisions (`plan`,
+`memory_reply`, `rejected`) and gains `refused` and `direct`.
 
 Memory (MEM-092) wraps the same flow without changing a decision in it: a
 pending proposal is settled first, the approved memories the question needs
@@ -70,6 +80,7 @@ from data.pipelines import rag
 from services.agent import nodes, planner, respond
 from services.agent.config import get_agent_settings
 from services.agent.errors import AgentContractError, AgentGraphBuildError
+from services.agent.guardrails import input_guard, isolation, output_guard, scope, session
 from services.agent.memory import classifier, policy
 from services.agent.memory import store as memory_store
 from services.agent.state import (
@@ -79,8 +90,10 @@ from services.agent.state import (
     COMPOSE_RESPONSE,
     EMPTY_QUESTION,
     GENERATE_ANSWER,
+    GUARD_INPUT,
     INCIDENT_MANAGER,
     INCIDENTS_UNAVAILABLE_ANSWER,
+    INSTRUCTION_CHANGE_REFUSAL,
     INVENTORY_MANAGER,
     KNOWLEDGE_BASE,
     LOOKUP_FIELDS,
@@ -97,19 +110,28 @@ from services.agent.state import (
     MEMORY_UPDATE_QUESTION,
     NO_INFORMATION_ANSWER,
     NODE_OF_SOURCE,
+    ORDER_NOT_AUTHORIZED,
+    OUTPUT_WITHHELD,
+    PERSONAL_TASK_REFUSAL,
     PLAN_SOURCES,
+    POLICY_COUNTRY_NOTICE,
+    POLICY_COUNTRY_UNKNOWN_NOTICE,
     PROPOSE_MEMORY,
     RECALL_MEMORY,
     RECEIVE_QUESTION,
+    REFUSE_REQUEST,
     RESOLVE_MEMORY_PROPOSAL,
     RESULT_FIELD_OF_SOURCE,
     RETRIEVE,
+    SCOPE_REDIRECT,
     SOURCE_ORDER,
     STATE_KEYS,
     STOCK_NOT_FOUND_ANSWER,
     STOCK_UNAVAILABLE_ANSWER,
     TICKET_NOT_FOUND_ANSWER,
     TICKET_UNAVAILABLE_ANSWER,
+    UNREADABLE_MESSAGE,
+    VALIDATE_OUTPUT,
     AgentState,
     lookup_succeeded,
 )
@@ -183,10 +205,13 @@ def _paths_after(source: str | None) -> dict[str, str]:
 
 
 # "plan" keeps its name: the run goes on to planning, after recalling memory.
+# "refused" and "direct" are the harness's (SEC-114).
 QUESTION_PATHS: Final[Mapping[str, str]] = {
     "plan": RECALL_MEMORY,
     "memory_reply": CLASSIFY_MEMORY_REPLY,
     "rejected": END,
+    "refused": REFUSE_REQUEST,
+    "direct": GENERATE_ANSWER,
 }
 MEMORY_REPLY_PATHS: Final[Mapping[str, str]] = {
     "continue": RECALL_MEMORY,
@@ -210,14 +235,24 @@ def _decide(edge: str, paths: Mapping[str, str], decision: str, reason: str) -> 
 
 
 def route_question(state: AgentState) -> str:
-    """An empty question ends the run; a pending memory proposal is settled first;
-    anything else goes on to planning."""
+    """After the input guard: an empty question ends the run; a message the guard
+    stopped gets its fixed refusal; a pending memory proposal is settled first;
+    small talk is answered directly; anything else goes on to planning."""
     if state.get("error"):
         return _decide(
             ROUTE_QUESTION,
             QUESTION_PATHS,
             "rejected",
             f"{RECEIVE_QUESTION} refused the question: {state['error']}",
+        )
+    guard = state.get("guard") or {}
+    if guard.get("action") in ("block", "refuse"):
+        return _decide(
+            ROUTE_QUESTION,
+            QUESTION_PATHS,
+            "refused",
+            f"{GUARD_INPUT} {guard['action']}ed it: {guard.get('category')} "
+            f"({guard.get('failure_type')}, rule {guard.get('rule')})",
         )
     pending = state.get("pending_proposal")
     if pending:
@@ -227,6 +262,13 @@ def route_question(state: AgentState) -> str:
             "memory_reply",
             f"memory proposal {pending.get('proposal_id')} is pending: the message is "
             "evaluated against it first",
+        )
+    if guard.get("category") == "small_talk":
+        return _decide(
+            ROUTE_QUESTION,
+            QUESTION_PATHS,
+            "direct",
+            f"small talk ({guard.get('rule')}): a brief answer and the redirect, no tools",
         )
     return _decide(ROUTE_QUESTION, QUESTION_PATHS, "plan", "the question is not empty")
 
@@ -320,9 +362,13 @@ def answer_decision(state: AgentState) -> tuple[str, str]:
     failed = [source for source, result in ran if not lookup_succeeded(result)]
 
     memories = len((state.get("memory_recall") or {}).get("items") or [])
+    orders = len((state.get("order_access") or {}).get("orders") or [])
     update = bool((state.get("plan") or {}).get("user_update"))
+    casual = nodes.casual_scope(state)
 
     parts = [_describe_lookup(source, result) for source, result in ran]
+    if orders:
+        parts.append(f"{orders} verified order(s)")
     if "context" in state:
         parts.append(f"{chunks} chunk(s) scored at least {rag.MIN_SCORE:.2f}")
     if memories:
@@ -330,12 +376,18 @@ def answer_decision(state: AgentState) -> tuple[str, str]:
     summary = "; ".join(parts)
 
     notice = f"; the failed lookup of {', '.join(failed)} is stated as such" if failed else ""
-    if chunks or found or memories:
+    if chunks or found or memories or orders:
         return GENERATE, f"evidence to answer from: {summary}{notice}"
     if update:
         return (
             GENERATE,
             f"no evidence, but the user gives an update to acknowledge: {summary}{notice}",
+        )
+    if casual is not None and not failed:
+        return (
+            GENERATE,
+            f"no evidence, but the message is {casual.replace('_', ' ')}: a brief answer and "
+            f"the redirect: {summary}",
         )
     if failed:
         return LOOKUP_FAILED, f"no evidence and a lookup failed: {summary}"
@@ -374,6 +426,18 @@ NODES: Final[tuple[NodeSpec, ...]] = (
         writes=frozenset({"question", "error"}),
     ),
     NodeSpec(
+        GUARD_INPUT,
+        nodes.guard_input,
+        reads=frozenset({"question", "error", "session"}),
+        writes=frozenset({"guard", "order_access", "guardrail_events"}),
+    ),
+    NodeSpec(
+        REFUSE_REQUEST,
+        nodes.refuse_request,
+        reads=frozenset({"guard"}),
+        writes=frozenset({"answer"}),
+    ),
+    NodeSpec(
         CLASSIFY_MEMORY_REPLY,
         nodes.classify_memory_reply,
         reads=frozenset({"question", "pending_proposal"}),
@@ -388,14 +452,14 @@ NODES: Final[tuple[NodeSpec, ...]] = (
     NodeSpec(
         RECALL_MEMORY,
         nodes.recall_memory,
-        reads=frozenset({"question"}),
+        reads=frozenset({"question", "session"}),
         writes=frozenset({"memory_recall"}),
     ),
     NodeSpec(
         PLAN_SOURCES,
         nodes.plan_sources,
-        reads=frozenset({"question"}),
-        writes=frozenset({"plan"}),
+        reads=frozenset({"question", "session"}),
+        writes=frozenset({"plan", "guardrail_events"}),
     ),
     NodeSpec(
         LOOKUP_TICKET,
@@ -419,15 +483,31 @@ NODES: Final[tuple[NodeSpec, ...]] = (
         GENERATE_ANSWER,
         nodes.generate_answer,
         reads=frozenset(
-            {"question", "context", "ticket_lookup", "stock_lookup", "memory_recall", "plan"}
+            {
+                "question",
+                "context",
+                "ticket_lookup",
+                "stock_lookup",
+                "memory_recall",
+                "plan",
+                "guard",
+                "order_access",
+                "session",
+            }
         ),
-        writes=frozenset({"answer", "memory_candidate"}),
+        writes=frozenset({"answer", "memory_candidate", "model_scope", "guardrail_events"}),
+    ),
+    NodeSpec(
+        VALIDATE_OUTPUT,
+        nodes.validate_output,
+        reads=frozenset({"answer", "model_scope", "memory_candidate", "guard", "plan", "session"}),
+        writes=frozenset({"answer", "memory_candidate", "output_guard", "guardrail_events"}),
     ),
     NodeSpec(
         PROPOSE_MEMORY,
         nodes.propose_memory,
         reads=frozenset({"question", "memory_candidate", "conversation_id", "user_id", "run_id"}),
-        writes=frozenset({"memory_proposal"}),
+        writes=frozenset({"memory_proposal", "guardrail_events"}),
     ),
     NodeSpec(
         ANSWER_LOOKUP_FAILED,
@@ -451,6 +531,9 @@ NODES: Final[tuple[NodeSpec, ...]] = (
 
 EDGES: Final[tuple[tuple[str, str], ...]] = (
     (START, RECEIVE_QUESTION),
+    (RECEIVE_QUESTION, GUARD_INPUT),
+    (REFUSE_REQUEST, COMPOSE_RESPONSE),
+    (GENERATE_ANSWER, VALIDATE_OUTPUT),
     (CLASSIFY_MEMORY_REPLY, RESOLVE_MEMORY_PROPOSAL),
     (RECALL_MEMORY, PLAN_SOURCES),
     (PROPOSE_MEMORY, COMPOSE_RESPONSE),
@@ -460,13 +543,13 @@ EDGES: Final[tuple[tuple[str, str], ...]] = (
 )
 
 CONDITIONAL_EDGES: Final[tuple[ConditionalEdge, ...]] = (
-    ConditionalEdge(RECEIVE_QUESTION, route_question, QUESTION_PATHS),
+    ConditionalEdge(GUARD_INPUT, route_question, QUESTION_PATHS),
     ConditionalEdge(RESOLVE_MEMORY_PROPOSAL, route_after_memory_reply, MEMORY_REPLY_PATHS),
     ConditionalEdge(PLAN_SOURCES, route_after_plan, PLAN_PATHS),
     ConditionalEdge(LOOKUP_TICKET, route_after_ticket, TICKET_PATHS),
     ConditionalEdge(LOOKUP_STOCK, route_after_stock, STOCK_PATHS),
     ConditionalEdge(RETRIEVE, route_after_retrieve, RETRIEVE_PATHS),
-    ConditionalEdge(GENERATE_ANSWER, route_after_answer, ANSWER_PATHS),
+    ConditionalEdge(VALIDATE_OUTPUT, route_after_answer, ANSWER_PATHS),
 )
 
 # What each node reads: the run trace stores only these fields as a node's input.
@@ -661,6 +744,36 @@ def graph_fingerprint() -> str:
             STOCK_NOT_FOUND_ANSWER,
             STOCK_UNAVAILABLE_ANSWER,
         ],
+        "harness": {
+            "input_rules": input_guard.rules_fingerprint(),
+            "max_message_chars": input_guard.MAX_MESSAGE_CHARS,
+            "isolation": [
+                isolation.REMOVED_INSTRUCTION,
+                isolation.QUARANTINE_SHARE,
+                isolation.MIN_REMAINING_CHARS,
+            ],
+            "output": [
+                output_guard.MAX_ANSWER_CHARS,
+                output_guard.SHINGLE_WORDS,
+                output_guard.GUARD_CANARY,
+            ],
+            "scope": scope.scope_prompt(),
+            "customer": [
+                sorted(session.CUSTOMER_SOURCES),
+                list(session.CUSTOMER_MEMORY_CATEGORIES),
+                sorted(planner.CUSTOMER_TOOLS),
+            ],
+            "texts": [
+                SCOPE_REDIRECT,
+                INSTRUCTION_CHANGE_REFUSAL,
+                PERSONAL_TASK_REFUSAL,
+                ORDER_NOT_AUTHORIZED,
+                UNREADABLE_MESSAGE,
+                POLICY_COUNTRY_NOTICE,
+                POLICY_COUNTRY_UNKNOWN_NOTICE,
+                OUTPUT_WITHHELD,
+            ],
+        },
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8"))
     return digest.hexdigest()[:16]

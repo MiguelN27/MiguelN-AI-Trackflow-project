@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from services.agent.memory.store import Memory
-from services.agent.tracing import RunTrace, TraceEvent
+from services.agent.tracing import GuardrailSummary, RunTrace, TraceEvent
 from services.knowledge.models import MAX_QUESTION_LENGTH
 
 # Only the transport limit: whether a question is usable (not empty) is the
@@ -159,4 +159,49 @@ class AgentRunTrace(BaseModel):
             error_type=trace.error_type,
             sources=trace.sources(),
             events=[AgentTraceEvent.from_event(event) for event in trace.events],
+        )
+
+
+class GuardrailCountView(BaseModel):
+    guardrail: str
+    action: str
+    failure_type: str
+    count: int
+    # In how many runs.
+    runs: int
+
+
+class GuardrailSummaryResponse(BaseModel):
+    """How many times each guardrail was triggered in the window (SEC-114)."""
+
+    since: str | None
+    until: str | None
+    conversation_id: str | None
+    # Runs with at least one guardrail event, and the events in all.
+    runs: int
+    total: int
+    by_failure_type: dict[str, int]
+    by_guardrail: dict[str, int]
+    counts: list[GuardrailCountView]
+
+    @classmethod
+    def from_summary(cls, summary: GuardrailSummary) -> "GuardrailSummaryResponse":
+        return cls(
+            since=summary.since,
+            until=summary.until,
+            conversation_id=summary.conversation_id,
+            runs=summary.runs,
+            total=summary.total,
+            by_failure_type=summary.by("failure_type"),
+            by_guardrail=summary.by("guardrail"),
+            counts=[
+                GuardrailCountView(
+                    guardrail=c.guardrail,
+                    action=c.action,
+                    failure_type=c.failure_type,
+                    count=c.count,
+                    runs=c.runs,
+                )
+                for c in summary.counts
+            ],
         )

@@ -1,11 +1,14 @@
 """Knowledge agent CLI: `npm run agent -- <command>` (`python -m services.agent`).
 
     check                 compile the graph, print its nodes, version and Mermaid diagram
-    ask "<question>" [--conversation ID] [--user NAME]
+    ask "<question>" [--conversation ID] [--user NAME] [--as-customer EMAIL]
                           run the graph once and print the answer, run and conversation
-    chat [--conversation ID] [--user NAME]
+    chat [--conversation ID] [--user NAME] [--as-customer EMAIL]
                           a multi-turn conversation in the terminal (empty line or Ctrl-D
                           to leave); answer "Want me to remember this?" here
+    guardrails [--since ISO] [--conversation ID] [--recent N] [--json]
+                          how many times each guardrail was triggered (SEC-114), by
+                          action and failure type; --recent also lists the last events
     trace <run_id>|--last print a run's trace: nodes, decisions and outputs in order
     runs [--limit N]      list recent runs
     resume <run_id>       continue a failed run from the node that failed
@@ -17,7 +20,9 @@
     memory cleanup        expire what is past its date and apply the caps (logged)
 
 `--user` is who approves a memory in a CLI conversation (default `cli:<os user>`):
-every memory records who authorized it.
+every memory records who authorized it. The CLI runs as TrackFlow staff;
+`--as-customer EMAIL` runs as the customer with that email instead, held to
+their own orders (the order records' `customer_email`) and to the knowledge base.
 
 Runs and traces go to the same store as the API's (`AGENT_STORE_PATH`). `ask`
 and `resume` need the models (`RagSettings`), plus Qdrant, and for questions
@@ -44,6 +49,8 @@ from services.agent.errors import (
     AgentRunNotResumable,
 )
 from services.agent.graph import NODES, build_agent_graph, graph_fingerprint
+from services.agent.guardrails.events import format_counts
+from services.agent.guardrails.session import Session
 from services.agent.memory.store import ConversationNotFound, Memory, get_memory_store
 from services.agent.tracing import RunTrace, TraceEvent, get_trace_store
 
@@ -62,6 +69,21 @@ def _describe_output(event: TraceEvent) -> str:
     if event.status == "error":
         return f"ERROR {event.error_type}: {event.error_message or '(message withheld)'}"
     output = event.output or {}
+    if "guard" in output:
+        guard = output["guard"] or {}
+        access = output.get("order_access") or {}
+        orders = ", ".join(o.get("tracking_number", "?") for o in access.get("orders") or [])
+        return (
+            f"guard {guard.get('action')}: {guard.get('category')}"
+            + (f" ({guard.get('failure_type')}, {guard.get('rule')})" if guard.get("rule") else "")
+            + (f"; orders {orders}" if orders else "")
+        )
+    if "output_guard" in output:
+        checked = output["output_guard"] or {}
+        found = ", ".join(f.get("rule", "?") for f in checked.get("findings") or [])
+        return f"output {checked.get('action')} (model scope {checked.get('model_scope')})" + (
+            f": {found}" if found else ""
+        )
     if "memory_reply" in output:
         reply = output["memory_reply"] or {}
         decision = reply.get("decision") or {}
@@ -172,8 +194,38 @@ def _default_user() -> str:
     return f"cli:{getpass.getuser()}"
 
 
-def _chat(conversation_id: str | None, user: str) -> int:
-    print(f"Conversation as {user}. An empty line or Ctrl-D leaves.")
+def _session(as_customer: str | None) -> Session:
+    return Session("customer", as_customer) if as_customer else Session()
+
+
+def _guardrails(args: argparse.Namespace) -> int:
+    store = get_trace_store()
+    summary = store.guardrail_summary(since=args.since, conversation_id=args.conversation)
+    if args.json:
+        data = asdict(summary)
+        data["total"] = summary.total
+        data["by_failure_type"] = summary.by("failure_type")
+        if args.recent:
+            data["recent"] = [asdict(e) for e in store.guardrail_events(limit=args.recent)]
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+    window = f"since {args.since}" if args.since else "all recorded runs"
+    print(f"Guardrail triggers ({window}; {summary.runs} run(s))")
+    for line in format_counts(summary.as_counter()):
+        print(f"  {line}")
+    if args.recent:
+        print(f"Last {args.recent} event(s):")
+        for item in store.guardrail_events(since=args.since, limit=args.recent):
+            print(
+                f"  {item.recorded_at}  {item.guardrail:20} {item.action:10} "
+                f"{item.failure_type:10} {item.rule}  (run {item.run_id}, {item.audience})"
+            )
+    return 0
+
+
+def _chat(conversation_id: str | None, user: str, session: Session) -> int:
+    who = f"customer {session.email}" if session.is_customer else "staff"
+    print(f"Conversation as {user} ({who}). An empty line or Ctrl-D leaves.")
     while True:
         try:
             message = input("you> ")
@@ -183,7 +235,9 @@ def _chat(conversation_id: str | None, user: str) -> int:
         if not message.strip():
             break
         try:
-            result = runner.run_agent(message, user_id=user, conversation_id=conversation_id)
+            result = runner.run_agent(
+                message, user_id=user, conversation_id=conversation_id, session=session
+            )
         except AgentRunError as error:
             _report_failure(error)
             continue
@@ -258,9 +312,16 @@ def main(argv: list[str] | None = None) -> int:
     ask.add_argument("question")
     ask.add_argument("--conversation", help="continue this conversation")
     ask.add_argument("--user", default=_default_user(), help="who is asking (and approving)")
+    ask.add_argument("--as-customer", metavar="EMAIL", help="run as this customer, not staff")
     chat = commands.add_parser("chat", help="a multi-turn conversation in the terminal")
     chat.add_argument("--conversation", help="continue this conversation")
     chat.add_argument("--user", default=_default_user(), help="who is asking (and approving)")
+    chat.add_argument("--as-customer", metavar="EMAIL", help="run as this customer, not staff")
+    guardrails = commands.add_parser("guardrails", help="how often each guardrail triggered")
+    guardrails.add_argument("--since", help="only events at or after this ISO time")
+    guardrails.add_argument("--conversation", help="only this conversation's events")
+    guardrails.add_argument("--recent", type=int, default=0, help="also list the last N events")
+    guardrails.add_argument("--json", action="store_true", help="the summary as JSON")
     memory = commands.add_parser("memory", help="inspect the team memory and its log")
     memory_commands = memory.add_subparsers(dest="memory_command", required=True)
     memory_list = memory_commands.add_parser("list", help="the active memories")
@@ -286,13 +347,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "check":
         return _check()
 
+    if args.command == "guardrails":
+        return _guardrails(args)
+
     if args.command in {"ask", "chat"}:
+        session = _session(args.as_customer)
         try:
             if args.command == "chat":
-                return _chat(args.conversation, args.user)
+                return _chat(args.conversation, args.user, session)
             _print_result(
                 runner.run_agent(
-                    args.question, user_id=args.user, conversation_id=args.conversation
+                    args.question,
+                    user_id=args.user,
+                    conversation_id=args.conversation,
+                    session=session,
                 )
             )
         except ConversationNotFound:

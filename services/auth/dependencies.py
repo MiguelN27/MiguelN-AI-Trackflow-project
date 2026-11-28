@@ -59,3 +59,24 @@ CurrentUser = Annotated[UserInDB, Depends(get_current_user)]
 
 def is_admin(user: UserInDB) -> bool:
     return user.role is Role.ADMIN
+
+
+STAFF_ROLES = frozenset({Role.ADMIN, Role.MANAGER})
+
+
+def require_staff(user: CurrentUser) -> UserInDB:
+    """Admin and manager accounts only: TrackFlow staff.
+
+    Self-registered accounts have the `user` role (customers, SEC-114). Routes
+    that expose commercially sensitive client documents, such as RFP intake,
+    take `StaffUser` instead of `CurrentUser`.
+    """
+    if user.role not in STAFF_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This area is available to TrackFlow staff only",
+        )
+    return user
+
+
+StaffUser = Annotated[UserInDB, Depends(require_staff)]

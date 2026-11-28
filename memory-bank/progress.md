@@ -1,6 +1,433 @@
 # Development Progress
 
-Last updated: 2026-11-13
+Last updated: 2026-11-26
+
+## Update 2026-11-26 (later) - Operational inactivity alerts on the live stream (Milestone 10 Part 2)
+
+Goals accomplished.
+- **Brief (the developer, in chat):** with the same technical bar as the RFP notifications (a named event, a structured payload, the same reconnection), alert when a process or a location fails to register expected activity within a defined period. Branch `feature/sse-notifications`. Design: `docs/operations/inactivity-alerts.md`.
+- **Decided with the developer:**
+  - four rule families: warehouse orders (location), scheduled jobs (process), RFP approvals past SLA (the "vacancy" case) and incidents left untouched (one alert per branch);
+  - the rules in a versioned JSON file;
+  - auto-resolve plus a REST acknowledgement, broadcast to every tab;
+  - one shared stream and outbox.
+- **Generalized the stream** (no behaviour change for RFPs):
+  - the outbox `data/notifications/` (`live_notifications`, a single seq);
+  - `services/notifications/` (hub, registry `EVENT_MODELS`, `GET /notifications/stream`; `/rfp/notifications/stream` is an alias);
+  - `LIVE_STREAM_*` replaces `RFP_STREAM_*`;
+  - `lib/live-stream.ts` and `components/live/LiveProvider.tsx`;
+  - **fixed:** the browser now advances its cursor past events it cannot use.
+- **The monitor** (`services/operations/`):
+  - rules validated at start-up;
+  - working-hours clock per timezone;
+  - read-only sources;
+  - a pure plan;
+  - `evaluate` under an advisory lock, with a partial unique index (one open alert per subject);
+  - the alert row and its live event in one transaction;
+  - an asyncio task in the lifespan (60 s);
+  - REST snapshot and acknowledgement;
+  - CLI `npm run ops`.
+- **Backoffice:**
+  - a persistent alert banner under the header (warning/critical marks, distinct from the RFP card), with a ticking "for …", the expected period and the evidence, plus Acknowledge / "Acknowledged by", and short "resumed" lines;
+  - the "Alerts" nav count;
+  - the `/operations` page (open + 7-day history).
+
+Verification.
+- **Backend:** full suite **2408 passed, 66 skipped, 0 failed** (without the stale `test_agent_evals.py`); `tests/operations` 39 passed after the final fixes. Opt-in PostgreSQL **15/15** (3 new + 12 RFP through the shared outbox).
+- **Backoffice:** Jest **359**; `tsc` and ESLint clean.
+- **Static checks:** ruff clean on every changed Python file; mypy (`--check-untyped-defs`) clean on the new code. The two older RFP test files keep their pre-existing findings, outside our hunks.
+- **Browser:** alerts **22/22**; the RFP verification re-run on the refactored stream **34/34**.
+  - live alert on two tabs 4 ms apart, without a re-read;
+  - acknowledgement across tabs;
+  - resolution by a real order;
+  - recovery after a real cut, exactly once;
+  - RFPs alongside;
+  - customer excluded;
+  - dark mode, reduced motion and 390 px.
+- **Real data** (`npm run ops -- check --dry-run`):
+  - Supabase was unreachable (`OperationalError`), so the DB rules were skipped as designed;
+  - on the real TinyDB it would open 3 incident alerts (Central 17 SLA-critical, Central 12, Zaragoza warehouse 1).
+  - It surfaced two defects, fixed with tests: identical incident timestamps crashed the sort, and one source's non-database error aborted the whole round.
+- **Found and fixed during the work:**
+  - the resolution reasons were redefined (`slot_closed`, not "filled", for a withdrawn RFP section);
+  - old dates in the banner now show their year;
+  - the dry run now reports reachable sources when the database is down.
+
+Still missing / next goals.
+1. **Commit when asked** (AGENTS.md workflow). Include `data/notifications/`, `services/notifications/`, `services/operations/`, `config/`, `scripts/operations_monitor.py`, `tests/operations/`, the moved tests, `docs/operations/`, `package.json` and `.env.example`.
+2. **Supabase:** it was unreachable on 2026-11-26, which is likely why the nightly export has failed since 11-13. Once it is back:
+   - inspect the schema (new `live_notifications` and `operational_alerts`; the old `rfp_ticket_notifications` is unused);
+   - run `npm run ops -- check --dry-run`, which should report `nightly-export` overdue.
+3. **Optional:**
+   - email escalation for critical alerts (Resend), stopped by an acknowledgement;
+   - public holidays in operating hours;
+   - thresholds calibrated on 4 weeks of real order volume;
+   - status-change events for RFP tickets on the same stream.
+4. **Pre-existing, unrelated:** `/incidents` overflows at 390 px (its table's `min-w-[56rem]`).
+5. **Still open from earlier:** Part 3's Supabase checks and `RFP_APPROVERS`; re-recording the agent evals; Auth0 and the MCP Playground.
+
+## Update 2026-11-26 - Live RFP notifications over SSE (Milestone 10 Part 1)
+
+Goals accomplished.
+- **Brief:** the new `lead-instr.png` (the Sales team's RFI, turned into a ticket: push a notification the moment an RFP ticket is registered, replacing the manual refresh), with the checklist in `stages-todo.png` (Backend, Frontend, Testing). No model or agent calls: a communication layer only.
+- **Branch:** `feature/sse-notifications`. **Design:** `docs/rfp/live-notifications.md`.
+
+Decided with the developer, after answering the CTO's three design questions (shared layer and 50 viewers, recovery and duplicates, SSE versus WebSockets):
+- **Event feed:** an outbox table, `rfp_ticket_notifications`, written in the same transaction as the ticket, plus one shared hub per API process. It catches tickets the CLI registers from its own process, and replay survives restarts.
+- **Scope:** the whole backoffice for staff. Customer accounts never connect.
+- **Library:** `sse-starlette` 3.7.0 (already installed through `mcp`), declared with `uv add`. No version changed and `requirements.txt` was already pinned.
+
+What was built.
+- **Backend:**
+  - `store.create_ticket` writes the ticket and its `rfp_ticket_created` row atomically. On PostgreSQL it does so under `pg_advisory_xact_lock`, so seq order is commit order.
+  - New reads `notifications_after` and `latest_notification_seq`; settings `RFP_STREAM_*` (heartbeat, poll, replay window and limit, queue size, max lifetime).
+  - `services/rfp/notifications.py`:
+    - a `NotificationHub` with one watcher per process, which runs only while someone is connected;
+    - each frame encoded once, a ring of 256 events, and slow-client eviction;
+    - a thread-safe `wake()`.
+    - The stream subscribes first, then replays from the ring or the database, then sends `rfp_stream_ready`, then goes live. A cursor the replay cannot honour gets `rfp_stream_resync`.
+  - `GET /rfp/notifications/stream`: `StaffUser`, so the same JWT (401/403 before any byte), and `EventSourceResponse` with `: keep-alive` comment frames and `X-Accel-Buffering: no`. It ends at the token's expiry or after the lifetime.
+  - The upload's first background task is `notifications.wake`, and the lifespan's shutdown closes the hub.
+- **Frontend:**
+  - `lib/rfp-stream.ts`: `fetch` + `ReadableStream` through `requestAuthenticatedApi` (bearer, 401 → sign in), an incremental SSE parser, event validation, equal-jitter backoff (0.5-1 s … 30 s), a watchdog (3 heartbeats), and resume by `Last-Event-ID`.
+  - `lib/rfp-live.ts`: dedupe by `ticket_id`, unseen tickets, own uploads, the notification's text, the title count.
+  - `RfpLiveProvider` in the protected layout. On screen:
+    - the floating notification `NewRfpToast` (Cream Orange edge, bell, "needs processing", "arrived while you were offline");
+    - `RfpLiveIndicator` in the header (Live / Reconnecting in N s · Retry now / Offline);
+    - a count on "RFP intake";
+    - New rows on `/rfp`, merged with the snapshot, without a re-read;
+    - "(n)" in a background tab's title;
+    - `--on-accent` token and `motion-safe` keyframes.
+  - The list is read again once only when it may be stale: a first connection, a resync, or the recovery after a failed connection.
+- **Docs:** `docs/rfp/live-notifications.md` (contract, the three design answers, the recovery strategy, configuration, tests, verification, limits). `docs/rfp/rfp-intake.md` updated; `.env.example` documents the settings.
+
+Verification.
+- **Backend:**
+  - new `tests/test_rfp_stream_api.py` (16, on the wire), `tests/test_rfp_stream_live.py` (4, real socket: push, CLI ticket, drop and recovery without duplicates, restart), `tests/test_rfp_notifications_hub.py` (8) and `tests/pipelines/rfp_intake/test_notifications_store.py` (4); the existing schema tests now include the new table.
+  - The full suite: **2370 passed, 63 skipped, 0 failed** (with `tests/test_core_db.py`). It was run with `.venv/bin/python` and `DYLD_LIBRARY_PATH` for XGBoost, without `test_agent_evals.py`, the known stale recording.
+  - Opt-in PostgreSQL on a throwaway `postgres:17-alpine`: **12/12**, including the new commit-order test.
+- **Backoffice:** Jest **345** (23 new, `rfp-stream.test.ts`); `tsc` and ESLint clean.
+- **Static checks:** `ruff format` / `ruff check --isolated` clean on every changed Python file, with only our hunks; mypy (`--check-untyped-defs`) clean on the new and changed modules and tests.
+- **In the browser** (Chrome via playwright-core, the real API on a throwaway Postgres behind a cuttable TCP proxy, two Sales accounts and a customer): **33/34 checks** on the first run, **34/34** after the TinyDB fix, with no 500 in the API log.
+  - B was notified 79-101 ms after A's upload, without a list re-read. The uploader got no notification of its own upload.
+  - Notified on `/incidents` too, with the nav count.
+  - After a real connection drop, B resumed with `Last-Event-ID` and showed "2 RFPs arrived while you were offline", each row once.
+  - During an API outage the backoff grew (1, 2, 4, 5, 12 s). A ticket registered by the CLI meanwhile was recovered after the restart, and no row was duplicated.
+  - The customer opened no stream. Also checked: the title count, reduced motion, 390 px and dark mode.
+  - The one failure was the pre-existing TinyDB concurrent-read 500 in `get_current_user` on a list read, which bypasses CORS. Fixed the same day (below).
+- **TinyDB race fixed** (asked by the developer):
+  - FastAPI's threadpool shared TinyDB's single file handle. In a reproduction with 8 threads × 60 operations: 458 `JSONDecodeError`s, 475 of 481 inserts lost, and a corrupt file ("Extra data").
+  - `services/core/db.py` now opens `ThreadSafeTinyDB`, with one re-entrant lock shared by `ThreadSafeJSONStorage` (each read and write) and `ThreadSafeTable` (`_update_table`'s read-modify-write, `search` with its query cache, `clear_cache`).
+  - The same reproduction: 481/481, no error, five runs out of five.
+  - New `tests/test_core_db.py` (3): concurrent reads and writes, the file staying valid JSON, and 80 concurrent `GET /auth/me` all 200. Both behaviour tests fail on the old handle.
+  - The lock is per process; two processes writing the same file (the API and a seed script) are still not coordinated.
+- **Found and fixed during the work:**
+  - the browser's watchdog took the announced heartbeat only from the next chunk;
+  - closed streams were logged as `lifetime` when the client had disconnected;
+  - after an outage the list error stayed up and the listed statuses were stale (the list is now read once on recovery).
+
+Still missing / next goals.
+1. **Commit when asked** (AGENTS.md workflow). Include the new tests, `tests/sse_support.py`, `docs/rfp/live-notifications.md`, `uv.lock` and `pyproject.toml`, and ask about the replaced `lead-instr.png` / `stages-todo.png` (and the deleted `visual-ref.png`).
+2. **Supabase:** inspect the live `rfp_*` schema before the first API start against it (the new table `rfp_ticket_notifications`, RLS on).
+3. **Push status changes too** (`rfp_ticket_status_changed` on the same stream), then drop the list's progress polling.
+4. **Optional:**
+   - a leader tab sharing one stream through `BroadcastChannel`, against the browser's 6-connections-per-origin limit under HTTP/1.1;
+   - HTTP/2 at a proxy.
+5. **Still open from earlier:** Part 3's Supabase checks and `RFP_APPROVERS`; re-recording the agent evals; Auth0 and the MCP Playground.
+
+## Update 2026-11-23 (later) - RFP human approval and document completion (Milestone 9 Part 3)
+
+Goals accomplished.
+- **Brief:** the new `lead-instr.png` (ticket "Human approval and document completion"), with the checklist in `stages-todo.png` and the visual reference in `visual-ref.png`. The briefing is the root `agentic-workflow-context.md`.
+- **Branch:** `feature/rfp-approval-completion`. **Design:** `docs/rfp/approval-completion.md`.
+
+Decided with the developer:
+- **Checkpointer:** PostgreSQL in the same database. `langgraph-checkpoint-postgres` 3.2.1 and `psycopg[binary]` 3.3.9 were added with `uv add` and `requirements.txt` was re-exported. The tables live in schema `rfp_graph`, with RLS on. SQLite engines use `SqliteSaver`.
+- **Approvers:** configured owner accounts (`RFP_APPROVERS`). Only the department owner's account decides; admins too get 403 (no ladder).
+- **Reject:** ends the proposal. The ticket goes to the new terminal status `rejected`, and the other open requests are withdrawn.
+- **Arbitration:** the briefing's §7 rule is applied deterministically, under the named arbiter, with no interrupt for the arbiter.
+
+What was built (`data/pipelines/rfp_intake/approval/`, no `services/` import):
+- **Human approval per department:**
+  - the graph `rfp_approval`, one checkpoint thread per ticket, `rfp-<ticket_id>`;
+  - `Send` one `review_department` branch per department. Its `rfp_department_review` subgraph persists the request in `open_review`, pauses in a side-effect-free `await_decision` (`interrupt`), and checks the answer again in `validate_decision`.
+  - A pause holds only its own branch: department B is approved, or revised, while A stays interrupted.
+  - `apply_decisions` is the explicit resume entry point (`Command(resume={interrupt_id: decision})`, several at once). It never re-runs `open_approval` or Parts 1 and 2.
+  - A per-ticket lease serializes resumes. `resume` and `recover` continue after a failure without losing a decision.
+- **Request changes:** Part 2's own generator-evaluator loop revises the section with the owner's comment (enveloped) or the arbiter's instruction, then the owner reviews it again.
+- **Guardrails:**
+  - `RFP_MAX_REVISION_ROUNDS` (3) and `RFP_MAX_ARBITRATION_ROUNDS` (2);
+  - the arbitration node implements the §7 table verbatim (drift test): `volume-vs-capacity` caps the volume, `returns-sla-breach` is ruled by Sofía Ramos (her section) or Miguel Torres, `currency-mismatch` by Miguel Torres. A conflict unresolved at a limit is rejected.
+- **Traceability:** every node execution adds agent, input, output and timestamps to the state's `trace` and to `rfp_ticket_events`. `trace.ticket_trace` covers Parts 1-3. It is available through the CLI, `GET /rfp/tickets/{id}/trace` and the "Run history" panel.
+- **Document completion:** `compose_final_document` is deterministic, with the approved sections word for word. It has the briefing's FinalDocument fields and is stored with `done` in one transaction. It is served as JSON and `.md`, and shown on the ticket page.
+- **API:**
+  - the decision route (202; 403/404/409/422);
+  - the document, download and trace routes;
+  - the detail with approval fields and `can_decide`;
+  - the upload chains the opening of the approvals;
+  - the lifespan prepares the checkpointer and starts recovery.
+- **Backoffice:**
+  - the decision form for the owner only, with the history;
+  - the "Approval by department" card (progress, rulings, failures, rejection);
+  - the final document and its download;
+  - the run history;
+  - polling through Part 3.
+- **CLI:**
+  - `request-approval`, `approvals`, `decide`, `resume`, `document`, `trace`, `graph --part 3`, and `kpi` with approval and build times;
+  - `run` opens the approvals;
+  - `smoke` runs Parts 1 → 3 with simulated owners and one live revision;
+  - `npm run rfp:e2e`.
+- **Transitions between parts fixed:**
+  - the Part 2 text "Every section passed" was shown for any `waiting_for_approval` ticket;
+  - "needsa person's review" (glued words);
+  - `waiting_for_approval` was shown green like a finished ticket;
+  - no polling after Part 2;
+  - the download file name was hidden by CORS;
+  - the browser tooltip replaced the form's own message;
+  - the revision-round wording.
+
+Verification:
+- **Offline:**
+  - `tests/pipelines/rfp_intake/approval/` **48** and `tests/test_rfp_approval_api.py` **15**, covering the checklist: successful interruption and resume, the iteration limit reached, arbitration on disagreement, **B approved while A stays interrupted**, and Parts 1 → 3 with simulated resumes. They run through `npm run rfp:e2e`.
+  - Full backend: **2335 passed, 62 skipped, 0 failed** without `test_agent_evals.py` (the known stale recording).
+- **Opt-in PostgreSQL** on a throwaway `postgres:17-alpine`: `tests/test_rfp_postgres.py` **11/11**. It covers the real `PostgresSaver` in its own schema with RLS, a paused branch resumed after a "restart", the `rejected` status-check upgrade, and the lease.
+- **Backoffice:** Jest **322** (8 new); `tsc` and ESLint clean.
+- **Static checks:** `ruff format` / `ruff check --isolated` clean, with only our hunks in pre-existing files (checked against HEAD); mypy clean on the RFP modules, CLI, services and tests.
+- **Live, `gpt-6-luna`:** `npm run rfp:smoke` passed **3/3** through Parts 1 → 3.
+  - ModaViva and Luna reached `done`, and RapidShip was discarded.
+  - One live change request was revised and approved in 18 s.
+  - Part 2's KPI was 1.75 attempts per section.
+  - Qdrant was down, so the local documents fallback was used.
+- **Through the UI** (Chrome via playwright-core, the real API on the throwaway Postgres, Sales plus three owner accounts): **28/28 checks**.
+  - Uploads reached "Waiting for approval" in 98 s without a reload.
+  - Ana approved warehouse while Sofía's reverse kept waiting.
+  - Sofía requested changes; the revised section came back as round 2 in 60 s, and she approved it.
+  - The ticket became `done`, and the document rendered and downloaded.
+  - The run history showed the agents of all three parts.
+  - A non-owner saw it read-only, and a customer got 403.
+  - Dark mode and 390 px showed no overflow and no console errors.
+  - PostgreSQL afterwards was consistent (decisions, document, checkpoints in `rfp_graph`).
+
+Still missing / next goals:
+1. **Commit when asked** (AGENTS.md workflow). Include `data/pipelines/rfp_intake/approval/`, the new tests and docs, `data/eval/rfp_intake/smoke.json`, `uv.lock` and `requirements.txt`, and ask about the three updated PNGs.
+2. **Supabase before the first start against it:**
+   - inspect the live `rfp_*` schema (three new tables, the `ck_rfp_status` replacement);
+   - check that the transaction pooler accepts the checkpointer's `search_path` option. If not, set `RFP_CHECKPOINT_SCHEMA=public` (RLS stays on).
+3. **Set `RFP_APPROVERS` in `.env`** with the real owner accounts, and create those manager accounts.
+4. **Still open from Part 2:** Commercial must confirm the indicative rate card; Part 1's metadata quote variance.
+5. **Optional:**
+   - notify an owner (email through Resend) when a request opens;
+   - approvers from a directory or SSO group instead of configuration;
+   - a PDF export of the final document;
+   - run the live checks with Qdrant up.
+6. **Still open from earlier:** re-recording the agent evals; Auth0 and the MCP Playground.
+
+## Update 2026-11-23 - RFP proposal drafting and self-evaluation (Milestone 9 Part 2)
+
+Goals accomplished.
+- **Brief:** the new `lead-instr.png` (ticket "RFP response generation and evaluation"), with the checklist in `stages-todo.png` and the visual reference in `visual-ref.png`. The briefing is the root `agentic-workflow-context.md`.
+- **Branch:** `feature/rfp-response-generation`.
+- **Design:** `docs/rfp/proposal-drafting.md`. **Part 3 contract:** `docs/rfp/proposal-handoff-contract.md`.
+
+Decided with the developer:
+- **Prices:** a versioned rate card (`proposal/rate_card.py`) with the knowledge base's real figures plus indicative list prices and discount tiers owned by Commercial. A guard rejects any figure from no source.
+- **SLA:** the §5 SLA rule is checked on one designated section: last mile, otherwise the first active section.
+- **UI:** the Sales view shows the drafts.
+
+What was built:
+- **Consumes Part 1's routing:**
+  - `proposal.runner.run_pending` drains the `rfp_handoffs` queue (`claim_next`, SKIP LOCKED); `handoff.claim` claims one ticket.
+  - The API schedules it right after each intake (`RFP_AUTO_DRAFT`).
+  - The generators read only the `IntakeHandoff`, never the PDF or its Markdown. A test deletes both and patches the converter to fail.
+- **Graphs** (`data/pipelines/rfp_intake/proposal/`, no `services/` import):
+  - `rfp_proposal`: the deterministic assignment orchestrator → `Send` per department → the final synthesis into per-department "for approval" tickets → the Part 3 handoff;
+  - `rfp_proposal_section`: the generator-evaluator loop, with readability, relevance and compliance **in parallel**, then a merge into one `EvaluationResult`, then revise / accept / escalate.
+- **Per-department generators:**
+  - one tool and output model per department, carrying §2.1's contributions as structured fields (also §7's conflict state);
+  - knowledge-base access (Qdrant, falling back to the documents);
+  - a deterministic guard that drops off-card prices and tiers and invented figures, and never corrects a currency or a fast returns promise, so compliance sees them;
+  - fixed Markdown rendering with the knowledge base's SLA and storage caveats.
+- **Evaluators:**
+  - readability: `py-readability-metrics` on the prose, ease ≥ 30, grade ≤ 14;
+  - relevance: the §2.1 required elements plus a judge with verbatim evidence;
+  - compliance: the five §5 rules verbatim (drift test), deterministic and authoritative, plus a reviewer that can only add.
+  - `feedback_for_generator` is concrete and ordered; the iteration limit defaults to 3 (`RFP_MAX_DRAFT_ITERATIONS`).
+  - A section that never passes ships `needs_human_review` with its last draft and evaluation. An unfixable violation (unknown country) escalates at once.
+- **Statuses and persistence:**
+  - `drafting` → `under_evaluation` → `waiting_for_approval` or `needs_human_review`, or `failed` (the stale sweep now covers Part 2 too);
+  - new section columns, added by an idempotent ALTER on a Part 1 database;
+  - `rfp_section_drafts` (every attempt and the iterations KPI) and `rfp_proposal_handoffs` (`rfp-proposal/1`, Part 3's queue).
+- **CLI:** `draft`, `redraft`, `proposal`, `kpi`, `graph --part 2`, `proposal-schema`. `run` drafts too. `smoke` runs both parts and logs each attempt's failures.
+- **API and UI:** the ticket detail carries every section's draft, evaluation and attempts. `/rfp/[id]` has a "Proposal draft" area with one card per department (owner, status, the three checks, what is still wrong, the draft), and polls through drafting.
+
+Verification:
+- **Offline tests:**
+  - `tests/pipelines/rfp_intake/` **213** (125 new, in `proposal/`) plus `tests/test_rfp_api.py` **24** (4 new), including the checklist cases:
+    - a generator test;
+    - an evaluator test with failing cases;
+    - the compliance failure "Returns are processed within 24 hours of arrival." → `compliance.pass == False`;
+    - the limit reached → `needs_human_review` and still in the handoff.
+  - Opt-in `tests/test_rfp_postgres.py` **8/8** on a throwaway `postgres:17-alpine`: JSONB, RLS, the column upgrade and its check, a whole drafting, SKIP LOCKED on the proposal queue.
+- **Full backend suite:** **2269 passed, 59 skipped, 0 failed** without `test_agent_evals.py`. That file alone is still 74 failed / 85 passed, the known stale recording, unchanged.
+- **Backoffice:** Jest **314** (8 new); `tsc` and ESLint clean.
+- **Static checks:** `ruff format` / `ruff check --isolated` clean, with only added hunks in pre-existing files; mypy clean on the RFP modules, CLI, services and tests.
+- **Live, 4Geeks `gpt-6-luna` + Qdrant:**
+  - `npm run rfp:smoke`, final code: **3/3 passed** (`data/eval/rfp_intake/smoke.json`):
+    - correct-classification rate 1.0, every §5 check passing on every section, **1.75 attempts per section** (target < 2);
+    - ModaViva → `waiting_for_approval` (1 and 2 attempts);
+    - Luna → `needs_human_review`. The last-mile section escalated after 3 attempts because the RFP asks for per-carrier SLAs and a carrier recommendation, while TrackFlow's knowledge base says the system assigns carriers and gives SLAs per service.
+  - Earlier runs, during calibration: 2.75 → 2.0 → 2.5 → 2.0 → 1.75. **The KPI hovers around 2; relevance drives it.** Compliance never failed once the country was known.
+  - **Through the UI** (Chrome via playwright-core, a manager account, the API on the throwaway Postgres):
+    - three PDFs uploaded;
+    - the list went Analyzing → Drafting → Under evaluation → Waiting for approval without a reload, in about 2 minutes;
+    - both RFPs ended `waiting_for_approval`, with each owner's card and the three checks;
+    - no console errors;
+    - light and dark checked; mobile at 390 px fits after a fix (the card needed `min-w-0`).
+- **Found and fixed live:**
+  - the relevance judge rejected quotes of table rows, and counted another department's needs or owner-confirmations as gaps. It now gets the section's scope plus the "pending information" and "priced differently by policy" rules;
+  - the generator now answers every key aspect and need, and the go-live date;
+  - a country-less ticket spent 3 attempts per section for nothing.
+
+Still missing / next goals:
+1. **Part 1 variance seen live:** in one run the metadata agent's quote for Luna's country was not verbatim, so the country (and the currency) was dropped. Part 2 then correctly shipped `needs_human_review`. A retry or a second-chance quote check in Part 1's metadata agent would make this rarer.
+2. **Commercial must confirm the indicative rate card,** plus two briefing-versus-knowledge-base points: storage is priced per m³ rather than per pallet/SKU, and the SLA sentence in proposals without last mile.
+3. **Part 3:** per-owner approval from `rfp_proposal_handoffs` (accepting both `waiting_for_approval` and `needs_human_review`), §7 arbitration on the `facts`, and the final document.
+4. **Commit when asked** (AGENTS.md workflow). Include `data/eval/rfp_intake/smoke.json` and the three staged PNGs.
+5. **Still open from earlier:** Supabase (inspect the `rfp_*` schema before the first start against it; the new columns are added automatically); re-recording the agent evals; Auth0 and the MCP Playground.
+
+## Update 2026-11-21 - RFP intake and routing (Milestone 9 Part 1)
+
+Goals accomplished. The brief is the updated `lead-instr.png`, with the checklist in `stages-todo.png`. The briefing is the root `agentic-workflow-context.md` (the ticket's `company-BRIEFING.md`). The sample PDFs are in the root `PDF-examples/`, not the briefing's `rfp-requests/trackflow/`. Branch `feature/rfp-intake`. Design: `docs/rfp/rfp-intake.md`; Part 2 contract: `docs/rfp/handoff-contract.md`.
+
+- Decided with the developer: the RFP routes are **staff only** (admin/manager; a `user` account gets 403), and verification uses `PDF-examples/`.
+- **Monorepo layout:**
+  - no new API service: `services/rfp/` (router, models, lifespan hook) on the existing backend;
+  - the dedicated `rfp_intake` LangGraph graph in `data/pipelines/rfp_intake/` (nothing imports `services/`; the existing guard covers it);
+  - the CLI `scripts/rfp_intake.py` (`npm run rfp`).
+- **Persistence:** five PostgreSQL tables through SQLModel, with their own registry (`RfpModel.metadata`) so the inventory metadata stays exactly its own:
+  - `rfp_tickets`, `rfp_metadata`;
+  - `rfp_department_sections`, with `key_aspects` and the Part 2/3 columns already in place;
+  - `rfp_handoffs`, `rfp_ticket_events`.
+- **Intake interface:**
+  - `/rfp` in the backoffice: upload several PDFs (one ticket each); the list polls while a ticket is `analyzing`;
+  - `/rfp/[id]`, the Sales view: the brief, "Ask <owner>" per department, the request with missing values stated plainly, the processing cost, and progress.
+  - `POST /rfp/tickets` validates the file, stores it under `data/raw/rfp/`, and answers 202. The graph runs as a background task in the API process.
+- **Ingestion:**
+  - MarkItDown's `PdfConverter`, called directly: `MarkItDown.convert` returns a corrupt PDF's raw bytes as text, which was found and fixed;
+  - metadata from the briefing's fields with verbatim evidence;
+  - readability (`py-readability-metrics`, plus token estimates and a cost tier), stored with the ticket.
+- **Classifier agent:** the briefing's criteria; recall-first; a discard needs a confident, consistent verdict. The flow then stops at `discarded` with its reason.
+- **Orchestrator-worker-synthesizer:**
+  - the orchestrator's departments are reconciled with the requested services;
+  - the workers (`Send`, in parallel) get only the metadata and their own extracts;
+  - the guards drop invented figures and unverified quotes, and a missing volume becomes an open question;
+  - the synthesizer says what to ask whom, with the owners taken from the briefing.
+- **Routing:** an `rfp_handoffs` row (`ticket_id` + an `IntakeHandoff` payload, `rfp-intake/1`, `next_stage = drafting`). Part 2 takes work with `claim_next` (`FOR UPDATE SKIP LOCKED`), which moves the ticket to `drafting`.
+- **Never silent:**
+  - a `failed` status (an addition to the briefing's list) with the failed stage;
+  - a per-node event trace;
+  - a stale sweep for runs that died with the API;
+  - `npm run rfp -- reprocess`.
+- **Dependencies** (`uv add`): `markitdown[pdf]` 0.1.9 and `py-readability-metrics` 1.4.5 (they bring nltk, pdfminer and onnxruntime). `requirements.txt` re-exported; the Dockerfile downloads NLTK `punkt`/`punkt_tab`; `npm run rfp:setup` does it locally.
+- **Live verification** (4Geeks `gpt-6-luna`):
+  - `npm run rfp:smoke` passed 3/3, correct-classification rate 1.0 (`data/eval/rfp_intake/smoke.json`):
+    - ModaViva: warehouse + reverse, ES/EUR, volume null with an open question;
+    - Luna Cosmetics: warehouse + lastmile, US/USD, 5,000 a month, go-live date left without a year;
+    - RapidShip: discarded.
+  - **Through the UI** (Chrome via playwright-core, a manager account), with the API on a throwaway `postgres:17-alpine` because the Supabase pooler timed out again:
+    - all three PDFs uploaded in 185 ms;
+    - the list reached its final states in 28 s without a reload, with the same outcomes;
+    - Sales views checked in light, dark and mobile (no horizontal overflow), with no console errors;
+    - a `user` account sees the staff-only message;
+    - the PDFs were stored in `data/raw/rfp/`.
+  - The first live runs caught real issues, fixed before the final run:
+    - workers' quotes carried the extract numbering, so real requirements were dropped;
+    - a SKU count could pass as a monthly volume;
+    - quotes kept PDF line breaks;
+    - asks keyed by owner name were not matched;
+    - client questions were repeated.
+- **Verification:**
+  - RFP suites: 88 pipeline + 20 API tests, and 5 opt-in PostgreSQL tests on the throwaway server;
+  - backoffice Jest 306 (15 new), `tsc` and ESLint clean;
+  - `ruff format` / `ruff check --isolated` clean on every changed Python file (only added hunks in pre-existing files);
+  - mypy clean on the RFP modules and tests;
+  - full backend suite: **1970 passed, 56 skipped, 0 failed**, without the two recorded-eval files (the 56 skips include the 5 opt-in PostgreSQL tests);
+  - the memory evals pass 171/171. The Part 1-3 agent evals are still stale, as before.
+  - The full suite caught one regression, fixed: the RFP tables had joined the shared `SQLModel.metadata` that the inventory tests pin. They now have their own registry, and a test guards it.
+
+Still missing / next goals:
+1. **Supabase:** the pooler timed out again (paused project?). Once it is back, inspect the live schema for `rfp_*` tables before the first API start against it, then upload the three PDFs again there.
+2. **Part 2:** proposal drafting and evaluation (readability, relevance, the §5 compliance rules: currency, SLA, returns no faster than 48 h, discount tiers, no carrier rates). Take work with `handoff.claim_next` and write the `draft_content` / `evaluation_results` columns.
+3. Commit when asked (AGENTS.md workflow). Ask whether `agentic-workflow-context.md`, `PDF-examples/` (the tests read them) and the updated PNGs go in. Include `data/eval/rfp_intake/smoke.json`.
+4. Optional:
+   - duplicate-upload detection by SHA-256;
+   - a "Retry" button for staff on failed tickets;
+   - a queue worker (the existing Celery) if volume grows;
+   - OCR for scanned RFPs;
+   - pairing table columns after conversion.
+5. Still open from earlier: re-recording the Part 1-3 agent evals; Auth0 and the MCP Playground.
+
+## Update 2026-11-14 - The agent's protection harness (SEC-114, Milestone 8 Part 2)
+
+Goals accomplished. The brief is ticket SEC-114 (the updated `lead-instr.png`), with the four-section checklist in `stages-todo.png`; the domain, sensitive data and mandatory test cases are in the root `engineering-briefing.md`. Work is on `feature/agent-guardrails`. It is the **same** LangGraph / MCP / memory agent, now named by the briefing as Valentina Cruz's first-line CX agent. Design: `docs/agent/agent-harness.md`; live evidence: `docs/agent/harness-evidence.md`.
+
+- Decided with the developer:
+  - **sessions by role**: admin/manager = staff (today's capabilities); `user` = customer (own orders, knowledge base, no ticket or stock lookups, never a memory proposal);
+  - **order data from the briefing's own description**: the helpdesk export `data/raw/incidents-trackflow.csv` (tracking number, country, customer type, carrier, customer email) is the order directory (`AGENT_ORDERS_PATH`); the account email = the order's `customer_email`.
+- **Secure system prompt:**
+  - CX identity;
+  - an instruction hierarchy (only system messages instruct; everything external and the user's own message arrive in `<<untrusted ...>>` envelopes) with a canary;
+  - the domain rendered from the briefing (drift test);
+  - a per-message SESSION section written by the harness;
+  - a `scope` label on every reply.
+- **Content and scope guardrails:**
+  - personal tasks refused with the redirect;
+  - small talk and general logistics get a brief answer, then a fixed redirect appended by the harness;
+  - order authorization (briefing case 3), with the same refusal whether the order exists or not;
+  - policy mixing (case 4) locked to the order's real country with a fixed notice;
+  - an output guard (structure, leaked instructions, other customers' orders, emails, negotiated rates and B2B terms, exact locations and routes).
+- **Anti-injection:**
+  - 59 instruction-change rules in 5 families, EN+ES, on folded text (leetspeak, spacing, zero-width, full-width, accents);
+  - external text (RAG, MCP records, memories, order records) sanitized or quarantined, then enveloped;
+  - memory drafts with instructions refused (`instruction_like`);
+  - the model's `scope` label can only escalate.
+- **Graph:**
+  - 3 nodes that never call a model: `guard_input`, `refuse_request`, `validate_output`;
+  - routing unchanged for allowed questions (the baseline eval sets the harness nodes aside; `harness_changes` lists the trivia route);
+  - new outcome `refused`, answered with 200.
+- **Observability:**
+  - every trigger logged on `api.agent.guardrails` with its failure type, never the message;
+  - a `guardrail_events` table;
+  - `npm run agent -- guardrails` and `GET /agent/guardrails/summary` (staff only, with a `since` window);
+  - the harness test session prints the same table.
+- **Deterministic tests:**
+  - `tests/pipelines/harness/` (**428**, `npm run agent:harness`) over the 104-case corpus `data/eval/agent/harness-cases.json`;
+  - any attack treated as allowed fails the build, and so does any real staff question being blocked;
+  - every live-recorded answer is replayed through the output guard.
+- **Live verification** (4Geeks gateway + Qdrant):
+  - `npm run agent:harness:smoke`, 18 runs: all four briefing cases behave as specified, and two paraphrases the rules miss on purpose were refused by the model's label;
+  - memory evals re-recorded: **171/171 pass**.
+- **Verification:**
+  - backend **2031 passed, 51 skipped** without the Part 1-3 evals;
+  - `ruff format` / `ruff check --isolated` clean on every changed file (no untouched hunks);
+  - mypy clean on `services/agent`, the smoke script and the harness tests (the one known `test_agent_graph.py` finding, now at line 116, unchanged);
+  - no new dependency.
+- Found and fixed during the work:
+  - a sentence placeholder lost its spacing;
+  - a decimal price split a sentence and hid a carrier rate;
+  - a fully quarantined run was counted as `answered`;
+  - the "withheld" wording bug;
+  - "Let's roleplay" was not caught (added `persona.roleplay`).
+
+Still missing / next goals:
+1. **Re-record the Part 1-3 evals** (`traces.json`, still the Part 2 recording, graph `faabff53fa40c2ca`): 74 of 159 fail until then, all on the stale recording. It needs Auth0 and the live MCP stack: `LLM_TIMEOUT_SECONDS=120 npm run agent:record`.
+2. Auth0 configuration and the MCP Playground run (pending since the MCP ticket).
+3. Commit when asked (AGENTS.md workflow). Ask whether `engineering-briefing.md` and the replaced `lead-instr.png` / `stages-todo.png` go in. Include `data/eval/agent/harness-cases.json`, `harness-smoke.json` and the re-recorded `memory-traces.json`.
+4. Optional follow-ups:
+   - Spanish fixed refusals and redirect;
+   - the same guards on `/knowledge/query` (the commercial team's internal RAG, a different assistant, left as it was);
+   - live carrier tracking in the order records;
+   - a backoffice view of the guardrail summary.
 
 ## Update 2026-11-13 - Agent memory and self-improvement (MEM-092)
 

@@ -1,0 +1,1729 @@
+{
+  "generated_at": "2026-11-23T22:02:04+00:00",
+  "model": "downtown-miami/openrouter/openai/gpt-6-luna",
+  "cases": 3,
+  "passed": 3,
+  "correct_classification_rate": 1.0,
+  "average_iterations_per_section": 1.75,
+  "max_draft_iterations": 3,
+  "approvals_done": 2,
+  "results": [
+    {
+      "file": "trackflow-request-1.pdf",
+      "label": "formal RFP - ModaViva (Spain), warehousing + returns, own carrier",
+      "expect": {
+        "status": "intake_complete",
+        "departments": [
+          "warehouse",
+          "reverse"
+        ],
+        "client_country": "ES",
+        "currency": "EUR",
+        "monthly_volume": null
+      },
+      "actual": {
+        "status": "intake_complete",
+        "departments": [
+          "warehouse",
+          "reverse"
+        ],
+        "client_country": "ES",
+        "currency": "EUR",
+        "monthly_volume": null
+      },
+      "checks": {
+        "status": true,
+        "departments": true,
+        "client_country": true,
+        "currency": true,
+        "monthly_volume": true
+      },
+      "passed": true,
+      "seconds": 16.3,
+      "llm_tokens_used": 6623,
+      "classification": {
+        "document_kind": "formal_rfp",
+        "confidence": 0.99,
+        "language": "mixed",
+        "flags": [],
+        "reasons": [
+          "This is a structured RFP with a reference number, scope, evaluation criteria, timeline, and submission instructions.",
+          "ModaViva seeks warehousing and returns handling, services TrackFlow provides, for its Spain operation.",
+          "The request is from a prospective client seeking proposals, not a carrier or vendor offering services to TrackFlow."
+        ]
+      },
+      "discard_reason": null,
+      "error": null,
+      "metadata": {
+        "client_name": "ModaViva, S.L.",
+        "client_country": "ES",
+        "currency": "EUR",
+        "services_requested": [
+          "warehousing",
+          "reverse_logistics"
+        ],
+        "monthly_volume": null,
+        "deadline": "2026-08-28",
+        "deadline_text": "August 28, 2026",
+        "deadline_kind": "proposal_due",
+        "budget_range": null,
+        "departments_needed": [
+          "warehouse",
+          "reverse"
+        ],
+        "evidence": {
+          "client_name": "Issuing Organization: ModaViva, S.L.",
+          "client_country": "ModaViva es una marca de moda española con venta online en España y Portugal. Buscamos un partner logístico para almacenamiento y gestión de devoluciones",
+          "services_requested": [
+            "Almacenamiento de aproximadamente 15.000 SKUs en un centro cercano a Zaragoza",
+            "Gestión de devoluciones: inspección, reacondicionamiento y restock"
+          ],
+          "deadline": "August 28, 2026"
+        },
+        "missing": [
+          "monthly_volume",
+          "budget_range"
+        ],
+        "notes": [],
+        "readability": {
+          "language": "mixed",
+          "word_count": 195,
+          "sentence_count": 13,
+          "char_count": 1371,
+          "estimated_tokens": 343,
+          "flesch_reading_ease": 17.64,
+          "flesch_kincaid_grade": 14.38,
+          "gunning_fog": 11.13,
+          "processing_cost": "low",
+          "note": "The scores are calibrated for English; this document is not only English."
+        }
+      },
+      "sales_brief": {
+        "summary": "ModaViva, S.L. is a Spanish fashion brand selling online in Spain and Portugal. It requests warehousing and reverse logistics, including returns processing, for a center near Zaragoza. The proposal is due by 2026-08-28.",
+        "client_name": "ModaViva, S.L.",
+        "client_country": "ES",
+        "currency": "EUR",
+        "commercial_owner": "Miguel Torres",
+        "departments": [
+          {
+            "department_id": "warehouse",
+            "department_name": "Warehouse Operations",
+            "owner": "Ana Whitfield",
+            "ask": "Confirm capacity and location suitability near Zaragoza for approximately 15,000 SKUs, and provide the client-specific cost per pallet/SKU in EUR and estimated onboarding time. Identify what storage assumptions are needed to validate capacity and pricing.",
+            "needed_from_department": [
+              "Confirm available storage capacity for approximately 15,000 SKUs at a suitable center near Zaragoza.",
+              "Provide the client-specific cost per pallet/SKU in EUR.",
+              "Provide the estimated onboarding time for this client."
+            ],
+            "open_questions": [
+              "What is the expected monthly order volume? It is not stated in the RFP.",
+              "What are the required pallet quantities, SKU-level storage profile, and inventory/space assumptions needed to confirm capacity and price?",
+              "What are the client's detailed reverse-logistics (returns) requirements that affect warehouse operations, capacity, or onboarding?"
+            ]
+          },
+          {
+            "department_id": "reverse",
+            "department_name": "Reverse Logistics",
+            "owner": "Sofía Ramos",
+            "ask": "Provide the cost and turnaround time for returns inspection, reconditioning, and restocking. Specify the volume, product-mix, condition-category, and service-scope assumptions needed to estimate the work.",
+            "needed_from_department": [
+              "Provide the returns processing cost for inspection, reconditioning, and restocking.",
+              "Provide turnaround time for inspection, reconditioning, and restocking."
+            ],
+            "open_questions": [
+              "What is the expected returns volume (e.g., monthly returns or return rate)?",
+              "What product/SKU mix and condition categories should be used for estimating inspection and reconditioning effort?",
+              "What reconditioning tasks or service-level requirements are expected beyond the stated scope?"
+            ]
+          }
+        ],
+        "client_questions": [
+          "Ask for the expected monthly order volume: the RFP does not state it.",
+          "Ask whether there is a reference budget: the RFP gives none.",
+          "What pallet quantities, SKU-level storage profile, and inventory or space assumptions should be used to confirm warehouse capacity and pricing?",
+          "What returns volume should be assumed, and what product/SKU mix and condition categories will affect inspection and reconditioning?",
+          "What reconditioning tasks and service-level requirements are expected beyond inspection, reconditioning, and restocking?",
+          "What are the requirements for integrating with ModaViva’s ERP via API?"
+        ],
+        "risks": [
+          "Proposal is due 2026-08-28; the time available for validating operational assumptions and preparing the proposal is not specified.",
+          "Monthly order volume is missing and is already being asked by Sales; it affects sizing and pricing.",
+          "Pallet quantities, storage profile, and inventory/space assumptions are missing, so capacity and warehouse pricing cannot yet be confirmed.",
+          "Returns volumes and scope details are missing, and ERP API integration is required but has no department owner identified in the analyses."
+        ],
+        "unassigned_requirements": [
+          "The proposal must address integration with ModaViva’s ERP via API."
+        ],
+        "validation_notes": []
+      },
+      "sections": [
+        {
+          "department_id": "warehouse",
+          "department_name": "Warehouse Operations",
+          "owner": "Ana Whitfield",
+          "objective": "Determine storage capacity and location suitability near Zaragoza for approximately 15,000 SKUs, along with cost per pallet/SKU and onboarding time for the proposal.",
+          "extracts": [
+            "ModaViva es una marca de moda española con venta online en España y Portugal.",
+            "Almacenamiento de aproximadamente 15.000 SKUs en un centro cercano a Zaragoza",
+            "Proposal Due Date: August 28, 2026"
+          ],
+          "key_aspects": [
+            {
+              "aspect": "Storage capacity",
+              "detail": "Determine storage capacity for approximately 15,000 SKUs in a center near Zaragoza.",
+              "source_quote": "Almacenamiento de aproximadamente 15.000 SKUs en un centro cercano a Zaragoza"
+            },
+            {
+              "aspect": "Location suitability",
+              "detail": "Assess suitability of a center near Zaragoza for the client, a Spanish fashion brand selling online in Spain and Portugal.",
+              "source_quote": "ModaViva es una marca de moda española con venta online en España y Portugal."
+            },
+            {
+              "aspect": "Proposal deadline",
+              "detail": "Proposal due date is August 28, 2026.",
+              "source_quote": "Proposal Due Date: August 28, 2026"
+            },
+            {
+              "aspect": "Services requested",
+              "detail": "The client requests warehousing and reverse logistics (returns).",
+              "source_quote": "Services requested: Warehousing, Reverse logistics (returns)"
+            }
+          ],
+          "needed_from_department": [
+            "Confirm available storage capacity for approximately 15,000 SKUs at a suitable center near Zaragoza.",
+            "Provide the client-specific cost per pallet/SKU in EUR.",
+            "Provide the estimated onboarding time for this client."
+          ],
+          "open_questions": [
+            "What is the expected monthly order volume? It is not stated in the RFP.",
+            "What are the required pallet quantities, SKU-level storage profile, and inventory/space assumptions needed to confirm capacity and price?",
+            "What are the client's detailed reverse-logistics (returns) requirements that affect warehouse operations, capacity, or onboarding?"
+          ],
+          "validation_notes": [],
+          "draft_status": null,
+          "draft_iterations": 0,
+          "max_iterations": null,
+          "is_sla_section": false,
+          "needs_human_review": false,
+          "draft_content": null,
+          "draft": null,
+          "guard_notes": [],
+          "knowledge_source": null,
+          "rate_card_version": null,
+          "review_note": null,
+          "evaluation": null,
+          "approval_status": null,
+          "ready_at": null,
+          "approver": null,
+          "approved_by": null,
+          "approved_at": null,
+          "review_round": 1,
+          "review_rounds": 0,
+          "max_review_rounds": 3,
+          "allowed_actions": [
+            "approve",
+            "request_changes",
+            "reject"
+          ],
+          "approver_configured": false,
+          "awaiting_decision": false,
+          "decision_pending": false,
+          "can_decide": false,
+          "decisions": []
+        },
+        {
+          "department_id": "reverse",
+          "department_name": "Reverse Logistics",
+          "owner": "Sofía Ramos",
+          "objective": "Work out returns processing cost and turnaround time for inspection, reconditioning, and restocking.",
+          "extracts": [
+            "Gestión de devoluciones: inspección, reacondicionamiento y restock",
+            "Proposal Due Date: August 28, 2026"
+          ],
+          "key_aspects": [
+            {
+              "aspect": "Returns processing scope",
+              "detail": "The client requests returns management covering inspection, reconditioning, and restocking.",
+              "source_quote": "Gestión de devoluciones: inspección, reacondicionamiento y restock"
+            },
+            {
+              "aspect": "Proposal deadline",
+              "detail": "Proposal due date: August 28, 2026.",
+              "source_quote": "Proposal Due Date: August 28, 2026"
+            },
+            {
+              "aspect": "Monthly order volume",
+              "detail": "Monthly order volume is not stated in the RFP.",
+              "source_quote": "Monthly order volume: not stated in the RFP"
+            }
+          ],
+          "needed_from_department": [
+            "Provide the returns processing cost for inspection, reconditioning, and restocking.",
+            "Provide turnaround time for inspection, reconditioning, and restocking."
+          ],
+          "open_questions": [
+            "What is the expected returns volume (e.g., monthly returns or return rate)?",
+            "What product/SKU mix and condition categories should be used for estimating inspection and reconditioning effort?",
+            "What reconditioning tasks or service-level requirements are expected beyond the stated scope?"
+          ],
+          "validation_notes": [],
+          "draft_status": null,
+          "draft_iterations": 0,
+          "max_iterations": null,
+          "is_sla_section": false,
+          "needs_human_review": false,
+          "draft_content": null,
+          "draft": null,
+          "guard_notes": [],
+          "knowledge_source": null,
+          "rate_card_version": null,
+          "review_note": null,
+          "evaluation": null,
+          "approval_status": null,
+          "ready_at": null,
+          "approver": null,
+          "approved_by": null,
+          "approved_at": null,
+          "review_round": 1,
+          "review_rounds": 0,
+          "max_review_rounds": 3,
+          "allowed_actions": [
+            "approve",
+            "request_changes",
+            "reject"
+          ],
+          "approver_configured": false,
+          "awaiting_decision": false,
+          "decision_pending": false,
+          "can_decide": false,
+          "decisions": []
+        }
+      ],
+      "drafting": {
+        "checks": {
+          "status": true,
+          "handoff_has_content_and_evaluation": true,
+          "currency": true,
+          "sla_department": true,
+          "sla_stated": true,
+          "returns_at_least_48h": true
+        },
+        "passed": true,
+        "status": "waiting_for_approval",
+        "sections": {
+          "warehouse": {
+            "draft_status": "passed",
+            "iterations": 1,
+            "readability": 45.63,
+            "grade": 10.47,
+            "relevance_missing": [],
+            "compliance_rule_ids": [],
+            "knowledge_source": "local"
+          },
+          "reverse": {
+            "draft_status": "passed",
+            "iterations": 3,
+            "readability": 43.96,
+            "grade": 9.8,
+            "relevance_missing": [],
+            "compliance_rule_ids": [],
+            "knowledge_source": "local"
+          }
+        },
+        "attempts": [
+          {
+            "stage": "merge_evaluation:reverse#1",
+            "failed": [
+              "relevance"
+            ],
+            "decision": "revise"
+          },
+          {
+            "stage": "merge_evaluation:warehouse#1",
+            "failed": [],
+            "decision": "accept"
+          },
+          {
+            "stage": "merge_evaluation:reverse#2",
+            "failed": [
+              "readability"
+            ],
+            "decision": "revise"
+          },
+          {
+            "stage": "merge_evaluation:reverse#3",
+            "failed": [],
+            "decision": "accept"
+          }
+        ],
+        "average_iterations_per_section": 2.0,
+        "seconds": 56.8,
+        "llm_tokens_used": 30648,
+        "error": null,
+        "sections_detail": [
+          {
+            "department_id": "warehouse",
+            "department_name": "Warehouse Operations",
+            "owner": "Ana Whitfield",
+            "objective": "Determine storage capacity and location suitability near Zaragoza for approximately 15,000 SKUs, along with cost per pallet/SKU and onboarding time for the proposal.",
+            "extracts": [
+              "ModaViva es una marca de moda española con venta online en España y Portugal.",
+              "Almacenamiento de aproximadamente 15.000 SKUs en un centro cercano a Zaragoza",
+              "Proposal Due Date: August 28, 2026"
+            ],
+            "key_aspects": [
+              {
+                "aspect": "Storage capacity",
+                "detail": "Determine storage capacity for approximately 15,000 SKUs in a center near Zaragoza.",
+                "source_quote": "Almacenamiento de aproximadamente 15.000 SKUs en un centro cercano a Zaragoza"
+              },
+              {
+                "aspect": "Location suitability",
+                "detail": "Assess suitability of a center near Zaragoza for the client, a Spanish fashion brand selling online in Spain and Portugal.",
+                "source_quote": "ModaViva es una marca de moda española con venta online en España y Portugal."
+              },
+              {
+                "aspect": "Proposal deadline",
+                "detail": "Proposal due date is August 28, 2026.",
+                "source_quote": "Proposal Due Date: August 28, 2026"
+              },
+              {
+                "aspect": "Services requested",
+                "detail": "The client requests warehousing and reverse logistics (returns).",
+                "source_quote": "Services requested: Warehousing, Reverse logistics (returns)"
+              }
+            ],
+            "needed_from_department": [
+              "Confirm available storage capacity for approximately 15,000 SKUs at a suitable center near Zaragoza.",
+              "Provide the client-specific cost per pallet/SKU in EUR.",
+              "Provide the estimated onboarding time for this client."
+            ],
+            "open_questions": [
+              "What is the expected monthly order volume? It is not stated in the RFP.",
+              "What are the required pallet quantities, SKU-level storage profile, and inventory/space assumptions needed to confirm capacity and price?",
+              "What are the client's detailed reverse-logistics (returns) requirements that affect warehouse operations, capacity, or onboarding?"
+            ],
+            "validation_notes": [],
+            "draft_status": "passed",
+            "draft_iterations": 1,
+            "max_iterations": 3,
+            "is_sla_section": true,
+            "needs_human_review": false,
+            "draft_content": "## Warehouse Operations: ModaViva, S.L.\n\nFor approval by Ana Whitfield. Prices in EUR. Rate card 2026-11-indicative-1: indicative prices, to be confirmed by Commercial.\n\nTrackFlow offers warehousing at its Zaragoza site, with capacity of up to 5,000 pallet positions. Storage is charged by occupied volume; the rate card also lists per-pallet receiving and one-time SKU setup fees.\n\n### Scope and approach\n\nThe Zaragoza site meets the request for a center near Zaragoza and supports operations in Spain. ModaViva sells online in Spain and Portugal, but the information provided does not confirm delivery coverage for Portugal. The site’s stated capacity is indicative and does not alone confirm space for approximately 15,000 SKUs. We need the units per SKU and expected pallet mix to assess fit.\n\nStorage is priced by occupied cubic meter, not by pallet or SKU. The per-pallet charge is for inbound receiving, and the per-SKU charge is for one-time SKU setup. Storage is not discounted. The rate card’s inbound receiving and SKU setup prices are indicative. Reverse logistics is requested, but its processing scope and rates are not specified here.\n\nOnboarding is 10 business days from contract signature to the first order shipped; this timing is indicative and depends on receiving the required setup information. The proposal is due August 28, 2026, but no operational start date was provided, so fit against a start date cannot be assessed. TrackFlow commits to a 90% monthly on-time delivery SLA, measured by country.\n\n### Pricing\n\n| Item | Price | Unit | Note |\n|---|---|---|---|\n| Storage, per cubic meter occupied | 16.00 EUR | per m³ per month | Per m³ occupied per month; not discountable |\n| Inbound receiving | 8.50 EUR | per pallet | Per pallet received; indicative |\n| SKU setup (one-off) | 0.25 EUR | per SKU | One-time per SKU; indicative |\n\n### Volume discount tiers\n\nDiscounts by orders a month apply to every price above except storage, per cubic meter occupied and sku setup (one-off).\n\n| Monthly volume (orders) | Discount |\n|---|---|\n| 0 to 2,499 orders a month | 0% |\n| 2,500 to 9,999 orders a month | 5% |\n| 10,000 to 24,999 orders a month | 8% |\n| 25,000 or more orders a month | 12% |\n\n### Service commitments\n\n- Storage site: Zaragoza.\n- Committed capacity: 5,000 pallet positions and up to 45,000 orders a month.\n- Onboarding: 10 business days.\n- The first 30 days of any new product in inventory incur no storage charge.\n- Inventory with more than 180 days of no movement pays a long-term inventory fee of 150% over the standard storage rate, starting on day 181.\n- Clients averaging more than 50 cubic meters a month can ask for a preferential storage rate, negotiated only by Miguel Torres.\n- On-time delivery SLA: TrackFlow commits to 90% on-time deliveries per month, measured by country for the deliveries TrackFlow manages.\n- If a country falls below 90% for two consecutive months, the client is entitled to a 5% compensation on that country's monthly fee.\n- The SLA is not guaranteed on declared high-demand dates (Black Friday, Christmas, January Sales in Spain), when delivery times may extend by up to 40%.\n\n### Assumptions\n\n- Zaragoza site capacity and onboarding timing are indicative per the rate card.\n- Storage charges are based on occupied cubic meters; no storage discount is included.\n- Discount tiers apply to discountable prices only and are based on monthly orders.\n\n### Pending information\n\n- What monthly order volume should we use?\n- How many units are expected per SKU, and what is the required pallet quantity and pallet mix, to confirm capacity for approximately 15,000 SKUs?\n- What inventory and space profile should be used to validate capacity and storage pricing?\n- What returns processing, inspection, disposition, and timing requirements should warehouse operations support?\n- What operational start date is required, and when can the contract be signed?\n- Can the team confirm delivery coverage and service requirements for Portugal?\n- What is the expected monthly order volume? It is not stated in the RFP.\n- What are the required pallet quantities, SKU-level storage profile, and inventory/space assumptions needed to confirm capacity and price?\n- What are the client's detailed reverse-logistics (returns) requirements that affect warehouse operations, capacity, or onboarding?\n",
+            "draft": {
+              "summary": "TrackFlow offers warehousing at its Zaragoza site, with capacity of up to 5,000 pallet positions. Storage is charged by occupied volume; the rate card also lists per-pallet receiving and one-time SKU setup fees.",
+              "narrative": [
+                "The Zaragoza site meets the request for a center near Zaragoza and supports operations in Spain. ModaViva sells online in Spain and Portugal, but the information provided does not confirm delivery coverage for Portugal. The site’s stated capacity is indicative and does not alone confirm space for approximately 15,000 SKUs. We need the units per SKU and expected pallet mix to assess fit.",
+                "Storage is priced by occupied cubic meter, not by pallet or SKU. The per-pallet charge is for inbound receiving, and the per-SKU charge is for one-time SKU setup. Storage is not discounted. The rate card’s inbound receiving and SKU setup prices are indicative. Reverse logistics is requested, but its processing scope and rates are not specified here.",
+                "Onboarding is 10 business days from contract signature to the first order shipped; this timing is indicative and depends on receiving the required setup information. The proposal is due August 28, 2026, but no operational start date was provided, so fit against a start date cannot be assessed. TrackFlow commits to a 90% monthly on-time delivery SLA, measured by country."
+              ],
+              "price_lines": [
+                {
+                  "item_id": "storage_m3_month",
+                  "amount": 16.0,
+                  "currency": "EUR",
+                  "note": "Per m³ occupied per month; not discountable"
+                },
+                {
+                  "item_id": "inbound_pallet",
+                  "amount": 8.5,
+                  "currency": "EUR",
+                  "note": "Per pallet received; indicative"
+                },
+                {
+                  "item_id": "sku_setup",
+                  "amount": 0.25,
+                  "currency": "EUR",
+                  "note": "One-time per SKU; indicative"
+                }
+              ],
+              "discount_tiers": [
+                {
+                  "min_monthly_volume": 0,
+                  "max_monthly_volume": 2499,
+                  "discount_pct": 0
+                },
+                {
+                  "min_monthly_volume": 2500,
+                  "max_monthly_volume": 9999,
+                  "discount_pct": 5
+                },
+                {
+                  "min_monthly_volume": 10000,
+                  "max_monthly_volume": 24999,
+                  "discount_pct": 8
+                },
+                {
+                  "min_monthly_volume": 25000,
+                  "max_monthly_volume": null,
+                  "discount_pct": 12
+                }
+              ],
+              "on_time_sla_pct": 90.0,
+              "assumptions": [
+                "Zaragoza site capacity and onboarding timing are indicative per the rate card.",
+                "Storage charges are based on occupied cubic meters; no storage discount is included.",
+                "Discount tiers apply to discountable prices only and are based on monthly orders."
+              ],
+              "open_questions": [
+                "What monthly order volume should we use?",
+                "How many units are expected per SKU, and what is the required pallet quantity and pallet mix, to confirm capacity for approximately 15,000 SKUs?",
+                "What inventory and space profile should be used to validate capacity and storage pricing?",
+                "What returns processing, inspection, disposition, and timing requirements should warehouse operations support?",
+                "What operational start date is required, and when can the contract be signed?",
+                "Can the team confirm delivery coverage and service requirements for Portugal?"
+              ],
+              "storage_site": "Zaragoza",
+              "committed_capacity": {
+                "pallet_positions": 5000,
+                "monthly_orders": 45000
+              },
+              "onboarding_business_days": 10
+            },
+            "guard_notes": [],
+            "knowledge_source": "local",
+            "rate_card_version": "2026-11-indicative-1",
+            "review_note": null,
+            "evaluation": {
+              "section_id": "32e5bec2-804d-4dca-8d44-707cb08c4cef",
+              "department_id": "warehouse",
+              "iteration": 1,
+              "readability": {
+                "pass": true,
+                "score": 45.63,
+                "details": {
+                  "scored": true,
+                  "flesch_reading_ease": 45.63,
+                  "flesch_kincaid_grade": 10.47,
+                  "gunning_fog": 12.43,
+                  "word_count": 255,
+                  "sentence_count": 17,
+                  "words_per_sentence": 15.0,
+                  "longest_sentence": "Onboarding is 10 business days from contract signature to the first order shipped; this timing is indicative and depends on receiving the required setup information.",
+                  "min_ease": 30.0,
+                  "max_grade": 14.0,
+                  "note": null
+                }
+              },
+              "relevance": {
+                "pass": true,
+                "missing_aspects": [],
+                "covered_aspects": [
+                  "Storage capacity: Determine storage capacity for approximately 15,000 SKUs in a center near Zaragoza.",
+                  "Location suitability: Assess suitability of a center near Zaragoza for the client, a Spanish fashion brand selling online in Spain and Port…",
+                  "Confirm available storage capacity for approximately 15,000 SKUs at a suitable center near Zaragoza.",
+                  "Provide the client-specific cost per pallet/SKU in EUR.",
+                  "Provide the estimated onboarding time for this client."
+                ],
+                "not_applicable": [
+                  "Proposal deadline: Proposal due date is August 28, 2026.: The proposal due date is a proposal-wide matter, not a Warehouse Operations requirement.",
+                  "Services requested: The client requests warehousing and reverse logistics (returns).: Reverse logistics is handled in the separate Reverse Logistics section, not this Warehouse Operations section."
+                ]
+              },
+              "compliance": {
+                "pass": true,
+                "rule_ids": [],
+                "violations": [],
+                "checked_rule_ids": [
+                  "currency-by-country",
+                  "on-time-sla-stated",
+                  "returns-min-48h",
+                  "volume-discount-table",
+                  "no-carrier-rates"
+                ],
+                "reviewer": "used"
+              },
+              "overall_pass": true,
+              "feedback_for_generator": "",
+              "evaluated_at": "2026-11-23T22:00:05.469468Z"
+            },
+            "approval_status": "pending",
+            "ready_at": "2026-11-23 22:00:05.475526+00:00",
+            "approver": null,
+            "approved_by": null,
+            "approved_at": null,
+            "review_round": 1,
+            "review_rounds": 0,
+            "max_review_rounds": 3,
+            "allowed_actions": [
+              "approve",
+              "request_changes",
+              "reject"
+            ],
+            "approver_configured": false,
+            "awaiting_decision": false,
+            "decision_pending": false,
+            "can_decide": false,
+            "decisions": []
+          },
+          {
+            "department_id": "reverse",
+            "department_name": "Reverse Logistics",
+            "owner": "Sofía Ramos",
+            "objective": "Work out returns processing cost and turnaround time for inspection, reconditioning, and restocking.",
+            "extracts": [
+              "Gestión de devoluciones: inspección, reacondicionamiento y restock",
+              "Proposal Due Date: August 28, 2026"
+            ],
+            "key_aspects": [
+              {
+                "aspect": "Returns processing scope",
+                "detail": "The client requests returns management covering inspection, reconditioning, and restocking.",
+                "source_quote": "Gestión de devoluciones: inspección, reacondicionamiento y restock"
+              },
+              {
+                "aspect": "Proposal deadline",
+                "detail": "Proposal due date: August 28, 2026.",
+                "source_quote": "Proposal Due Date: August 28, 2026"
+              },
+              {
+                "aspect": "Monthly order volume",
+                "detail": "Monthly order volume is not stated in the RFP.",
+                "source_quote": "Monthly order volume: not stated in the RFP"
+              }
+            ],
+            "needed_from_department": [
+              "Provide the returns processing cost for inspection, reconditioning, and restocking.",
+              "Provide turnaround time for inspection, reconditioning, and restocking."
+            ],
+            "open_questions": [
+              "What is the expected returns volume (e.g., monthly returns or return rate)?",
+              "What product/SKU mix and condition categories should be used for estimating inspection and reconditioning effort?",
+              "What reconditioning tasks or service-level requirements are expected beyond the stated scope?"
+            ],
+            "validation_notes": [],
+            "draft_status": "passed",
+            "draft_iterations": 3,
+            "max_iterations": 3,
+            "is_sla_section": false,
+            "needs_human_review": false,
+            "draft_content": "## Reverse Logistics: ModaViva, S.L.\n\nFor approval by Sofía Ramos. Prices in EUR. Rate card 2026-11-indicative-1: indicative prices, to be confirmed by Commercial.\n\nTrackFlow handles return receipt, inspection, classification, and restocking under ModaViva’s rules. Reconditioning is available when those rules request it, at indicative EUR rates.\n\n### Scope and approach\n\nTrackFlow receives, inspects, classifies, and restocks returns under ModaViva’s rules. Reconditioning is available when those rules request it. TrackFlow follows ModaViva’s decisions and does not choose whether an item is repaired or resold. The listed rates are indicative and in EUR. Discounts apply only to eligible rates and depend on monthly return volume.\n\nThe indicative turnaround is 72 hours from warehouse arrival to classification. It does not confirm the time needed for reconditioning or completed restocking. Please confirm the turnaround target for those steps. The proposal deadline is August 28, 2026. No service start date was provided, so no start-date fit can be assessed.\n\nThe standard return window is 30 days from delivery, unless ModaViva sets another contract window. ModaViva pays return shipping, except when a TrackFlow error caused the return; TrackFlow then pays. International returns are returns bought in one country and sent back from another. These are not part of the standard automated process. Sofía Ramos’s team handles them manually. Please share monthly return volume or return rate, product and SKU mix, and item condition groups. Also share requested reconditioning tasks and any service-level needs. These details are needed to assess the work and confirm timing.\n\n### Pricing\n\n| Item | Price | Unit | Note |\n|---|---|---|---|\n| Returns processing (receive, inspect, classify and restock) | 2.80 EUR | per return | Indicative; per return. |\n| Reconditioning, when the client's rules ask for it | 1.60 EUR | per unit | Indicative; per unit when ModaViva’s rules request it. |\n\n### Volume discount tiers\n\nDiscounts by returns a month apply to every price above.\n\n| Monthly volume (returns) | Discount |\n|---|---|\n| 0 to 499 returns a month | 0% |\n| 500 to 1,999 returns a month | 5% |\n| 2,000 to 4,999 returns a month | 8% |\n| 5,000 or more returns a month | 12% |\n\n### Service commitments\n\n- Returns turnaround: 72 hours from arrival at the warehouse to classification.\n- Return window: 30 days from delivery.\n- Return shipping: ModaViva pays return shipping, except when a TrackFlow error caused the return; TrackFlow pays in that case.\n- International returns: International returns (purchased in one country and returned in another) are outside the standard automated process and require manual handling by Sofía Ramos’s team.\n\n### Assumptions\n\n- Rates are indicative and in EUR. Volume discounts apply only to discountable rates and depend on monthly returns.\n- TrackFlow reconditions items only when ModaViva’s rules request it.\n\n### Pending information\n\n- What monthly returns volume or return rate should be used? What is the monthly order volume?\n- What product and SKU mix, and what item condition categories, should guide inspection and reconditioning?\n- What reconditioning tasks and additional service-level requirements are expected?\n- What turnaround target should apply to reconditioning and completed restocking? The rate card gives timing only through classification.\n- What is the expected returns volume (e.g., monthly returns or return rate)?\n- What product/SKU mix and condition categories should be used for estimating inspection and reconditioning effort?\n- What reconditioning tasks or service-level requirements are expected beyond the stated scope?\n",
+            "draft": {
+              "summary": "TrackFlow handles return receipt, inspection, classification, and restocking under ModaViva’s rules. Reconditioning is available when those rules request it, at indicative EUR rates.",
+              "narrative": [
+                "TrackFlow receives, inspects, classifies, and restocks returns under ModaViva’s rules. Reconditioning is available when those rules request it. TrackFlow follows ModaViva’s decisions and does not choose whether an item is repaired or resold. The listed rates are indicative and in EUR. Discounts apply only to eligible rates and depend on monthly return volume.",
+                "The indicative turnaround is 72 hours from warehouse arrival to classification. It does not confirm the time needed for reconditioning or completed restocking. Please confirm the turnaround target for those steps. The proposal deadline is August 28, 2026. No service start date was provided, so no start-date fit can be assessed.",
+                "The standard return window is 30 days from delivery, unless ModaViva sets another contract window. ModaViva pays return shipping, except when a TrackFlow error caused the return; TrackFlow then pays. International returns are returns bought in one country and sent back from another. These are not part of the standard automated process. Sofía Ramos’s team handles them manually. Please share monthly return volume or return rate, product and SKU mix, and item condition groups. Also share requested reconditioning tasks and any service-level needs. These details are needed to assess the work and confirm timing."
+              ],
+              "price_lines": [
+                {
+                  "item_id": "return_processing",
+                  "amount": 2.8,
+                  "currency": "EUR",
+                  "note": "Indicative; per return."
+                },
+                {
+                  "item_id": "return_recondition",
+                  "amount": 1.6,
+                  "currency": "EUR",
+                  "note": "Indicative; per unit when ModaViva’s rules request it."
+                }
+              ],
+              "discount_tiers": [
+                {
+                  "min_monthly_volume": 0,
+                  "max_monthly_volume": 499,
+                  "discount_pct": 0
+                },
+                {
+                  "min_monthly_volume": 500,
+                  "max_monthly_volume": 1999,
+                  "discount_pct": 5
+                },
+                {
+                  "min_monthly_volume": 2000,
+                  "max_monthly_volume": 4999,
+                  "discount_pct": 8
+                },
+                {
+                  "min_monthly_volume": 5000,
+                  "max_monthly_volume": null,
+                  "discount_pct": 12
+                }
+              ],
+              "on_time_sla_pct": null,
+              "assumptions": [
+                "Rates are indicative and in EUR. Volume discounts apply only to discountable rates and depend on monthly returns.",
+                "TrackFlow reconditions items only when ModaViva’s rules request it."
+              ],
+              "open_questions": [
+                "What monthly returns volume or return rate should be used? What is the monthly order volume?",
+                "What product and SKU mix, and what item condition categories, should guide inspection and reconditioning?",
+                "What reconditioning tasks and additional service-level requirements are expected?",
+                "What turnaround target should apply to reconditioning and completed restocking? The rate card gives timing only through classification."
+              ],
+              "returns_turnaround_hours": 72,
+              "return_window_days": 30,
+              "return_shipping_paid_by": "ModaViva pays return shipping, except when a TrackFlow error caused the return; TrackFlow pays in that case.",
+              "international_returns": "International returns (purchased in one country and returned in another) are outside the standard automated process and require manual handling by Sofía Ramos’s team."
+            },
+            "guard_notes": [],
+            "knowledge_source": "local",
+            "rate_card_version": "2026-11-indicative-1",
+            "review_note": null,
+            "evaluation": {
+              "section_id": "93d8c0b7-f7cf-4799-a97f-731a324cd734",
+              "department_id": "reverse",
+              "iteration": 3,
+              "readability": {
+                "pass": true,
+                "score": 43.96,
+                "details": {
+                  "scored": true,
+                  "flesch_reading_ease": 43.96,
+                  "flesch_kincaid_grade": 9.8,
+                  "gunning_fog": 9.76,
+                  "word_count": 258,
+                  "sentence_count": 23,
+                  "words_per_sentence": 11.2,
+                  "longest_sentence": "TrackFlow follows ModaViva’s decisions and does not choose whether an item is repaired or resold.",
+                  "min_ease": 30.0,
+                  "max_grade": 14.0,
+                  "note": null
+                }
+              },
+              "relevance": {
+                "pass": true,
+                "missing_aspects": [],
+                "covered_aspects": [
+                  "Returns processing scope: The client requests returns management covering inspection, reconditioning, and restocking.",
+                  "Monthly order volume: Monthly order volume is not stated in the RFP.",
+                  "Provide the returns processing cost for inspection, reconditioning, and restocking.",
+                  "Provide turnaround time for inspection, reconditioning, and restocking."
+                ],
+                "not_applicable": [
+                  "Proposal deadline: Proposal due date: August 28, 2026.: The proposal deadline is a proposal-wide matter, not a Reverse Logistics service."
+                ]
+              },
+              "compliance": {
+                "pass": true,
+                "rule_ids": [],
+                "violations": [],
+                "checked_rule_ids": [
+                  "currency-by-country",
+                  "returns-min-48h",
+                  "volume-discount-table",
+                  "no-carrier-rates"
+                ],
+                "reviewer": "used"
+              },
+              "overall_pass": true,
+              "feedback_for_generator": "",
+              "evaluated_at": "2026-11-23T22:00:36.313010Z"
+            },
+            "approval_status": "pending",
+            "ready_at": "2026-11-23 22:00:36.321376+00:00",
+            "approver": null,
+            "approved_by": null,
+            "approved_at": null,
+            "review_round": 1,
+            "review_rounds": 0,
+            "max_review_rounds": 3,
+            "allowed_actions": [
+              "approve",
+              "request_changes",
+              "reject"
+            ],
+            "approver_configured": false,
+            "awaiting_decision": false,
+            "decision_pending": false,
+            "can_decide": false,
+            "decisions": []
+          }
+        ],
+        "proposal": {
+          "contract_version": "rfp-proposal/1",
+          "next_stage": "approval",
+          "status": "pending",
+          "needs_human_review": false,
+          "sla_department": "warehouse",
+          "currency": "EUR",
+          "rate_card_version": "2026-11-indicative-1",
+          "max_iterations": 3,
+          "average_iterations_per_section": 2.0,
+          "passed_first_attempt": 1,
+          "created_at": "2026-11-23 22:00:36.329845+00:00",
+          "claimed_at": null
+        }
+      },
+      "approval": {
+        "checks": {
+          "status_done": true,
+          "every_section_approved_by_its_owner": true,
+          "document_stored": true,
+          "document_sections": true,
+          "document_currency": true,
+          "approved_text_in_document": true,
+          "statuses_forward": true,
+          "change_requested_and_revised": true
+        },
+        "passed": true,
+        "status": "done",
+        "statuses": [
+          "analyzing",
+          "intake_complete",
+          "waiting_for_approval",
+          "waiting_for_approval",
+          "waiting_for_approval",
+          "done"
+        ],
+        "decisions": [
+          {
+            "department": "warehouse",
+            "round": 1,
+            "action": "request_changes"
+          },
+          {
+            "department": "reverse",
+            "round": 1,
+            "action": "approve"
+          },
+          {
+            "department": "warehouse",
+            "round": 2,
+            "action": "approve"
+          }
+        ],
+        "rulings": [],
+        "sections": {
+          "warehouse": {
+            "approval_status": "approved",
+            "approver": "Ana Whitfield",
+            "review_rounds": 1,
+            "draft_status": "passed"
+          },
+          "reverse": {
+            "approval_status": "approved",
+            "approver": "Sofía Ramos",
+            "review_rounds": 0,
+            "draft_status": "passed"
+          }
+        },
+        "document": {
+          "currency": "EUR",
+          "sections": [
+            "warehouse",
+            "reverse"
+          ],
+          "characters": 9365,
+          "content_sha256": "bc0a32f839263d36300012be965d3a0f60e157f963ea7c83659987cc045b0a7e"
+        },
+        "trace_steps": 58,
+        "seconds": 18.1,
+        "llm_tokens_used": 8515
+      }
+    },
+    {
+      "file": "trackflow-request-2.pdf",
+      "label": "informal RFP - Luna Cosmetics (LA), warehousing + last mile",
+      "expect": {
+        "status": "intake_complete",
+        "departments": [
+          "warehouse",
+          "lastmile"
+        ],
+        "client_country": "US",
+        "currency": "USD",
+        "monthly_volume": 5000
+      },
+      "actual": {
+        "status": "intake_complete",
+        "departments": [
+          "warehouse",
+          "lastmile"
+        ],
+        "client_country": "US",
+        "currency": "USD",
+        "monthly_volume": 5000
+      },
+      "checks": {
+        "status": true,
+        "departments": true,
+        "client_country": true,
+        "currency": true,
+        "monthly_volume": true
+      },
+      "passed": true,
+      "seconds": 22.5,
+      "llm_tokens_used": 6818,
+      "classification": {
+        "document_kind": "informal_rfp",
+        "confidence": 0.99,
+        "language": "en",
+        "flags": [],
+        "reasons": [
+          "The prospective client requests a proposal for warehousing and shipping across the United States.",
+          "Carrier selection and the three-week launch timeline are described as part of its fulfillment needs."
+        ]
+      },
+      "discard_reason": null,
+      "error": null,
+      "metadata": {
+        "client_name": "Luna Cosmetics",
+        "client_country": "US",
+        "currency": "USD",
+        "services_requested": [
+          "warehousing",
+          "last_mile"
+        ],
+        "monthly_volume": 5000,
+        "deadline": null,
+        "deadline_text": "within the next 3 weeks (around August 24th)",
+        "deadline_kind": "service_start",
+        "budget_range": null,
+        "departments_needed": [
+          "warehouse",
+          "lastmile"
+        ],
+        "evidence": {
+          "client_name": "We're Luna Cosmetics, a small direct-to-consumer skincare brand out of LA.",
+          "client_country": "Luna Cosmetics — Los Angeles, CA, USA",
+          "services_requested": [
+            "We need someone to handle warehousing",
+            "shipping for us across the US — ideally someone who can also handle carrier selection since we don't have relationships with any carriers yet."
+          ],
+          "monthly_volume": "we just crossed 5,000 orders a month",
+          "deadline": "within the next 3 weeks (around August 24th)"
+        },
+        "missing": [
+          "deadline",
+          "budget_range"
+        ],
+        "notes": [],
+        "readability": {
+          "language": "en",
+          "word_count": 121,
+          "sentence_count": 6,
+          "char_count": 702,
+          "estimated_tokens": 176,
+          "flesch_reading_ease": 57.72,
+          "flesch_kincaid_grade": 10.02,
+          "gunning_fog": 11.37,
+          "processing_cost": "low",
+          "note": null
+        }
+      },
+      "sales_brief": {
+        "summary": "Luna Cosmetics, based in Los Angeles, California, is seeking warehousing, last-mile delivery, and carrier management services across the US. The RFP cites a monthly order volume of 5,000 and requests onboarding within the next three weeks, around August 24; it does not provide a complete target date.",
+        "client_name": "Luna Cosmetics",
+        "client_country": "US",
+        "currency": "USD",
+        "commercial_owner": "Miguel Torres",
+        "departments": [
+          {
+            "department_id": "warehouse",
+            "department_name": "Warehouse Operations",
+            "owner": "Ana Whitfield",
+            "ask": "Ask Ana Whitfield to recommend storage capacity and provide USD pricing per pallet and per SKU, using the available order volume and any inventory/product details obtained from the client. Request an assessment of whether onboarding is feasible within the requested timeframe and the expected onboarding duration.",
+            "needed_from_department": [
+              "Recommend suitable storage capacity for Luna Cosmetics, based on its 5,000 orders/month and any available inventory and product data.",
+              "Provide storage pricing per pallet and per SKU in USD.",
+              "Assess whether onboarding can be completed within the requested three-week timeline and state the onboarding time."
+            ],
+            "open_questions": [
+              "What inventory quantities and target stock levels should inform storage capacity planning?",
+              "How many pallets and SKUs does Luna Cosmetics expect to store, and what are the SKU dimensions, weights, and storage requirements?",
+              "What are the product characteristics and handling needs (including any cosmetics-specific temperature, safety, or regulatory requirements)?",
+              "What is the complete target go-live date? The stated timeframe is around August 24th, but no full date is provided.",
+              "What inbound inventory volume and timing, order profile, and operational requirements will affect warehouse setup and onboarding?"
+            ]
+          },
+          {
+            "department_id": "lastmile",
+            "department_name": "Last Mile and Carrier Management",
+            "owner": "Carlos Vega",
+            "ask": "Ask Carlos Vega to provide US carrier options and selection support, destination-specific shipment costs in USD, and delivery SLAs with transit-time commitments and conditions. Have him state the assumptions needed for pricing and carrier availability.",
+            "needed_from_department": [
+              "Cost per shipment for Luna Cosmetics' US destinations, in USD, with any assumptions or service-level distinctions stated.",
+              "Available carriers by US destination, including carrier options and support for selecting carriers for a client without existing carrier relationships.",
+              "Delivery SLAs by destination and carrier/service, including transit-time commitments and any applicable conditions."
+            ],
+            "open_questions": [
+              "What are the shipment destinations (states, ZIP codes, or destination distribution) across the US?",
+              "What shipment characteristics are needed to calculate rates and assess carrier availability and SLAs (for example, package weight and dimensions, service type, and any special handling requirements)?",
+              "What is the expected shipment volume or destination mix beyond the stated 5,000 orders/month, including the proportion that will ship?",
+              "What full calendar date is intended by “around August 24th,” and what is the required operational start date?"
+            ]
+          }
+        ],
+        "client_questions": [
+          "Confirm the exact date behind \"within the next 3 weeks (around August 24th)\": the RFP gives no full date.",
+          "Ask whether there is a reference budget: the RFP gives none.",
+          "What inventory quantities and target stock levels should inform storage planning, and how many pallets and SKUs are expected?",
+          "What are the products’ dimensions, weights, storage requirements, and any cosmetics-specific temperature, safety, or regulatory handling needs?",
+          "What inbound inventory volume and timing, order profile, and other operational requirements should be considered for warehouse setup and onboarding?",
+          "What are the expected US shipment destinations or destination distribution (such as states or ZIP codes)?",
+          "What are the shipment package weights and dimensions, desired service types, and any special handling requirements?",
+          "Of the stated 5,000 monthly orders, what proportion is expected to ship, and what is the expected shipment-volume or destination mix?"
+        ],
+        "risks": [
+          "The requested onboarding window is near-term, while the exact go-live date is unspecified; feasibility is unconfirmed.",
+          "Storage capacity and warehouse pricing cannot be grounded without inventory quantities, SKU/pallet counts, and product handling details.",
+          "US shipment pricing, carrier availability, and delivery SLAs depend on missing destination and package/service profiles.",
+          "The RFP does not state a budget."
+        ],
+        "unassigned_requirements": [],
+        "validation_notes": []
+      },
+      "sections": [
+        {
+          "department_id": "warehouse",
+          "department_name": "Warehouse Operations",
+          "owner": "Ana Whitfield",
+          "objective": "Determine suitable storage capacity and cost per pallet/SKU, and assess whether onboarding can be completed within the requested three-week timeline.",
+          "extracts": [
+            "Luna Cosmetics — Los Angeles, CA, USA",
+            "We've been doing our own fulfillment out of a garage (seriously) but we just crossed 5,000 orders a month and it's not sustainable anymore.",
+            "We need someone to handle warehousing and shipping for us across the US",
+            "We're hoping to be up and running within the next 3 weeks (around August 24th)"
+          ],
+          "key_aspects": [
+            {
+              "aspect": "Monthly order volume",
+              "detail": "The client has 5,000 orders/month; the RFP says it has crossed 5,000 orders a month.",
+              "source_quote": "We've been doing our own fulfillment out of a garage (seriously) but we just crossed 5,000 orders a month and it's not sustainable anymore."
+            },
+            {
+              "aspect": "Requested onboarding timeline",
+              "detail": "The client hopes to be up and running within the next 3 weeks (around August 24th). The metadata notes there is no full date.",
+              "source_quote": "We're hoping to be up and running within the next 3 weeks (around August 24th)"
+            },
+            {
+              "aspect": "Client location",
+              "detail": "Luna Cosmetics is in Los Angeles, CA, USA.",
+              "source_quote": "Luna Cosmetics — Los Angeles, CA, USA"
+            },
+            {
+              "aspect": "Warehousing and shipping scope",
+              "detail": "The client needs warehousing and shipping across the US.",
+              "source_quote": "We need someone to handle warehousing and shipping for us across the US"
+            }
+          ],
+          "needed_from_department": [
+            "Recommend suitable storage capacity for Luna Cosmetics, based on its 5,000 orders/month and any available inventory and product data.",
+            "Provide storage pricing per pallet and per SKU in USD.",
+            "Assess whether onboarding can be completed within the requested three-week timeline and state the onboarding time."
+          ],
+          "open_questions": [
+            "What inventory quantities and target stock levels should inform storage capacity planning?",
+            "How many pallets and SKUs does Luna Cosmetics expect to store, and what are the SKU dimensions, weights, and storage requirements?",
+            "What are the product characteristics and handling needs (including any cosmetics-specific temperature, safety, or regulatory requirements)?",
+            "What is the complete target go-live date? The stated timeframe is around August 24th, but no full date is provided.",
+            "What inbound inventory volume and timing, order profile, and operational requirements will affect warehouse setup and onboarding?"
+          ],
+          "validation_notes": [],
+          "draft_status": null,
+          "draft_iterations": 0,
+          "max_iterations": null,
+          "is_sla_section": false,
+          "needs_human_review": false,
+          "draft_content": null,
+          "draft": null,
+          "guard_notes": [],
+          "knowledge_source": null,
+          "rate_card_version": null,
+          "review_note": null,
+          "evaluation": null,
+          "approval_status": null,
+          "ready_at": null,
+          "approver": null,
+          "approved_by": null,
+          "approved_at": null,
+          "review_round": 1,
+          "review_rounds": 0,
+          "max_review_rounds": 3,
+          "allowed_actions": [
+            "approve",
+            "request_changes",
+            "reject"
+          ],
+          "approver_configured": false,
+          "awaiting_decision": false,
+          "decision_pending": false,
+          "can_decide": false,
+          "decisions": []
+        },
+        {
+          "department_id": "lastmile",
+          "department_name": "Last Mile and Carrier Management",
+          "owner": "Carlos Vega",
+          "objective": "Determine shipment costs, available carriers for US destinations, and delivery SLAs, including carrier selection for a brand without existing carrier relationships.",
+          "extracts": [
+            "Luna Cosmetics — Los Angeles, CA, USA",
+            "We've been doing our own fulfillment out of a garage (seriously) but we just crossed 5,000 orders a month and it's not sustainable anymore.",
+            "We need someone to handle warehousing and shipping for us across the US — ideally someone who can also handle carrier selection since we don't have relationships with any carriers yet.",
+            "We're hoping to be up and running within the next 3 weeks (around August 24th)"
+          ],
+          "key_aspects": [
+            {
+              "aspect": "Monthly order volume",
+              "detail": "The client has crossed 5,000 orders a month.",
+              "source_quote": "We've been doing our own fulfillment out of a garage (seriously) but we just crossed 5,000 orders a month and it's not sustainable anymore."
+            },
+            {
+              "aspect": "US shipping coverage",
+              "detail": "The client needs shipping handled across the US.",
+              "source_quote": "We need someone to handle warehousing and shipping for us across the US — ideally someone who can also handle carrier selection since we don't have relationships with any carriers yet."
+            },
+            {
+              "aspect": "Carrier selection",
+              "detail": "The client has no existing carrier relationships and would like carrier selection handled.",
+              "source_quote": "We need someone to handle warehousing and shipping for us across the US — ideally someone who can also handle carrier selection since we don't have relationships with any carriers yet."
+            },
+            {
+              "aspect": "Target go-live timing",
+              "detail": "The client hopes to be up and running within the next 3 weeks (around August 24th); no full date is specified.",
+              "source_quote": "We're hoping to be up and running within the next 3 weeks (around August 24th)"
+            },
+            {
+              "aspect": "Client origin location",
+              "detail": "The client is identified as located in Los Angeles, CA, USA.",
+              "source_quote": "Luna Cosmetics — Los Angeles, CA, USA"
+            }
+          ],
+          "needed_from_department": [
+            "Cost per shipment for Luna Cosmetics' US destinations, in USD, with any assumptions or service-level distinctions stated.",
+            "Available carriers by US destination, including carrier options and support for selecting carriers for a client without existing carrier relationships.",
+            "Delivery SLAs by destination and carrier/service, including transit-time commitments and any applicable conditions."
+          ],
+          "open_questions": [
+            "What are the shipment destinations (states, ZIP codes, or destination distribution) across the US?",
+            "What shipment characteristics are needed to calculate rates and assess carrier availability and SLAs (for example, package weight and dimensions, service type, and any special handling requirements)?",
+            "What is the expected shipment volume or destination mix beyond the stated 5,000 orders/month, including the proportion that will ship?",
+            "What full calendar date is intended by “around August 24th,” and what is the required operational start date?"
+          ],
+          "validation_notes": [],
+          "draft_status": null,
+          "draft_iterations": 0,
+          "max_iterations": null,
+          "is_sla_section": false,
+          "needs_human_review": false,
+          "draft_content": null,
+          "draft": null,
+          "guard_notes": [],
+          "knowledge_source": null,
+          "rate_card_version": null,
+          "review_note": null,
+          "evaluation": null,
+          "approval_status": null,
+          "ready_at": null,
+          "approver": null,
+          "approved_by": null,
+          "approved_at": null,
+          "review_round": 1,
+          "review_rounds": 0,
+          "max_review_rounds": 3,
+          "allowed_actions": [
+            "approve",
+            "request_changes",
+            "reject"
+          ],
+          "approver_configured": false,
+          "awaiting_decision": false,
+          "decision_pending": false,
+          "can_decide": false,
+          "decisions": []
+        }
+      ],
+      "drafting": {
+        "checks": {
+          "status": true,
+          "handoff_has_content_and_evaluation": true,
+          "currency": true,
+          "sla_department": true,
+          "sla_stated": true,
+          "returns_at_least_48h": true
+        },
+        "passed": true,
+        "status": "waiting_for_approval",
+        "sections": {
+          "warehouse": {
+            "draft_status": "passed",
+            "iterations": 1,
+            "readability": 46.46,
+            "grade": 10.12,
+            "relevance_missing": [],
+            "compliance_rule_ids": [],
+            "knowledge_source": "local"
+          },
+          "lastmile": {
+            "draft_status": "passed",
+            "iterations": 2,
+            "readability": 36.79,
+            "grade": 11.83,
+            "relevance_missing": [],
+            "compliance_rule_ids": [],
+            "knowledge_source": "local"
+          }
+        },
+        "attempts": [
+          {
+            "stage": "merge_evaluation:lastmile#1",
+            "failed": [
+              "relevance"
+            ],
+            "decision": "revise"
+          },
+          {
+            "stage": "merge_evaluation:warehouse#1",
+            "failed": [],
+            "decision": "accept"
+          },
+          {
+            "stage": "merge_evaluation:lastmile#2",
+            "failed": [],
+            "decision": "accept"
+          }
+        ],
+        "average_iterations_per_section": 1.5,
+        "seconds": 45.4,
+        "llm_tokens_used": 26715,
+        "error": null,
+        "sections_detail": [
+          {
+            "department_id": "warehouse",
+            "department_name": "Warehouse Operations",
+            "owner": "Ana Whitfield",
+            "objective": "Determine suitable storage capacity and cost per pallet/SKU, and assess whether onboarding can be completed within the requested three-week timeline.",
+            "extracts": [
+              "Luna Cosmetics — Los Angeles, CA, USA",
+              "We've been doing our own fulfillment out of a garage (seriously) but we just crossed 5,000 orders a month and it's not sustainable anymore.",
+              "We need someone to handle warehousing and shipping for us across the US",
+              "We're hoping to be up and running within the next 3 weeks (around August 24th)"
+            ],
+            "key_aspects": [
+              {
+                "aspect": "Monthly order volume",
+                "detail": "The client has 5,000 orders/month; the RFP says it has crossed 5,000 orders a month.",
+                "source_quote": "We've been doing our own fulfillment out of a garage (seriously) but we just crossed 5,000 orders a month and it's not sustainable anymore."
+              },
+              {
+                "aspect": "Requested onboarding timeline",
+                "detail": "The client hopes to be up and running within the next 3 weeks (around August 24th). The metadata notes there is no full date.",
+                "source_quote": "We're hoping to be up and running within the next 3 weeks (around August 24th)"
+              },
+              {
+                "aspect": "Client location",
+                "detail": "Luna Cosmetics is in Los Angeles, CA, USA.",
+                "source_quote": "Luna Cosmetics — Los Angeles, CA, USA"
+              },
+              {
+                "aspect": "Warehousing and shipping scope",
+                "detail": "The client needs warehousing and shipping across the US.",
+                "source_quote": "We need someone to handle warehousing and shipping for us across the US"
+              }
+            ],
+            "needed_from_department": [
+              "Recommend suitable storage capacity for Luna Cosmetics, based on its 5,000 orders/month and any available inventory and product data.",
+              "Provide storage pricing per pallet and per SKU in USD.",
+              "Assess whether onboarding can be completed within the requested three-week timeline and state the onboarding time."
+            ],
+            "open_questions": [
+              "What inventory quantities and target stock levels should inform storage capacity planning?",
+              "How many pallets and SKUs does Luna Cosmetics expect to store, and what are the SKU dimensions, weights, and storage requirements?",
+              "What are the product characteristics and handling needs (including any cosmetics-specific temperature, safety, or regulatory requirements)?",
+              "What is the complete target go-live date? The stated timeframe is around August 24th, but no full date is provided.",
+              "What inbound inventory volume and timing, order profile, and operational requirements will affect warehouse setup and onboarding?"
+            ],
+            "validation_notes": [],
+            "draft_status": "passed",
+            "draft_iterations": 1,
+            "max_iterations": 3,
+            "is_sla_section": false,
+            "needs_human_review": false,
+            "draft_content": "## Warehouse Operations: Luna Cosmetics\n\nFor approval by Ana Whitfield. Prices in USD. Rate card 2026-11-indicative-1: indicative prices, to be confirmed by Commercial.\n\nTrackFlow offers Luna Cosmetics warehousing at its Los Angeles site, with listed capacity of 6,000 pallet positions and up to 60,000 orders monthly; these capacities are indicative. Storage is priced by occupied cubic meter, while inbound receiving is priced per pallet and SKU setup per SKU.\n\n### Scope and approach\n\nLuna reports 5,000 orders monthly and needs warehousing and shipping across the US. The Los Angeles site lists 6,000 pallet positions and capacity for up to 60,000 orders monthly; both figures are indicative. We cannot recommend Luna’s required storage allocation from order volume alone. Inventory levels and pallet mix are needed to confirm fit.\n\nStorage is charged by cubic meter occupied, not by pallet or SKU. Inbound receiving is charged per pallet, and SKU setup is a one-time fee per SKU. The rate card lists these fees below; storage is not discountable. If average monthly storage exceeds 50 cubic meters, Miguel Torres handles any preferential-rate negotiation.\n\nThe indicative onboarding time is 10 business days from signed contract to first order shipped. This appears to fit the requested three-week window if the contract is signed promptly and setup and inbound details are ready. The RFP says around August 24, but gives no complete target date. Please confirm the date. Nationwide delivery details belong in the Last Mile section.\n\n### Pricing\n\n| Item | Price | Unit | Note |\n|---|---|---|---|\n| Storage, per cubic meter occupied | 18.00 USD | per m³ per month | Per cubic meter occupied per month; not discountable. |\n| Inbound receiving | 9.50 USD | per pallet | Per pallet; indicative. |\n| SKU setup (one-off) | 0.30 USD | per SKU | One-off per SKU; indicative. |\n| Pick and pack | 2.40 USD | per order | Per order; indicative. |\n| Each additional item in the same order | 0.45 USD | per item | Each additional item in the same order; indicative. |\n\n### Volume discount tiers\n\nDiscounts by orders a month apply to every price above except storage, per cubic meter occupied and sku setup (one-off).\n\n| Monthly volume (orders) | Discount |\n|---|---|\n| 0 to 2,499 orders a month | 0% |\n| 2,500 to 9,999 orders a month | 5% |\n| 10,000 to 24,999 orders a month | 8% |\n| 25,000 or more orders a month | 12% |\n\n### Service commitments\n\n- Storage site: Los Angeles.\n- Committed capacity: 6,000 pallet positions and up to 60,000 orders a month.\n- Onboarding: 10 business days.\n- The first 30 days of any new product in inventory incur no storage charge.\n- Inventory with more than 180 days of no movement pays a long-term inventory fee of 150% over the standard storage rate, starting on day 181.\n- Clients averaging more than 50 cubic meters a month can ask for a preferential storage rate, negotiated only by Miguel Torres.\n\n### Assumptions\n\n- Rate-card capacity figures are indicative, not a confirmed allocation.\n\n### Pending information\n\n- What inventory quantities and target stock levels should guide storage planning?\n- How many pallets and SKUs are expected, and what are the SKU dimensions, weights, and storage needs? Please also provide units per SKU and the expected pallet mix so we can confirm site fit.\n- What cosmetics-specific temperature, safety, or regulatory handling requirements apply?\n- What inbound inventory volume and timing, order profile, and operational requirements will affect setup and onboarding?\n- What is the complete target go-live date? The RFP only gives an approximate date around August 24. Please also confirm when the contract can be signed.\n- What inventory quantities and target stock levels should inform storage capacity planning?\n- How many pallets and SKUs does Luna Cosmetics expect to store, and what are the SKU dimensions, weights, and storage requirements?\n- What are the product characteristics and handling needs (including any cosmetics-specific temperature, safety, or regulatory requirements)?\n- What is the complete target go-live date? The stated timeframe is around August 24th, but no full date is provided.\n- What inbound inventory volume and timing, order profile, and operational requirements will affect warehouse setup and onboarding?\n",
+            "draft": {
+              "summary": "TrackFlow offers Luna Cosmetics warehousing at its Los Angeles site, with listed capacity of 6,000 pallet positions and up to 60,000 orders monthly; these capacities are indicative. Storage is priced by occupied cubic meter, while inbound receiving is priced per pallet and SKU setup per SKU.",
+              "narrative": [
+                "Luna reports 5,000 orders monthly and needs warehousing and shipping across the US. The Los Angeles site lists 6,000 pallet positions and capacity for up to 60,000 orders monthly; both figures are indicative. We cannot recommend Luna’s required storage allocation from order volume alone. Inventory levels and pallet mix are needed to confirm fit.",
+                "Storage is charged by cubic meter occupied, not by pallet or SKU. Inbound receiving is charged per pallet, and SKU setup is a one-time fee per SKU. The rate card lists these fees below; storage is not discountable. If average monthly storage exceeds 50 cubic meters, Miguel Torres handles any preferential-rate negotiation.",
+                "The indicative onboarding time is 10 business days from signed contract to first order shipped. This appears to fit the requested three-week window if the contract is signed promptly and setup and inbound details are ready. The RFP says around August 24, but gives no complete target date. Please confirm the date. Nationwide delivery details belong in the Last Mile section."
+              ],
+              "price_lines": [
+                {
+                  "item_id": "storage_m3_month",
+                  "amount": 18.0,
+                  "currency": "USD",
+                  "note": "Per cubic meter occupied per month; not discountable."
+                },
+                {
+                  "item_id": "inbound_pallet",
+                  "amount": 9.5,
+                  "currency": "USD",
+                  "note": "Per pallet; indicative."
+                },
+                {
+                  "item_id": "sku_setup",
+                  "amount": 0.3,
+                  "currency": "USD",
+                  "note": "One-off per SKU; indicative."
+                },
+                {
+                  "item_id": "pick_pack_order",
+                  "amount": 2.4,
+                  "currency": "USD",
+                  "note": "Per order; indicative."
+                },
+                {
+                  "item_id": "pick_pack_extra_item",
+                  "amount": 0.45,
+                  "currency": "USD",
+                  "note": "Each additional item in the same order; indicative."
+                }
+              ],
+              "discount_tiers": [
+                {
+                  "min_monthly_volume": 0,
+                  "max_monthly_volume": 2499,
+                  "discount_pct": 0
+                },
+                {
+                  "min_monthly_volume": 2500,
+                  "max_monthly_volume": 9999,
+                  "discount_pct": 5
+                },
+                {
+                  "min_monthly_volume": 10000,
+                  "max_monthly_volume": 24999,
+                  "discount_pct": 8
+                },
+                {
+                  "min_monthly_volume": 25000,
+                  "max_monthly_volume": null,
+                  "discount_pct": 12
+                }
+              ],
+              "on_time_sla_pct": null,
+              "assumptions": [
+                "Rate-card capacity figures are indicative, not a confirmed allocation."
+              ],
+              "open_questions": [
+                "What inventory quantities and target stock levels should guide storage planning?",
+                "How many pallets and SKUs are expected, and what are the SKU dimensions, weights, and storage needs? Please also provide units per SKU and the expected pallet mix so we can confirm site fit.",
+                "What cosmetics-specific temperature, safety, or regulatory handling requirements apply?",
+                "What inbound inventory volume and timing, order profile, and operational requirements will affect setup and onboarding?",
+                "What is the complete target go-live date? The RFP only gives an approximate date around August 24. Please also confirm when the contract can be signed."
+              ],
+              "storage_site": "Los Angeles",
+              "committed_capacity": {
+                "pallet_positions": 6000,
+                "monthly_orders": 60000
+              },
+              "onboarding_business_days": 10
+            },
+            "guard_notes": [],
+            "knowledge_source": "local",
+            "rate_card_version": "2026-11-indicative-1",
+            "review_note": null,
+            "evaluation": {
+              "section_id": "60eda7b8-8421-4c76-8135-bb12116abf22",
+              "department_id": "warehouse",
+              "iteration": 1,
+              "readability": {
+                "pass": true,
+                "score": 46.46,
+                "details": {
+                  "scored": true,
+                  "flesch_reading_ease": 46.46,
+                  "flesch_kincaid_grade": 10.12,
+                  "gunning_fog": 10.6,
+                  "word_count": 224,
+                  "sentence_count": 16,
+                  "words_per_sentence": 14.0,
+                  "longest_sentence": "TrackFlow offers Luna Cosmetics warehousing at its Los Angeles site, with listed capacity of 6,000 pallet positions and up to 60,000 orders monthly; these capacities are indicative.",
+                  "min_ease": 30.0,
+                  "max_grade": 14.0,
+                  "note": null
+                }
+              },
+              "relevance": {
+                "pass": true,
+                "missing_aspects": [],
+                "covered_aspects": [
+                  "Monthly order volume: The client has 5,000 orders/month; the RFP says it has crossed 5,000 orders a month.",
+                  "Requested onboarding timeline: The client hopes to be up and running within the next 3 weeks (around August 24th). The metadata notes there…",
+                  "Recommend suitable storage capacity for Luna Cosmetics, based on its 5,000 orders/month and any available inventory and product data.",
+                  "Provide storage pricing per pallet and per SKU in USD.",
+                  "Assess whether onboarding can be completed within the requested three-week timeline and state the onboarding time."
+                ],
+                "not_applicable": [
+                  "Client location: Luna Cosmetics is in Los Angeles, CA, USA.: Client location is proposal-wide context; this section identifies the Los Angeles warehouse site, not Luna’s location.",
+                  "Warehousing and shipping scope: The client needs warehousing and shipping across the US.: This section addresses warehousing; nationwide delivery details belong in the Last Mile section."
+                ]
+              },
+              "compliance": {
+                "pass": true,
+                "rule_ids": [],
+                "violations": [],
+                "checked_rule_ids": [
+                  "currency-by-country",
+                  "returns-min-48h",
+                  "volume-discount-table",
+                  "no-carrier-rates"
+                ],
+                "reviewer": "used"
+              },
+              "overall_pass": true,
+              "feedback_for_generator": "",
+              "evaluated_at": "2026-11-23T22:01:47.972875Z"
+            },
+            "approval_status": "pending",
+            "ready_at": "2026-11-23 22:01:47.978829+00:00",
+            "approver": null,
+            "approved_by": null,
+            "approved_at": null,
+            "review_round": 1,
+            "review_rounds": 0,
+            "max_review_rounds": 3,
+            "allowed_actions": [
+              "approve",
+              "request_changes",
+              "reject"
+            ],
+            "approver_configured": false,
+            "awaiting_decision": false,
+            "decision_pending": false,
+            "can_decide": false,
+            "decisions": []
+          },
+          {
+            "department_id": "lastmile",
+            "department_name": "Last Mile and Carrier Management",
+            "owner": "Carlos Vega",
+            "objective": "Determine shipment costs, available carriers for US destinations, and delivery SLAs, including carrier selection for a brand without existing carrier relationships.",
+            "extracts": [
+              "Luna Cosmetics — Los Angeles, CA, USA",
+              "We've been doing our own fulfillment out of a garage (seriously) but we just crossed 5,000 orders a month and it's not sustainable anymore.",
+              "We need someone to handle warehousing and shipping for us across the US — ideally someone who can also handle carrier selection since we don't have relationships with any carriers yet.",
+              "We're hoping to be up and running within the next 3 weeks (around August 24th)"
+            ],
+            "key_aspects": [
+              {
+                "aspect": "Monthly order volume",
+                "detail": "The client has crossed 5,000 orders a month.",
+                "source_quote": "We've been doing our own fulfillment out of a garage (seriously) but we just crossed 5,000 orders a month and it's not sustainable anymore."
+              },
+              {
+                "aspect": "US shipping coverage",
+                "detail": "The client needs shipping handled across the US.",
+                "source_quote": "We need someone to handle warehousing and shipping for us across the US — ideally someone who can also handle carrier selection since we don't have relationships with any carriers yet."
+              },
+              {
+                "aspect": "Carrier selection",
+                "detail": "The client has no existing carrier relationships and would like carrier selection handled.",
+                "source_quote": "We need someone to handle warehousing and shipping for us across the US — ideally someone who can also handle carrier selection since we don't have relationships with any carriers yet."
+              },
+              {
+                "aspect": "Target go-live timing",
+                "detail": "The client hopes to be up and running within the next 3 weeks (around August 24th); no full date is specified.",
+                "source_quote": "We're hoping to be up and running within the next 3 weeks (around August 24th)"
+              },
+              {
+                "aspect": "Client origin location",
+                "detail": "The client is identified as located in Los Angeles, CA, USA.",
+                "source_quote": "Luna Cosmetics — Los Angeles, CA, USA"
+              }
+            ],
+            "needed_from_department": [
+              "Cost per shipment for Luna Cosmetics' US destinations, in USD, with any assumptions or service-level distinctions stated.",
+              "Available carriers by US destination, including carrier options and support for selecting carriers for a client without existing carrier relationships.",
+              "Delivery SLAs by destination and carrier/service, including transit-time commitments and any applicable conditions."
+            ],
+            "open_questions": [
+              "What are the shipment destinations (states, ZIP codes, or destination distribution) across the US?",
+              "What shipment characteristics are needed to calculate rates and assess carrier availability and SLAs (for example, package weight and dimensions, service type, and any special handling requirements)?",
+              "What is the expected shipment volume or destination mix beyond the stated 5,000 orders/month, including the proportion that will ship?",
+              "What full calendar date is intended by “around August 24th,” and what is the required operational start date?"
+            ],
+            "validation_notes": [],
+            "draft_status": "passed",
+            "draft_iterations": 2,
+            "max_iterations": 3,
+            "is_sla_section": true,
+            "needs_human_review": false,
+            "draft_content": "## Last Mile and Carrier Management: Luna Cosmetics\n\nFor approval by Carlos Vega. Prices in USD. Rate card 2026-11-indicative-1: indicative prices, to be confirmed by Commercial.\n\nTrackFlow offers Luna Cosmetics US-wide last-mile delivery and carrier management from Los Angeles. We support carrier selection based on shipment details and commit to a 90% monthly on-time delivery SLA, measured across the United States.\n\n### Scope and approach\n\nIndicative shipment prices are in USD and depend on service and parcel weight. Standard pricing covers parcels up to 2 kg or from 2 to 5 kg; express is available only in the Los Angeles metropolitan area. The stated 5,000 monthly orders are not confirmed shipments, so applicable shipment discounts depend on actual monthly shipment volume.\n\nUPS, FedEx, and DHL are listed for US operations. UPS has full national coverage; FedEx is noted for express delivery within California. DHL is identified as the reliable option for international shipments from Los Angeles, so its domestic destination availability needs confirmation. TrackFlow’s system selects carriers using destination, weight, product type, and urgency. Exceptions require Carlos Vega’s approval.\n\nStandard delivery is 3 to 5 business days within the United States. Express delivery is 24 to 48 hours within its Los Angeles metropolitan coverage; FedEx is noted for express timing within California. These are service-level transit times, not separate carrier-specific guarantees. The 90% on-time SLA is measured monthly by country, not by carrier or service. During declared high-demand dates, delivery times may extend by up to 40%, and the SLA is not guaranteed. The rate card gives no onboarding duration, so fit with the requested timing cannot be confirmed; it depends on the full start date and onboarding timeline.\n\n### Pricing\n\n| Item | Price | Unit | Note |\n|---|---|---|---|\n| Standard delivery, parcel up to 2 kg (3 to 5 business days) | 6.90 USD | per shipment | Per shipment, parcel up to 2 kg; indicative. |\n| Standard delivery, parcel from 2 to 5 kg (3 to 5 business days) | 8.90 USD | per shipment | Per shipment, parcel from 2 to 5 kg; indicative. |\n| Express delivery (24 to 48 hours, express coverage area only) | 12.50 USD | per shipment | Per shipment; Los Angeles metropolitan area only; indicative. |\n\n### Volume discount tiers\n\nDiscounts by shipments a month apply to every price above.\n\n| Monthly volume (shipments) | Discount |\n|---|---|\n| 0 to 2,499 shipments a month | 0% |\n| 2,500 to 9,999 shipments a month | 5% |\n| 10,000 to 24,999 shipments a month | 8% |\n| 25,000 or more shipments a month | 12% |\n\n### Service commitments\n\n- Standard delivery: 3 to 5 business days (Within the United States.).\n- Express delivery: 24 to 48 hours (Los Angeles metropolitan area only.).\n- Planned volume: 5,000 orders a month, as the client states.\n- On-time delivery SLA: TrackFlow commits to 90% on-time deliveries per month, measured by country.\n- If a country falls below 90% for two consecutive months, the client is entitled to a 5% compensation on that country's monthly fee.\n- The SLA is not guaranteed on declared high-demand dates (Black Friday, Christmas, January Sales in Spain), when delivery times may extend by up to 40%.\n\n### Carriers by destination\n\n| Destination | Carriers |\n|---|---|\n| United States (national destinations) | UPS, FedEx, DHL |\n| Los Angeles metropolitan area (express) | FedEx |\n\n### Assumptions\n\n- Rates are indicative and quoted in USD.\n- Standard rates depend on parcel weight; dimensions and special handling may affect carrier availability and final pricing.\n- Discount tiers apply to monthly shipments, not orders; the stated 5,000 monthly orders are not confirmed shipment volume.\n\n### Pending information\n\n- Which states, ZIP codes, or destination distribution should we assess for carrier availability and pricing?\n- What are typical parcel weights, dimensions, service preferences, and special handling requirements?\n- How many of the 5,000 monthly orders will ship, and what is the destination mix?\n- What full calendar date and operational start date does “around August 24th” mean?\n- What onboarding duration applies, and can it support the required start date?\n- Can domestic DHL availability and any carrier-specific transit commitments be confirmed for Luna’s destinations?\n- What are the shipment destinations (states, ZIP codes, or destination distribution) across the US?\n- What shipment characteristics are needed to calculate rates and assess carrier availability and SLAs (for example, package weight and dimensions, service type, and any special handling requirements)?\n- What is the expected shipment volume or destination mix beyond the stated 5,000 orders/month, including the proportion that will ship?\n- What full calendar date is intended by “around August 24th,” and what is the required operational start date?\n",
+            "draft": {
+              "summary": "TrackFlow offers Luna Cosmetics US-wide last-mile delivery and carrier management from Los Angeles. We support carrier selection based on shipment details and commit to a 90% monthly on-time delivery SLA, measured across the United States.",
+              "narrative": [
+                "Indicative shipment prices are in USD and depend on service and parcel weight. Standard pricing covers parcels up to 2 kg or from 2 to 5 kg; express is available only in the Los Angeles metropolitan area. The stated 5,000 monthly orders are not confirmed shipments, so applicable shipment discounts depend on actual monthly shipment volume.",
+                "UPS, FedEx, and DHL are listed for US operations. UPS has full national coverage; FedEx is noted for express delivery within California. DHL is identified as the reliable option for international shipments from Los Angeles, so its domestic destination availability needs confirmation. TrackFlow’s system selects carriers using destination, weight, product type, and urgency. Exceptions require Carlos Vega’s approval.",
+                "Standard delivery is 3 to 5 business days within the United States. Express delivery is 24 to 48 hours within its Los Angeles metropolitan coverage; FedEx is noted for express timing within California. These are service-level transit times, not separate carrier-specific guarantees. The 90% on-time SLA is measured monthly by country, not by carrier or service. During declared high-demand dates, delivery times may extend by up to 40%, and the SLA is not guaranteed. The rate card gives no onboarding duration, so fit with the requested timing cannot be confirmed; it depends on the full start date and onboarding timeline."
+              ],
+              "price_lines": [
+                {
+                  "item_id": "shipment_standard_2kg",
+                  "amount": 6.9,
+                  "currency": "USD",
+                  "note": "Per shipment, parcel up to 2 kg; indicative."
+                },
+                {
+                  "item_id": "shipment_standard_5kg",
+                  "amount": 8.9,
+                  "currency": "USD",
+                  "note": "Per shipment, parcel from 2 to 5 kg; indicative."
+                },
+                {
+                  "item_id": "shipment_express",
+                  "amount": 12.5,
+                  "currency": "USD",
+                  "note": "Per shipment; Los Angeles metropolitan area only; indicative."
+                }
+              ],
+              "discount_tiers": [
+                {
+                  "min_monthly_volume": 0,
+                  "max_monthly_volume": 2499,
+                  "discount_pct": 0
+                },
+                {
+                  "min_monthly_volume": 2500,
+                  "max_monthly_volume": 9999,
+                  "discount_pct": 5
+                },
+                {
+                  "min_monthly_volume": 10000,
+                  "max_monthly_volume": 24999,
+                  "discount_pct": 8
+                },
+                {
+                  "min_monthly_volume": 25000,
+                  "max_monthly_volume": null,
+                  "discount_pct": 12
+                }
+              ],
+              "on_time_sla_pct": 90.0,
+              "assumptions": [
+                "Rates are indicative and quoted in USD.",
+                "Standard rates depend on parcel weight; dimensions and special handling may affect carrier availability and final pricing.",
+                "Discount tiers apply to monthly shipments, not orders; the stated 5,000 monthly orders are not confirmed shipment volume."
+              ],
+              "open_questions": [
+                "Which states, ZIP codes, or destination distribution should we assess for carrier availability and pricing?",
+                "What are typical parcel weights, dimensions, service preferences, and special handling requirements?",
+                "How many of the 5,000 monthly orders will ship, and what is the destination mix?",
+                "What full calendar date and operational start date does “around August 24th” mean?",
+                "What onboarding duration applies, and can it support the required start date?",
+                "Can domestic DHL availability and any carrier-specific transit commitments be confirmed for Luna’s destinations?"
+              ],
+              "delivery_options": [
+                {
+                  "service": "standard",
+                  "transit_time": "3 to 5 business days",
+                  "coverage": "Within the United States."
+                },
+                {
+                  "service": "express",
+                  "transit_time": "24 to 48 hours",
+                  "coverage": "Los Angeles metropolitan area only."
+                }
+              ],
+              "carriers_by_destination": [
+                {
+                  "destination": "United States (national destinations)",
+                  "carriers": [
+                    "UPS",
+                    "FedEx",
+                    "DHL"
+                  ]
+                },
+                {
+                  "destination": "Los Angeles metropolitan area (express)",
+                  "carriers": [
+                    "FedEx"
+                  ]
+                }
+              ],
+              "assumed_monthly_volume": 5000
+            },
+            "guard_notes": [],
+            "knowledge_source": "local",
+            "rate_card_version": "2026-11-indicative-1",
+            "review_note": null,
+            "evaluation": {
+              "section_id": "766554ad-9584-494e-aa71-617504e51fc9",
+              "department_id": "lastmile",
+              "iteration": 2,
+              "readability": {
+                "pass": true,
+                "score": 36.79,
+                "details": {
+                  "scored": true,
+                  "flesch_reading_ease": 36.79,
+                  "flesch_kincaid_grade": 11.83,
+                  "gunning_fog": 12.18,
+                  "word_count": 295,
+                  "sentence_count": 19,
+                  "words_per_sentence": 15.5,
+                  "longest_sentence": "The rate card gives no onboarding duration, so fit with the requested timing cannot be confirmed; it depends on the full start date and onboarding timeline.",
+                  "min_ease": 30.0,
+                  "max_grade": 14.0,
+                  "note": null
+                }
+              },
+              "relevance": {
+                "pass": true,
+                "missing_aspects": [],
+                "covered_aspects": [
+                  "Monthly order volume: The client has crossed 5,000 orders a month.",
+                  "US shipping coverage: The client needs shipping handled across the US.",
+                  "Carrier selection: The client has no existing carrier relationships and would like carrier selection handled.",
+                  "Client origin location: The client is identified as located in Los Angeles, CA, USA.",
+                  "Cost per shipment for Luna Cosmetics' US destinations, in USD, with any assumptions or service-level distinctions stated.",
+                  "Available carriers by US destination, including carrier options and support for selecting carriers for a client without existing carrier re…",
+                  "Delivery SLAs by destination and carrier/service, including transit-time commitments and any applicable conditions."
+                ],
+                "not_applicable": [
+                  "Target go-live timing: The client hopes to be up and running within the next 3 weeks (around August 24th); no full date is specified.: Go-live timing is a proposal-wide matter, rather than a last-mile/carrier requirement."
+                ]
+              },
+              "compliance": {
+                "pass": true,
+                "rule_ids": [],
+                "violations": [],
+                "checked_rule_ids": [
+                  "currency-by-country",
+                  "on-time-sla-stated",
+                  "returns-min-48h",
+                  "volume-discount-table",
+                  "no-carrier-rates"
+                ],
+                "reviewer": "used"
+              },
+              "overall_pass": true,
+              "feedback_for_generator": "",
+              "evaluated_at": "2026-11-23T22:02:02.322964Z"
+            },
+            "approval_status": "pending",
+            "ready_at": "2026-11-23 22:02:02.327430+00:00",
+            "approver": null,
+            "approved_by": null,
+            "approved_at": null,
+            "review_round": 1,
+            "review_rounds": 0,
+            "max_review_rounds": 3,
+            "allowed_actions": [
+              "approve",
+              "request_changes",
+              "reject"
+            ],
+            "approver_configured": false,
+            "awaiting_decision": false,
+            "decision_pending": false,
+            "can_decide": false,
+            "decisions": []
+          }
+        ],
+        "proposal": {
+          "contract_version": "rfp-proposal/1",
+          "next_stage": "approval",
+          "status": "pending",
+          "needs_human_review": false,
+          "sla_department": "lastmile",
+          "currency": "USD",
+          "rate_card_version": "2026-11-indicative-1",
+          "max_iterations": 3,
+          "average_iterations_per_section": 1.5,
+          "passed_first_attempt": 1,
+          "created_at": "2026-11-23 22:02:02.332618+00:00",
+          "claimed_at": null
+        }
+      },
+      "approval": {
+        "checks": {
+          "status_done": true,
+          "every_section_approved_by_its_owner": true,
+          "document_stored": true,
+          "document_sections": true,
+          "document_currency": true,
+          "approved_text_in_document": true,
+          "statuses_forward": true
+        },
+        "passed": true,
+        "status": "done",
+        "statuses": [
+          "analyzing",
+          "intake_complete",
+          "waiting_for_approval",
+          "waiting_for_approval",
+          "done"
+        ],
+        "decisions": [
+          {
+            "department": "warehouse",
+            "round": 1,
+            "action": "approve"
+          },
+          {
+            "department": "lastmile",
+            "round": 1,
+            "action": "approve"
+          }
+        ],
+        "rulings": [],
+        "sections": {
+          "warehouse": {
+            "approval_status": "approved",
+            "approver": "Ana Whitfield",
+            "review_rounds": 0,
+            "draft_status": "passed"
+          },
+          "lastmile": {
+            "approval_status": "approved",
+            "approver": "Carlos Vega",
+            "review_rounds": 0,
+            "draft_status": "passed"
+          }
+        },
+        "document": {
+          "currency": "USD",
+          "sections": [
+            "warehouse",
+            "lastmile"
+          ],
+          "characters": 10899,
+          "content_sha256": "68f0be2e12e3a700359f0bfc36f3b762bc0f7dc3cc61c598a3be94ab8ed9b1be"
+        },
+        "trace_steps": 42,
+        "seconds": 0.1,
+        "llm_tokens_used": 0
+      }
+    },
+    {
+      "file": "trackflow-request-3.pdf",
+      "label": "invalid - RapidShip Carriers' rate pitch to TrackFlow",
+      "expect": {
+        "status": "discarded"
+      },
+      "actual": {
+        "status": "discarded",
+        "departments": [],
+        "client_country": null,
+        "currency": null,
+        "monthly_volume": null
+      },
+      "checks": {
+        "status": true
+      },
+      "passed": true,
+      "seconds": 1.7,
+      "llm_tokens_used": 847,
+      "classification": {
+        "document_kind": "carrier_or_vendor_offer",
+        "confidence": 0.99,
+        "language": "en",
+        "flags": [],
+        "reasons": [
+          "RapidShip is offering carrier partnership and introductory rates to TrackFlow, making TrackFlow the buyer.",
+          "The message asks whether TrackFlow wants a call about the vendor's pricing rather than requesting a proposal for TrackFlow's services."
+        ]
+      },
+      "discard_reason": "Not a client RFP: a carrier or vendor offering its services to TrackFlow. RapidShip is offering carrier partnership and introductory rates to TrackFlow, making TrackFlow the buyer. The message asks whether TrackFlow wants a call about the vendor's pricing rather than requesting a proposal for TrackFlow's services.",
+      "error": null,
+      "metadata": null,
+      "sales_brief": null,
+      "sections": [],
+      "drafting": null,
+      "approval": null
+    }
+  ]
+}

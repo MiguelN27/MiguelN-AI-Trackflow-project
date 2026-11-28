@@ -32,6 +32,17 @@ dependencies = [
     "fastmcp>=3.4.11,<4",
     "mcpauth>=0.2.0b1,<0.3",
     "langchain-mcp-adapters>=0.3.2",
+    "markitdown[pdf]>=0.1.9",
+    "py-readability-metrics>=1.4.5",
+    # RFP Part 3: the approval graph's checkpoints live in PostgreSQL next to the
+    # tickets. The checkpointer needs psycopg 3 (SQLAlchemy keeps psycopg2); the
+    # binary wheel brings libpq, which macOS here does not have.
+    "langgraph-checkpoint-postgres>=3.2.1",
+    "psycopg[binary]>=3.3.9",
+    # Milestone 10: the live RFP notification stream (Server-Sent Events). It was
+    # already installed through mcp; declared because services/rfp imports it, and
+    # it closes open streams when uvicorn shuts down or --reload restarts.
+    "sse-starlette>=3.7.0",
 ]
 
 [project.scripts]

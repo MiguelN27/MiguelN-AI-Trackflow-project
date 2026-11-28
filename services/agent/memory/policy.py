@@ -159,6 +159,7 @@ REFUSAL_REASONS: Final[dict[str, str]] = {
     "single_package_incident": "it is about a single package, order or ticket",
     "commercial_negotiation": "it comes from an active commercial negotiation",
     "incomplete_scope": "it does not say which carrier, country or client it is about",
+    "instruction_like": "it reads as an instruction to the assistant, not as a fact",
     "empty_content": "it is empty",
 }
 
@@ -399,6 +400,28 @@ def _location_reason(text: str) -> ForbiddenReason | None:
     return "b2b_location" if _B2B_MARKERS.search(text) else "b2c_location"
 
 
+def location_findings(text: str) -> list[ForbiddenReason]:
+    """The physical-security data in `text`: an exact location (B2C or B2B) and an
+    internal warehouse route. Never remembered (MEM-092), never revealed (SEC-114):
+    the agent's output guard checks every answer with this too."""
+    found: list[ForbiddenReason] = []
+    location = _location_reason(text)
+    if location is not None:
+        found.append(location)
+    if any(pattern.search(text) for pattern in _INTERNAL_ROUTE):
+        found.append("internal_warehouse_route")
+    return found
+
+
+def _instruction_like(*texts: str | None) -> bool:
+    """An instruction to the assistant hidden in a memory (SEC-114): a poisoned memory
+    would be recalled into every later conversation, so it is refused like forbidden data."""
+    # Imported here: the guardrails import this module for `location_findings`.
+    from services.agent.guardrails.isolation import instruction_findings
+
+    return any(text and instruction_findings(text) for text in texts)
+
+
 def forbidden_reasons(text: str) -> list[ForbiddenReason]:
     """Every forbidden kind of content found in `text`, in a fixed order."""
     found: list[ForbiddenReason] = []
@@ -440,6 +463,8 @@ def check_draft(draft: MemoryDraft) -> DraftCheck:
         for reason in forbidden_reasons(text or ""):
             if reason not in reasons:
                 reasons.append(reason)
+    if _instruction_like(*texts):
+        reasons.append("instruction_like")
     key = topic_key(draft)
     if key is None:
         reasons.append("incomplete_scope")
@@ -452,7 +477,9 @@ def check_text(text: str) -> DraftCheck:
     """The forbidden-content check alone, for a text the user wrote (an edit)."""
     if not text.strip():
         return DraftCheck(False, ("empty_content",))
-    reasons = tuple(forbidden_reasons(text))
+    reasons = tuple(forbidden_reasons(text)) + (
+        ("instruction_like",) if _instruction_like(text) else ()
+    )
     return DraftCheck(not reasons, reasons)
 
 

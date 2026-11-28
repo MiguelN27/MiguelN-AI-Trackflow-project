@@ -11,6 +11,12 @@
   --border-soft: rgba(130, 162, 229, 0.38);
   /* Text and icons on a `--brand-primary` fill (primary buttons). */
   --on-brand: #ffffff;
+  /*
+   * Text and icons on a `--brand-accent` (Cream Orange) fill: the live RFP
+   * notification's "New" pill, nav count and bell. #0b2247 on #ff9142 measures
+   * 7.0:1 (AAA). The accent is not re-pointed in dark mode, so neither is this.
+   */
+  --on-accent: #0b2247;
 
   /*
    * Incident status marks. These are the fixed status roles from the data-viz
@@ -156,5 +162,30 @@ body {
 
   ::selection {
     background: rgba(110, 160, 247, 0.32);
+  }
+}
+
+/*
+ * Live RFP notifications (Milestone 10). Used only through Tailwind's
+ * `motion-safe:` variant, so a reduced-motion preference shows the end state
+ * at once: the notification still appears, it just does not move.
+ */
+@keyframes rfp-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes rfp-row-arrived {
+  from {
+    background-color: color-mix(in srgb, var(--brand-accent) 32%, transparent);
+  }
+  to {
+    background-color: color-mix(in srgb, var(--brand-accent) 10%, transparent);
   }
 }

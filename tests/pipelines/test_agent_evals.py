@@ -14,7 +14,9 @@ Four kinds of criteria, all over the trace:
   leading to the node that ran next, and that every decision is the one the
   graph made before the lookups moved to the MCP server
   (`routing-baseline.json`, frozen from the Part 2 recording) - the memory
-  steps MEM-092 added around it are set aside for that comparison;
+  steps MEM-092 added around it, and the harness steps SEC-114 added, are set
+  aside for that comparison, and the one route SEC-114 changed on purpose
+  (trivia gets a brief answer and the redirect) is listed in the baseline;
 - memory: with an empty memory and no pending proposal, no eval question is
   proposed as a memory (they are questions, not updates), and generation used
   the structured `respond` call;
@@ -46,6 +48,8 @@ from services.agent.state import (
     ANSWER_NO_INFORMATION,
     COMPOSE_RESPONSE,
     GENERATE_ANSWER,
+    GUARD_INPUT,
+    HARNESS_NODES,
     INCIDENT_MANAGER,
     INVENTORY_MANAGER,
     KNOWLEDGE_BASE,
@@ -57,6 +61,7 @@ from services.agent.state import (
     RECEIVE_QUESTION,
     RESULT_FIELD_OF_SOURCE,
     RETRIEVE,
+    SCOPE_REDIRECT,
     SOURCE_OF_NODE,
 )
 from services.agent.tools.contracts import StockLookupResult, TicketLookupResult
@@ -79,9 +84,14 @@ def _cases_with(check: str) -> list[Any]:
     return [pytest.param(case, id=case["id"]) for case in CASES if check in case["checks"]]
 
 
-def _cases_where(outcome: str) -> list[Any]:
+def _cases_where(outcome: str, *, grounded: bool = False) -> list[Any]:
+    """Cases by outcome; `grounded` leaves out the small talk answered with the redirect,
+    which is not answered from evidence (SEC-114)."""
     return [
-        pytest.param(case, id=case["id"]) for case in CASES if case["checks"]["outcome"] == outcome
+        pytest.param(case, id=case["id"])
+        for case in CASES
+        if case["checks"]["outcome"] == outcome
+        and not (grounded and case["checks"].get("redirect"))
     ]
 
 
@@ -243,11 +253,12 @@ def test_the_routing_is_unchanged_since_the_direct_tools(case, runs):
     baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
     case_id = baseline["renamed_cases"].get(case["id"], case["id"])
     assert case_id in baseline["cases"], f"{case['id']} has no baseline"
-    expected = baseline["cases"][case_id]
+    expected = baseline["harness_changes"]["cases"].get(case["id"]) or baseline["cases"][case_id]
     renamed = baseline["renamed_nodes"]
     run = runs[case["id"]]
+    set_aside = MEMORY_NODES | HARNESS_NODES
 
-    assert [name for name in run.node_names() if name not in MEMORY_NODES] == [
+    assert [name for name in run.node_names() if name not in set_aside] == [
         renamed.get(name, name) for name in expected["nodes"]
     ]
     assert [
@@ -262,7 +273,7 @@ def test_a_rejected_question_is_never_retrieved(case, runs):
     run = runs[case["id"]]
     (decision,) = [e for e in run.events if e["kind"] == "edge"]
 
-    assert run.node_names() == [RECEIVE_QUESTION]
+    assert run.node_names() == [RECEIVE_QUESTION, GUARD_INPUT]
     assert decision["output"]["to"] == "__end__"
     assert run.answer == ""
 
@@ -280,7 +291,19 @@ def test_without_context_the_agent_answers_honestly_without_generating(case, run
 # --- Node contract -----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("case", _cases_where("answered"))
+@pytest.mark.parametrize("case", _cases_with("redirect"))
+def test_small_talk_gets_a_brief_answer_and_the_redirect(case, runs):
+    """SEC-114: casual or trivia -> a brief answer, then back to the company's purpose."""
+    run = runs[case["id"]]
+
+    assert run.answer.endswith(SCOPE_REDIRECT)
+    assert run.answer.count(SCOPE_REDIRECT) == 1
+    brief = run.answer[: -len(SCOPE_REDIRECT)].strip()
+    assert brief and len(brief) < 400, "the off-domain part must stay brief"
+    assert run.node(GUARD_INPUT)["output"]["guard"]["category"] == "small_talk"
+
+
+@pytest.mark.parametrize("case", _cases_where("answered", grounded=True))
 def test_generation_uses_exactly_what_the_planned_sources_produced(case, runs):
     run = runs[case["id"]]
     (generated,) = run.nodes(GENERATE_ANSWER)
@@ -429,7 +452,7 @@ def _canonical(figure: str) -> str:
     return figure.lstrip("0") or "0" if figure.isdigit() else figure
 
 
-@pytest.mark.parametrize("case", _cases_where("answered"))
+@pytest.mark.parametrize("case", _cases_where("answered", grounded=True))
 def test_every_figure_in_the_answer_comes_from_the_evidence(case, runs):
     run = runs[case["id"]]
     body = re.split(r"(?im)^\s*\**sources?\**\s*:", run.answer)[0]

@@ -1,0 +1,761 @@
+"use client";
+
+import Link from "next/link";
+import { type ReactNode, useEffect, useState } from "react";
+import { StateMessage } from "@/components/common/StateMessage";
+import { MarkdownBlocks, ProposalSectionCard, parseSectionMarkdown } from "@/components/rfp/ProposalSectionCard";
+import { useRfpLive } from "@/components/rfp/RfpLiveContext";
+import { RfpStatusBadge } from "@/components/rfp/RfpStatusBadge";
+import {
+  COUNTRY_NAMES,
+  DEPARTMENT_NAMES,
+  RFP_PATH,
+  SERVICE_LABELS,
+  TRIGGER_LABELS,
+  approvalSummary,
+  describeRfpError,
+  downloadFinalDocument,
+  failedWhileDrafting,
+  formatBytes,
+  getFinalDocument,
+  getRfpTicket,
+  getRfpTrace,
+  isAnalyzing,
+  isApprovalBusy,
+  isDrafting,
+  isQueuedForApproval,
+  isQueuedForDrafting,
+  pollDelay,
+  stageLabel,
+  stageProgress,
+  type RfpFinalDocument,
+  type RfpMetadata,
+  type RfpSalesBrief,
+  type RfpSection,
+  type RfpTicketDetail,
+  type RfpTraceStep,
+} from "@/lib/rfp";
+
+const cardClass =
+  "rounded-2xl border border-[color:var(--border-soft)] bg-[color:var(--surface)] p-5 shadow-[0_12px_32px_-24px_rgba(37,99,235,0.35)]";
+const labelClass = "text-xs font-semibold uppercase tracking-wide text-slate-500";
+
+const DOCUMENT_KINDS: Record<string, string> = {
+  formal_rfp: "Formal RFP",
+  informal_rfp: "Informal RFP",
+  carrier_or_vendor_offer: "A carrier or vendor offering its services to TrackFlow",
+  other: "Not a request for a proposal",
+};
+
+function formatDateTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatDay(value: string): string {
+  // A calendar date with no time: format it in UTC so it never shifts a day.
+  return new Intl.DateTimeFormat(undefined, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" }).format(
+    new Date(`${value}T00:00:00Z`),
+  );
+}
+
+/** A value the RFP does not give: said plainly, never left blank. */
+function Missing({ children }: { children: ReactNode }) {
+  return <span className="font-semibold text-orange-700">{children}</span>;
+}
+
+function List({ items, empty }: { items: string[]; empty?: string }) {
+  if (items.length === 0) return empty ? <p className="mt-1 text-sm text-slate-500">{empty}</p> : null;
+  return (
+    <ul className="mt-1 list-disc space-y-1 pl-5 text-sm leading-relaxed">
+      {items.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+function ClientCard({ metadata }: { metadata: RfpMetadata }) {
+  const country = metadata.client_country ? COUNTRY_NAMES[metadata.client_country] ?? metadata.client_country : null;
+  const rows: [string, ReactNode][] = [
+    ["Client", metadata.client_name ?? <Missing>Not stated: confirm with the client</Missing>],
+    [
+      "Country and currency",
+      country ? (
+        `${country} · quote in ${metadata.currency}`
+      ) : (
+        <Missing>Not established: ask the client (it sets USD or EUR)</Missing>
+      ),
+    ],
+    [
+      "Services requested",
+      metadata.services_requested.length > 0
+        ? metadata.services_requested.map((service) => SERVICE_LABELS[service] ?? service).join(", ")
+        : <Missing>None stated</Missing>,
+    ],
+    [
+      "Monthly volume",
+      metadata.monthly_volume !== null ? (
+        `${metadata.monthly_volume.toLocaleString()} orders a month`
+      ) : (
+        <Missing>Not stated in the RFP: ask the client</Missing>
+      ),
+    ],
+    [
+      metadata.deadline_kind === "service_start" ? "Wanted live by" : "Deadline",
+      metadata.deadline ? (
+        formatDay(metadata.deadline)
+      ) : metadata.deadline_text ? (
+        <>
+          “{metadata.deadline_text}” <Missing>(no full date: confirm it)</Missing>
+        </>
+      ) : (
+        <Missing>Not stated: ask the client</Missing>
+      ),
+    ],
+    ["Reference budget", metadata.budget_range ?? <span className="text-slate-600">None given</span>],
+  ];
+  return (
+    <section aria-labelledby="client-heading" className={cardClass}>
+      <h2 id="client-heading" className="text-lg font-semibold">
+        The request
+      </h2>
+      <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt className={labelClass}>{label}</dt>
+            <dd className="mt-0.5 text-sm">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+function BriefCard({ brief }: { brief: RfpSalesBrief }) {
+  return (
+    <section aria-labelledby="brief-heading" className={cardClass}>
+      <h2 id="brief-heading" className="text-lg font-semibold">
+        Sales brief
+      </h2>
+      <p className="mt-2 text-base leading-relaxed">{brief.summary}</p>
+      <div className="mt-5 grid gap-5 md:grid-cols-2">
+        <div>
+          <h3 className="text-sm font-semibold">Ask the client</h3>
+          <List items={brief.client_questions} empty="Nothing: the RFP answers what the departments need." />
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold">Risks for the proposal</h3>
+          <List items={brief.risks} empty="None flagged." />
+        </div>
+      </div>
+      {brief.unassigned_requirements.length > 0 ? (
+        <div className="mt-5">
+          <h3 className="text-sm font-semibold">Not covered by Warehouse, Last Mile or Reverse Logistics</h3>
+          <List items={brief.unassigned_requirements} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function DepartmentCard({ section, ask }: { section: RfpSection; ask: string | null }) {
+  const headingId = `dept-${section.department_id}`;
+  return (
+    <article aria-labelledby={headingId} className={cardClass}>
+      <p className={labelClass}>{section.department_name}</p>
+      <h3 id={headingId} className="mt-1 text-lg font-semibold">
+        Ask {section.owner}
+      </h3>
+      {ask ? <p className="mt-2 text-sm leading-relaxed">{ask}</p> : null}
+
+      <h4 className="mt-4 text-sm font-semibold">What they must provide</h4>
+      <List items={section.needed_from_department} empty="Nothing specific beyond their standard quote." />
+
+      <h4 className="mt-4 text-sm font-semibold">Open questions</h4>
+      <List items={section.open_questions} empty="None: the RFP gives what this department needs." />
+
+      {section.key_aspects.length > 0 ? (
+        <details className="mt-4 group">
+          <summary className="cursor-pointer text-sm font-semibold text-[color:var(--brand-primary)]">
+            What the RFP says ({section.key_aspects.length})
+          </summary>
+          <ul className="mt-2 space-y-3">
+            {section.key_aspects.map((aspect) => (
+              <li key={`${aspect.aspect}-${aspect.source_quote}`} className="text-sm">
+                <p>
+                  <span className="font-semibold">{aspect.aspect}:</span> {aspect.detail}
+                </p>
+                <blockquote className="mt-1 border-l-2 border-[color:var(--border-soft)] pl-3 text-xs italic text-slate-600">
+                  “{aspect.source_quote}”
+                </blockquote>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </article>
+  );
+}
+
+function CostCard({ ticket }: { ticket: RfpTicketDetail }) {
+  const readability = ticket.metadata?.readability;
+  if (!readability) return null;
+  const tier = { low: "Low", medium: "Medium", high: "High" }[readability.processing_cost];
+  const rows: [string, string][] = [
+    ["Processing cost", tier],
+    ["Length", `${readability.word_count.toLocaleString()} words · ~${readability.estimated_tokens.toLocaleString()} tokens`],
+    [
+      "Reading level",
+      readability.flesch_kincaid_grade !== null
+        ? `Grade ${readability.flesch_kincaid_grade} (Flesch ${readability.flesch_reading_ease}, Fog ${readability.gunning_fog})`
+        : "Not scored",
+    ],
+    ["Model tokens used", ticket.llm_tokens_used.toLocaleString()],
+  ];
+  return (
+    <section aria-labelledby="cost-heading" className={cardClass}>
+      <h2 id="cost-heading" className="text-lg font-semibold">
+        Processing cost
+      </h2>
+      <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt className={labelClass}>{label}</dt>
+            <dd className="mt-0.5 text-sm tabular-nums">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {readability.note ? <p className="mt-3 text-xs text-slate-600">{readability.note}</p> : null}
+    </section>
+  );
+}
+
+function Progress({ ticket }: { ticket: RfpTicketDetail }) {
+  const steps = stageProgress(ticket);
+  const marks = { done: "✓", current: "…", pending: "", failed: "✕" };
+  const tones = {
+    done: "text-emerald-800",
+    current: "font-semibold text-[color:var(--brand-primary)]",
+    pending: "text-slate-500",
+    failed: "font-semibold text-red-700",
+  };
+  return (
+    <ol className="mt-3 grid gap-1.5 text-sm sm:grid-cols-2">
+      {steps.map((step) => (
+        <li key={step.key} className={`flex items-center gap-2 ${tones[step.state]}`}>
+          <span aria-hidden="true" className="inline-block w-4 text-center">
+            {marks[step.state]}
+          </span>
+          {step.label}
+          <span className="sr-only">: {step.state}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function departmentList(sections: RfpSection[]): string {
+  return sections.map((section) => DEPARTMENT_NAMES[section.department_id] ?? section.department_id).join(", ");
+}
+
+/** What Part 2 produced, said from the sections themselves (never from the ticket's later status). */
+function draftingOutcome(ticket: RfpTicketDetail, drafted: RfpSection[], maxIterations: number | null | undefined): ReactNode {
+  if (isQueuedForDrafting(ticket)) return "Queued for proposal drafting: it starts on its own. This page updates on its own.";
+  if (isDrafting(ticket.status)) {
+    return (
+      <>
+        Drafting and checking each department&apos;s section: {stageLabel(ticket.current_stage)}. This page updates on its
+        own.
+      </>
+    );
+  }
+  const review = drafted.filter((section) => section.needs_human_review);
+  if (review.length > 0) {
+    return (
+      <>
+        <span className="font-semibold text-orange-700">
+          {review.length} of {drafted.length} section{drafted.length === 1 ? "" : "s"} did not pass within{" "}
+          {maxIterations ?? "the"} attempts and {review.length === 1 ? "needs" : "need"}{" "}
+          a person&apos;s review.
+        </span>{" "}
+        They are still in the proposal, with their last draft and its review: {departmentList(review)}.
+      </>
+    );
+  }
+  if (drafted.length > 0 && drafted.every((section) => section.draft_status === "passed")) {
+    return <span className="font-semibold text-emerald-800">Every section passed its automatic review.</span>;
+  }
+  return "The drafts below are from the last drafting run.";
+}
+
+function ProposalArea({ ticket, onDecided }: { ticket: RfpTicketDetail; onDecided: () => void }) {
+  const drafted = ticket.sections.filter((section) => section.draft_status !== null);
+  const queued = isQueuedForDrafting(ticket);
+  if (drafted.length === 0 && !queued && !isDrafting(ticket.status)) return null;
+  const proposal = ticket.proposal;
+  const maxIterations = proposal?.max_iterations ?? drafted.find((section) => section.max_iterations)?.max_iterations;
+  const rateCard = proposal?.rate_card_version ?? drafted.find((section) => section.rate_card_version)?.rate_card_version;
+  return (
+    <section aria-labelledby="proposal-heading">
+      <div className={cardClass}>
+        <h2 id="proposal-heading" className="text-lg font-semibold">
+          Proposal sections
+        </h2>
+        <p className="mt-2 text-sm leading-relaxed">{draftingOutcome(ticket, drafted, maxIterations)}</p>
+        {proposal?.average_iterations_per_section != null || rateCard ? (
+          <dl className="mt-3 grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
+            {proposal?.average_iterations_per_section != null ? (
+              <div>
+                <dt className={labelClass}>Attempts per section</dt>
+                <dd className="mt-0.5 tabular-nums">
+                  {proposal.average_iterations_per_section} on average (target: fewer than 2)
+                </dd>
+              </div>
+            ) : null}
+            {rateCard ? (
+              <div>
+                <dt className={labelClass}>Prices</dt>
+                <dd className="mt-0.5">Rate card {rateCard}: indicative, to be confirmed by Commercial</dd>
+              </div>
+            ) : null}
+          </dl>
+        ) : null}
+      </div>
+      {drafted.length > 0 ? (
+        <div className="mt-5 grid gap-5 lg:grid-cols-2">
+          {drafted.map((section) => (
+            <ProposalSectionCard
+              key={section.department_id}
+              section={section}
+              currentStage={ticket.current_stage}
+              ticketId={ticket.ticket_id}
+              onDecided={onDecided}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+// --- Part 3: approval and the final document ---------------------------------------------------
+
+function rejectionNote(ticket: RfpTicketDetail): ReactNode {
+  const rejected = ticket.sections.filter((section) => section.approval_status === "rejected");
+  return rejected.map((section) => {
+    const decision = [...section.decisions].reverse().find((item) => item.action === "reject");
+    const by = decision ? (decision.source === "arbiter" ? `${decision.decided_by_name} (arbitration)` : decision.decided_by_name) : section.owner;
+    return (
+      <p key={section.department_id} className="mt-1">
+        {DEPARTMENT_NAMES[section.department_id] ?? section.department_id}: rejected by {by}
+        {decision?.comment ? <>: “{decision.comment}”</> : "."}
+      </p>
+    );
+  });
+}
+
+function ApprovalArea({ ticket }: { ticket: RfpTicketDetail }) {
+  const approval = ticket.approval;
+  if (isQueuedForApproval(ticket)) {
+    return (
+      <StateMessage tone="info">
+        Drafted: the approvals open on their own, one request per department owner. This page updates on its own.
+      </StateMessage>
+    );
+  }
+  if (!approval) return null;
+  let outcome: ReactNode;
+  if (ticket.status === "done") {
+    outcome = (
+      <span className="font-semibold text-emerald-800">
+        Every department owner approved their section. The final document is ready for Sales.
+      </span>
+    );
+  } else if (ticket.status === "rejected") {
+    outcome = (
+      <>
+        <span className="font-semibold">This proposal was closed and does not go out.</span>
+        {rejectionNote(ticket)}
+      </>
+    );
+  } else {
+    const waiting = ticket.sections.filter((section) => section.awaiting_decision);
+    outcome = (
+      <>
+        <span className="font-semibold">{approvalSummary(ticket)}.</span> Each owner decides on their own section; a pending
+        decision never blocks the others.
+        {waiting.length ? <> Waiting for: {waiting.map((section) => section.owner).join(", ")}.</> : null}
+        {isApprovalBusy(ticket) ? <> Working: {stageLabel(ticket.current_stage)}.</> : null}
+      </>
+    );
+  }
+  return (
+    <section aria-labelledby="approval-heading" className={cardClass}>
+      <h2 id="approval-heading" className="text-lg font-semibold">
+        Approval by department
+      </h2>
+      <p className="mt-2 text-sm leading-relaxed">{outcome}</p>
+      {approval.error_stage ? (
+        <StateMessage tone="error" className="mt-3">
+          <p className="font-semibold">Processing stopped at “{stageLabel(approval.error_stage)}”.</p>
+          <p className="mt-1">{approval.error_message}</p>
+          <p className="mt-2 text-xs">
+            Every decision is kept. TrackFlow Tech can continue it with{" "}
+            <code className="font-mono">npm run rfp -- resume {ticket.ticket_id}</code>.
+          </p>
+        </StateMessage>
+      ) : null}
+      {approval.rulings.length > 0 ? (
+        <div className="mt-4">
+          <h3 className="text-sm font-semibold">Conflicts between departments</h3>
+          <ul className="mt-2 space-y-2 text-sm">
+            {approval.rulings.map((ruling, index) => (
+              <li key={`${ruling.trigger_id}-${index}`} className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-orange-900">
+                <p className="font-semibold">{TRIGGER_LABELS[ruling.trigger_id] ?? ruling.trigger_id}</p>
+                <p className="mt-1">
+                  Ruled by {ruling.arbiter} ({ruling.arbiter_basis}):{" "}
+                  {ruling.action === "reject" ? "rejected" : "sent back for changes"}{" "}
+                  {ruling.departments.map((dept) => DEPARTMENT_NAMES[dept] ?? dept).join(", ")}.
+                </p>
+                <p className="mt-1 text-xs">Rule: {ruling.rule}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function FinalDocumentCard({ ticket }: { ticket: RfpTicketDetail }) {
+  const [document, setDocument] = useState<RfpFinalDocument | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const sha = ticket.final_document?.content_sha256;
+
+  useEffect(() => {
+    if (!sha) return;
+    let active = true;
+    getFinalDocument(ticket.ticket_id)
+      .then((value) => active && setDocument(value))
+      .catch((failure: unknown) => active && setError(describeRfpError(failure)));
+    return () => {
+      active = false;
+    };
+  }, [ticket.ticket_id, sha]);
+
+  if (!ticket.final_document) return null;
+
+  async function download() {
+    setDownloading(true);
+    try {
+      const file = await downloadFinalDocument(ticket.ticket_id);
+      const url = URL.createObjectURL(new Blob([file.content], { type: "text/markdown;charset=utf-8" }));
+      const link = window.document.createElement("a");
+      link.href = url;
+      link.download = file.filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (failure: unknown) {
+      setError(describeRfpError(failure));
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  return (
+    <section aria-labelledby="document-heading" className={`${cardClass} min-w-0`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 id="document-heading" className="text-lg font-semibold">
+            Final document
+          </h2>
+          <p className="mt-1 text-sm text-slate-600">
+            The approved sections, as approved. Generated{" "}
+            <time dateTime={ticket.final_document.generated_at}>{formatDateTime(ticket.final_document.generated_at)}</time>{" "}
+            · prices in {ticket.final_document.currency}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={download}
+          disabled={downloading}
+          className="inline-flex min-h-10 items-center rounded-xl bg-[color:var(--brand-primary)] px-4 py-2 text-sm font-semibold text-[color:var(--on-brand)] transition hover:opacity-90 disabled:opacity-50"
+        >
+          {downloading ? "Preparing…" : "Download (.md)"}
+        </button>
+      </div>
+      {error ? (
+        <StateMessage tone="error" className="mt-3">
+          {error}
+        </StateMessage>
+      ) : null}
+      {document ? (
+        <details className="mt-4" open>
+          <summary className="cursor-pointer text-sm font-semibold text-[color:var(--brand-primary)]">Read the document</summary>
+          <div className="mt-3">
+            <MarkdownBlocks blocks={parseSectionMarkdown(document.content)} label="Final document" headingBase={3} />
+          </div>
+        </details>
+      ) : !error ? (
+        <p className="mt-3 text-sm text-slate-600" role="status">
+          Loading the document…
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function RunHistory({ ticketId }: { ticketId: string }) {
+  const [steps, setSteps] = useState<RfpTraceStep[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function load(open: boolean) {
+    if (!open) return;
+    getRfpTrace(ticketId)
+      .then(setSteps)
+      .catch((failure: unknown) => setError(describeRfpError(failure)));
+  }
+
+  return (
+    <details className={cardClass} onToggle={(event) => load(event.currentTarget.open)}>
+      <summary className="cursor-pointer text-sm font-semibold">Run history: which agent did what, in order</summary>
+      {error ? (
+        <StateMessage tone="error" className="mt-3">
+          {error}
+        </StateMessage>
+      ) : null}
+      {!steps && !error ? (
+        <p className="mt-3 text-sm text-slate-600" role="status">
+          Loading the history…
+        </p>
+      ) : null}
+      {steps ? (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[40rem] border-collapse text-left text-sm">
+            <caption className="sr-only">Every step of this ticket across the three parts</caption>
+            <thead>
+              <tr className="border-b border-[color:var(--border-soft)]">
+                {["#", "Part", "When", "Step", "Agent", "Outcome"].map((cell) => (
+                  <th key={cell} scope="col" className="py-1.5 pr-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    {cell}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {steps.map((step) => (
+                <tr key={step.position} className="border-b border-[color:var(--border-soft)] last:border-0">
+                  <td className="py-1.5 pr-3 tabular-nums">{step.position}</td>
+                  <td className="py-1.5 pr-3 tabular-nums">{step.part}</td>
+                  <td className="py-1.5 pr-3 tabular-nums">
+                    <time dateTime={step.at}>{new Date(step.at).toLocaleTimeString()}</time>
+                  </td>
+                  <td className="py-1.5 pr-3">{stageLabel(step.node)}</td>
+                  <td className="py-1.5 pr-3">{step.agent}</td>
+                  <td className={`py-1.5 pr-3 ${step.outcome === "failed" ? "font-semibold text-red-700" : ""}`}>
+                    {step.outcome}
+                    {step.duration_ms != null ? <span className="text-slate-500"> · {step.duration_ms} ms</span> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </details>
+  );
+}
+
+/** One RFP ticket, as Sales reads it: what is needed from each department and who to ask. */
+export function RfpTicketPage({ ticketId }: { ticketId: string }) {
+  const [ticket, setTicket] = useState<RfpTicketDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
+  const { markSeen } = useRfpLive();
+
+  // Opening a ticket means its live notification was seen (Milestone 10).
+  useEffect(() => markSeen(ticketId), [markSeen, ticketId]);
+
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    getRfpTicket(ticketId)
+      .then((detail) => {
+        if (!active) return;
+        setTicket(detail);
+        setError(null);
+        const delay = pollDelay(detail);
+        if (delay !== null) {
+          timer = setTimeout(() => setRefresh((value) => value + 1), delay);
+        }
+      })
+      .catch((failure: unknown) => {
+        if (active) setError(describeRfpError(failure));
+      });
+    return () => {
+      active = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [ticketId, refresh]);
+
+  const asks = new Map(ticket?.sales_brief?.departments.map((dept) => [dept.department_id, dept.ask]) ?? []);
+  const classification = ticket?.classification;
+
+  return (
+    <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 md:px-10">
+      <Link href={RFP_PATH} className="text-sm font-semibold text-[color:var(--brand-primary)] hover:underline">
+        ← All RFP tickets
+      </Link>
+
+      {error && !ticket ? (
+        <div role="alert" className="mt-6">
+          <StateMessage tone="error">
+            {error}
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={() => setRefresh((value) => value + 1)}
+                className="inline-flex min-h-10 items-center rounded-xl border border-red-300 bg-[color:var(--surface)] px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100"
+              >
+                Try again
+              </button>
+            </div>
+          </StateMessage>
+        </div>
+      ) : null}
+
+      {!ticket && !error ? (
+        <p className="mt-6 text-sm text-slate-600" role="status">
+          Loading the ticket…
+        </p>
+      ) : null}
+
+      {ticket ? (
+        <>
+          <header className="mt-4 border-b border-[color:var(--border-soft)] pb-5">
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="break-all text-2xl font-semibold leading-tight">
+                {ticket.metadata?.client_name ?? ticket.original_filename}
+              </h1>
+              <RfpStatusBadge status={ticket.status} />
+            </div>
+            <p className="mt-2 text-sm text-slate-600">
+              {ticket.original_filename} · {formatBytes(ticket.pdf_bytes)} · uploaded{" "}
+              <time dateTime={ticket.created_at}>{formatDateTime(ticket.created_at)}</time>
+            </p>
+          </header>
+
+          <div className="mt-6 space-y-6" aria-live="polite">
+            {isAnalyzing(ticket.status) ? (
+              <section aria-labelledby="progress-heading" className={cardClass}>
+                <h2 id="progress-heading" className="text-lg font-semibold">
+                  Analysing: {stageLabel(ticket.current_stage)}
+                </h2>
+                <p className="mt-1 text-sm text-slate-600">This page updates on its own.</p>
+                <Progress ticket={ticket} />
+              </section>
+            ) : null}
+
+            {ticket.status === "discarded" ? (
+              <StateMessage tone="info">
+                <p className="font-semibold">Not a client RFP: no department was involved.</p>
+                <p className="mt-1">{ticket.discard_reason}</p>
+                <p className="mt-2 text-xs">
+                  If this is wrong, TrackFlow Tech can run it again with{" "}
+                  <code className="font-mono">npm run rfp -- reprocess {ticket.ticket_id}</code>.
+                </p>
+              </StateMessage>
+            ) : null}
+
+            {failedWhileDrafting(ticket) ? (
+              <StateMessage tone="error">
+                <p className="font-semibold">The proposal drafting stopped at “{stageLabel(ticket.error_stage)}”.</p>
+                <p className="mt-1">{ticket.error_message}</p>
+                <p className="mt-2 text-xs">
+                  The analysis below is intact. TrackFlow Tech can draft it again with{" "}
+                  <code className="font-mono">npm run rfp -- redraft {ticket.ticket_id}</code>.
+                </p>
+              </StateMessage>
+            ) : null}
+
+            {ticket.status === "failed" && !failedWhileDrafting(ticket) ? (
+              <StateMessage tone="error">
+                <p className="font-semibold">The analysis stopped at “{stageLabel(ticket.error_stage)}”.</p>
+                <p className="mt-1">{ticket.error_message}</p>
+                <p className="mt-2 text-xs">
+                  Nothing was lost: the PDF is stored. TrackFlow Tech can run it again with{" "}
+                  <code className="font-mono">npm run rfp -- reprocess {ticket.ticket_id}</code>.
+                </p>
+                <Progress ticket={ticket} />
+              </StateMessage>
+            ) : null}
+
+            {classification?.review_note ? <StateMessage tone="info">{classification.review_note}</StateMessage> : null}
+
+            <ApprovalArea ticket={ticket} />
+
+            <FinalDocumentCard ticket={ticket} />
+
+            <ProposalArea ticket={ticket} onDecided={() => setRefresh((value) => value + 1)} />
+
+            {ticket.sales_brief ? <BriefCard brief={ticket.sales_brief} /> : null}
+
+            {ticket.sections.length > 0 ? (
+              <section aria-labelledby="departments-heading">
+                <h2 id="departments-heading" className="mb-3 text-lg font-semibold">
+                  Who to ask
+                </h2>
+                <div className="grid gap-5 md:grid-cols-2">
+                  {ticket.sections.map((section) => (
+                    <DepartmentCard key={section.department_id} section={section} ask={asks.get(section.department_id) ?? null} />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {ticket.metadata ? <ClientCard metadata={ticket.metadata} /> : null}
+
+            <CostCard ticket={ticket} />
+
+            {classification ? (
+              <details className={cardClass}>
+                <summary className="cursor-pointer text-sm font-semibold">How the document was classified</summary>
+                <dl className="mt-3 grid gap-x-6 gap-y-3 text-sm sm:grid-cols-3">
+                  <div>
+                    <dt className={labelClass}>Kind</dt>
+                    <dd>{DOCUMENT_KINDS[classification.document_kind ?? ""] ?? classification.document_kind}</dd>
+                  </div>
+                  <div>
+                    <dt className={labelClass}>Confidence</dt>
+                    <dd className="tabular-nums">
+                      {typeof classification.confidence === "number" ? `${Math.round(classification.confidence * 100)}%` : "-"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className={labelClass}>Language</dt>
+                    <dd>{classification.language ?? "-"}</dd>
+                  </div>
+                </dl>
+                <List items={classification.reasons ?? []} />
+                {ticket.handoff ? (
+                  <p className="mt-3 text-xs text-slate-600">
+                    Handed off to proposal drafting ({ticket.handoff.status}, contract {ticket.handoff.contract_version}).
+                  </p>
+                ) : null}
+              </details>
+            ) : null}
+
+            <RunHistory ticketId={ticket.ticket_id} />
+          </div>
+        </>
+      ) : null}
+    </main>
+  );
+}

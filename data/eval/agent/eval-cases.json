@@ -9,7 +9,8 @@
         "outcome": "rejected",
         "sources": [],
         "nodes": [
-          "receive_question"
+          "receive_question",
+          "guard_input"
         ],
         "never": [
           "plan_sources",
@@ -23,28 +24,26 @@
     },
     {
       "id": "route-no-information-unrelated",
-      "purpose": "No chunk passes the threshold (retrieval score 0.093), so the honest no-information node answers and the generation model is never called.",
+      "purpose": "Trivia (SEC-114 decision table: casual / trivia -> brief answer + redirect to the company purpose). The input guard recognises it as small talk, so no tool or retrieval runs: generation answers briefly and validate_output closes the answer with the fixed redirect. Before SEC-114 it got the no-information answer.",
       "question": "Who won the last football World Cup?",
       "checks": {
-        "outcome": "no_information",
-        "resolved_by": "rag",
-        "sources": [
-          "knowledge_base"
-        ],
+        "outcome": "answered",
+        "sources": [],
         "nodes": [
           "receive_question",
-          "recall_memory",
-          "plan_sources",
-          "retrieve",
-          "answer_no_information",
+          "guard_input",
+          "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
-          "generate_answer",
+          "plan_sources",
+          "retrieve",
           "lookup_ticket_mcp",
-          "lookup_stock_mcp"
+          "lookup_stock_mcp",
+          "answer_no_information"
         ],
-        "answer_is_no_information": true
+        "redirect": true
       }
     },
     {
@@ -59,6 +58,7 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "retrieve",
@@ -85,10 +85,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "retrieve",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -117,10 +119,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "retrieve",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -149,10 +153,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "retrieve",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -181,10 +187,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "retrieve",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -210,10 +218,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "retrieve",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -239,10 +249,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "retrieve",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -268,10 +280,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "retrieve",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -296,10 +310,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "lookup_ticket_mcp",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -327,10 +343,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "lookup_ticket_mcp",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -357,10 +375,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "retrieve",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -387,11 +407,13 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "lookup_ticket_mcp",
           "retrieve",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -423,10 +445,12 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "lookup_stock_mcp",
           "generate_answer",
+          "validate_output",
           "compose_response"
         ],
         "never": [
@@ -454,6 +478,7 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "lookup_ticket_mcp",
@@ -485,6 +510,7 @@
         ],
         "nodes": [
           "receive_question",
+          "guard_input",
           "recall_memory",
           "plan_sources",
           "lookup_ticket_mcp",

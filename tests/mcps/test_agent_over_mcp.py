@@ -29,12 +29,14 @@ from services.agent.state import (
     ANSWER_LOOKUP_FAILED,
     COMPOSE_RESPONSE,
     GENERATE_ANSWER,
+    GUARD_INPUT,
     LOOKUP_STOCK,
     LOOKUP_TICKET,
     PLAN_SOURCES,
     RECALL_MEMORY,
     RECEIVE_QUESTION,
     TICKET_UNAVAILABLE_ANSWER,
+    VALIDATE_OUTPUT,
 )
 from services.agent.tools import mcp_client, mcp_lookups, oauth
 from services.agent.tools.contracts import StockLookupInput, TicketLookupInput
@@ -218,7 +220,7 @@ def offline_models(monkeypatch):
     """The planner, retrieval and generation are fakes; the lookups are real MCP calls."""
     seen: dict[str, Any] = {}
 
-    def choose_sources(question: str) -> dict[str, Any]:
+    def choose_sources(question: str, **_: Any) -> dict[str, Any]:
         steps = []
         if "ticket" in question:
             steps.append(
@@ -264,13 +266,17 @@ def test_the_graph_answers_from_mcp_with_the_same_routing(agent, offline_models,
 
     trace = store.get_trace(result.run_id)
     assert result.outcome == "answered"
+    # The routing is the Part 2 one; the harness's guard and output check
+    # (SEC-114) wrap it without changing a decision.
     assert trace.node_names() == [
         RECEIVE_QUESTION,
+        GUARD_INPUT,
         RECALL_MEMORY,
         PLAN_SOURCES,
         LOOKUP_TICKET,
         LOOKUP_STOCK,
         GENERATE_ANSWER,
+        VALIDATE_OUTPUT,
         COMPOSE_RESPONSE,
     ]
     assert [(e.name, e.output["decision"]) for e in trace.edge_events()] == [

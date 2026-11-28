@@ -6,13 +6,22 @@ own - the cache has to be cleared as well, before and after, or one test's
 incidents leak into the next and into `data/suppliers.json`.
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
+from data.pipelines.rfp_intake import config as rfp_config
+from data.pipelines.rfp_intake import llm as rfp_llm
+from data.pipelines.rfp_intake.approval import checkpoint as rfp_checkpoint
+from data.pipelines.rfp_intake.approval import graph as rfp_approval_graph
+from data.pipelines.rfp_intake.proposal import knowledge as rfp_knowledge
+from data.process.knowledge_base import KnowledgeBaseError
 from services.agent import config as agent_config
 from services.agent import graph as agent_graph
 from services.agent import planner as agent_planner
 from services.agent import tracing as agent_tracing
+from services.agent.guardrails import orders as agent_orders
 from services.agent.memory import classifier as agent_memory_classifier
 from services.agent.memory import store as agent_memory_store
 from services.agent.tools import mcp_client as agent_mcp_client
@@ -22,6 +31,12 @@ from services.core import db as core_db
 from services.incidents.read_cache import clear_read_cache
 from services.inventory import database as inventory_database
 from services.main import app
+from services.notifications import config as live_stream_config
+from services.notifications import stream as live_stream
+from services.operations import config as operations_config
+from services.operations import lifecycle as operations_lifecycle
+from services.operations import rules as operations_rules
+from services.rfp import lifecycle as rfp_lifecycle
 from services.tasks.celery_app import celery_app
 from services.telemetry import database as telemetry_database
 
@@ -107,6 +122,8 @@ def isolated_postgres(monkeypatch):
     monkeypatch.setattr(inventory_database, "check_connection", lambda: None)
     monkeypatch.setattr(inventory_database, "initialize_schema", lambda: None)
     monkeypatch.setattr(telemetry_database, "initialize_schema", lambda: None)
+    monkeypatch.setattr(rfp_lifecycle, "initialize", lambda: None)
+    monkeypatch.setattr(operations_lifecycle, "initialize", lambda: None)
     yield
     monkeypatch.setattr(inventory_database, "get_engine", engine_factory)
     dispose()
@@ -130,6 +147,7 @@ _CLASSIFIER_CLIENT_CACHE = agent_memory_classifier._classifier_client
 def _reset_agent_store() -> None:
     agent_graph.close_agent_graph()
     agent_config.get_agent_settings.cache_clear()
+    agent_orders.get_order_directory.cache_clear()
     agent_tracing.get_trace_store.cache_clear()
     agent_memory_store.get_memory_store.cache_clear()
     _PLANNER_CLIENT_CACHE.cache_clear()
@@ -160,6 +178,9 @@ def isolated_agent_store(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("AGENT_STORE_PATH", str(tmp_path / "agent_runs.sqlite"))
     monkeypatch.setenv("AGENT_MEMORY_PATH", str(tmp_path / "agent_memory.sqlite"))
+    # The order records the harness checks (SEC-114): the committed helpdesk
+    # export, read-only, whatever the developer's `.env` points at.
+    monkeypatch.setenv("AGENT_ORDERS_PATH", str(agent_config.DEFAULT_ORDERS_PATH))
     for name, value in AGENT_TOOL_SETTINGS.items():
         monkeypatch.setenv(name, value)
     _reset_agent_store()
@@ -195,6 +216,62 @@ def isolated_agent_tools(monkeypatch):
     monkeypatch.setattr(agent_mcp_client, "http_client_factory", forbid_mcp)
     monkeypatch.setattr(agent_planner, "_planner_client", forbid_planner)
     monkeypatch.setattr(agent_memory_classifier, "_classifier_client", forbid_classifier)
+
+
+# The department owners' accounts in every test (briefing §2.1 owners; RFP_APPROVERS).
+RFP_TEST_APPROVERS = {
+    "warehouse": "ana.whitfield@trackflow.com",
+    "lastmile": "carlos.vega@trackflow.com",
+    "reverse": "sofia.ramos@trackflow.com",
+}
+
+
+@pytest.fixture(autouse=True)
+def isolated_operations_monitor(monkeypatch):
+    """The operational monitor never runs in the background of a test: tests evaluate
+    explicitly (`monitor.evaluate`) with their own clock and engine."""
+    monkeypatch.setenv("OPS_MONITOR_ENABLED", "false")
+    operations_config.get_operations_settings.cache_clear()
+    operations_rules.get_rules.cache_clear()
+    yield
+    operations_config.get_operations_settings.cache_clear()
+    operations_rules.get_rules.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def isolated_rfp_intake(tmp_path, monkeypatch):
+    """Uploaded PDFs go to the test's directory, and no RFP agent reaches a model or Qdrant.
+
+    Tests fake the agents (`IntakeAgents`, `ProposalAgents`) or `llm._client`
+    explicitly. Drafting and opening the approvals after an upload are off
+    unless a test turns them on (`RFP_AUTO_DRAFT`, `RFP_AUTO_REQUEST_APPROVAL`),
+    and a knowledge-base search always falls back to the local documents. The
+    department owners' accounts are the test ones (`RFP_TEST_APPROVERS`), and
+    the approval graph's checkpoint connections are closed after each test.
+    Every test starts with a fresh live-notification hub (its own event loop).
+    """
+    monkeypatch.setenv("RFP_UPLOAD_DIR", str(tmp_path / "rfp-uploads"))
+    monkeypatch.setenv("RFP_AUTO_DRAFT", "false")
+    monkeypatch.setenv("RFP_AUTO_REQUEST_APPROVAL", "false")
+    monkeypatch.setenv("RFP_APPROVERS", json.dumps(RFP_TEST_APPROVERS))
+    rfp_config.get_rfp_settings.cache_clear()
+
+    def forbid_model():
+        raise AssertionError("Unit tests must not call the RFP intake model")
+
+    def no_vector_search(queries, top_k):
+        raise KnowledgeBaseError("unit tests never search Qdrant")
+
+    monkeypatch.setattr(rfp_llm, "_client", forbid_model)
+    monkeypatch.setattr(rfp_knowledge, "search", no_vector_search)
+    live_stream.reset_hub()
+    live_stream_config.get_live_stream_settings.cache_clear()
+    yield
+    live_stream.reset_hub()
+    live_stream_config.get_live_stream_settings.cache_clear()
+    rfp_config.get_rfp_settings.cache_clear()
+    rfp_approval_graph.clear_graphs()
+    rfp_checkpoint.close_checkpointers()
 
 
 @pytest.fixture

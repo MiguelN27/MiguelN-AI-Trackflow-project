@@ -18,9 +18,9 @@ from FastAPI's worker threads.
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     question        TEXT NOT NULL,
     status          TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
     outcome         TEXT CHECK (outcome IN
-                        ('answered', 'no_information', 'rejected', 'memory_reply')),
+                        ('answered', 'no_information', 'rejected', 'memory_reply', 'refused')),
     answer          TEXT,
     attempts        INTEGER NOT NULL DEFAULT 1,
     started_at      TEXT NOT NULL,
@@ -59,11 +59,44 @@ CREATE INDEX IF NOT EXISTS agent_runs_user_id_idx ON agent_runs (user_id, starte
 CREATE INDEX IF NOT EXISTS agent_runs_conversation_idx ON agent_runs (conversation_id, started_at);
 """
 
-# The columns of `agent_runs` before MEM-092 (no `conversation_id`, no `memory_reply`).
-_PRE_MEMORY_COLUMNS: Final = (
-    "run_id, user_id, graph_version, question, status, outcome, answer, attempts, "
-    "started_at, finished_at, error_node, error_type, error_message"
+# Every column of `agent_runs`, in the order of RUNS_TABLE.
+_RUN_COLUMNS: Final = (
+    "run_id",
+    "user_id",
+    "graph_version",
+    "question",
+    "status",
+    "outcome",
+    "answer",
+    "attempts",
+    "started_at",
+    "finished_at",
+    "error_node",
+    "error_type",
+    "error_message",
+    "conversation_id",
 )
+
+# One row per guardrail event (SEC-114): what blocked, refused, redirected or
+# cleaned something in a run, and why. No message text: the rule id says why.
+GUARDRAIL_EVENTS_TABLE: Final = """
+CREATE TABLE IF NOT EXISTS guardrail_events (
+    run_id          TEXT NOT NULL REFERENCES agent_runs (run_id),
+    seq             INTEGER NOT NULL,
+    recorded_at     TEXT NOT NULL,
+    conversation_id TEXT,
+    user_id         TEXT,
+    audience        TEXT,
+    guardrail       TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    failure_type    TEXT NOT NULL CHECK (failure_type IN ('structural', 'content', 'security')),
+    rule            TEXT NOT NULL,
+    source          TEXT,
+    PRIMARY KEY (run_id, seq)
+);
+CREATE INDEX IF NOT EXISTS guardrail_events_recorded_at_idx
+    ON guardrail_events (recorded_at);
+"""
 
 SCHEMA: Final = (
     RUNS_TABLE.format(name="agent_runs")
@@ -85,26 +118,30 @@ CREATE TABLE IF NOT EXISTS agent_run_events (
     PRIMARY KEY (run_id, seq)
 );
 """
+    + GUARDRAIL_EVENTS_TABLE
 )
 
 
 def _migrate_runs_table(connection: sqlite3.Connection) -> None:
-    """Bring an `agent_runs` table from before MEM-092 up to date, keeping every row.
+    """Bring an older `agent_runs` table up to date, keeping every row.
 
-    SQLite cannot change a CHECK constraint in place, so the table is rebuilt:
-    created under a new name, filled, swapped. `agent_run_events` refers to it
-    by name, so its rows stay attached.
+    Before MEM-092 it had no `conversation_id` and no `memory_reply` outcome;
+    before SEC-114, no `refused` outcome. SQLite cannot change a CHECK
+    constraint in place, so the table is rebuilt: created under a new name,
+    filled with the columns it had, swapped. `agent_run_events` and
+    `guardrail_events` refer to it by name, so their rows stay attached.
     """
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'"
     ).fetchone()
-    if row is None or "memory_reply" in row[0]:
+    if row is None or "'refused'" in row[0]:
         return
+    present = {info[1] for info in connection.execute("PRAGMA table_info(agent_runs)")}
+    columns = ", ".join(column for column in _RUN_COLUMNS if column in present)
     connection.executescript(
         "DROP TABLE IF EXISTS agent_runs_migrating;"
         + RUNS_TABLE.format(name="agent_runs_migrating")
-        + f"INSERT INTO agent_runs_migrating ({_PRE_MEMORY_COLUMNS}) "
-        f"SELECT {_PRE_MEMORY_COLUMNS} FROM agent_runs;"
+        + f"INSERT INTO agent_runs_migrating ({columns}) SELECT {columns} FROM agent_runs;"
         "DROP TABLE agent_runs;"
         "ALTER TABLE agent_runs_migrating RENAME TO agent_runs;"
     )
@@ -112,6 +149,14 @@ def _migrate_runs_table(connection: sqlite3.Connection) -> None:
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+def utc_iso(value: str | datetime) -> str:
+    """A time as the store writes it (UTC, milliseconds); a naive time is read as UTC."""
+    moment = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds")
 
 
 def _dump(value: Any) -> str | None:
@@ -180,6 +225,57 @@ class RunTrace:
             if source is not None and source not in consulted:
                 consulted.append(source)
         return consulted
+
+
+@dataclass(frozen=True)
+class GuardrailEvent:
+    run_id: str
+    seq: int
+    recorded_at: str
+    conversation_id: str | None
+    user_id: str | None
+    audience: str | None
+    guardrail: str
+    action: str
+    failure_type: str
+    rule: str
+    source: str | None
+
+
+@dataclass(frozen=True)
+class GuardrailCount:
+    guardrail: str
+    action: str
+    failure_type: str
+    count: int
+    # In how many runs.
+    runs: int
+
+
+@dataclass(frozen=True)
+class GuardrailSummary:
+    """How many times each guardrail was triggered in a window (and a conversation)."""
+
+    since: str | None
+    until: str | None
+    conversation_id: str | None
+    runs: int
+    counts: tuple[GuardrailCount, ...]
+
+    @property
+    def total(self) -> int:
+        return sum(count.count for count in self.counts)
+
+    def by(self, field: str) -> dict[str, int]:
+        """Totals per `guardrail`, `action` or `failure_type`."""
+        totals: dict[str, int] = {}
+        for count in self.counts:
+            key = getattr(count, field)
+            totals[key] = totals.get(key, 0) + count.count
+        return totals
+
+    def as_counter(self) -> dict[tuple[str, str, str], int]:
+        return {(c.guardrail, c.action, c.failure_type): c.count for c in self.counts}
 
 
 def _run_from_row(row: sqlite3.Row, events: tuple[TraceEvent, ...] = ()) -> RunTrace:
@@ -375,6 +471,120 @@ class TraceStore:
         with self._transaction() as connection:
             rows = connection.execute(query, (*params, limit)).fetchall()
         return [_run_from_row(row) for row in rows]
+
+    # --- Guardrail events (SEC-114) ------------------------------------------------
+
+    def add_guardrail_events(
+        self,
+        run_id: str,
+        events: list[Mapping[str, Any]],
+        *,
+        conversation_id: str | None,
+        user_id: str | None,
+        audience: str | None,
+    ) -> int:
+        """Record a run's events, numbered in order; returns how many were new.
+
+        A resumed run hands over all its events again, earlier ones included:
+        those already recorded (same run and position) are skipped.
+        """
+        stamp = utc_now()
+        with self._transaction() as connection:
+            before = connection.total_changes
+            connection.executemany(
+                "INSERT OR IGNORE INTO guardrail_events (run_id, seq, recorded_at, "
+                "conversation_id, user_id, audience, guardrail, action, failure_type, rule, "
+                "source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        seq,
+                        stamp,
+                        conversation_id,
+                        user_id,
+                        audience,
+                        str(event["guardrail"]),
+                        str(event["action"]),
+                        str(event["failure_type"]),
+                        str(event["rule"]),
+                        event.get("source"),
+                    )
+                    for seq, event in enumerate(events, 1)
+                ],
+            )
+            added = connection.total_changes - before
+        return int(added)
+
+    def guardrail_events(
+        self, *, run_id: str | None = None, since: str | None = None, limit: int = 100
+    ) -> list[GuardrailEvent]:
+        """Recorded events, newest first: one run's, or every run's since a time."""
+        query = "SELECT * FROM guardrail_events"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if since is not None:
+            clauses.append("recorded_at >= ?")
+            params.append(utc_iso(since))
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY recorded_at DESC, run_id, seq DESC LIMIT ?"
+        with self._transaction() as connection:
+            rows = connection.execute(query, (*params, limit)).fetchall()
+        return [
+            GuardrailEvent(**{f.name: row[f.name] for f in fields(GuardrailEvent)}) for row in rows
+        ]
+
+    def guardrail_summary(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        conversation_id: str | None = None,
+    ) -> GuardrailSummary:
+        """How many times each guardrail was triggered, by action and failure type."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if since is not None:
+            since = utc_iso(since)
+            clauses.append("recorded_at >= ?")
+            params.append(since)
+        if until is not None:
+            until = utc_iso(until)
+            clauses.append("recorded_at < ?")
+            params.append(until)
+        if conversation_id is not None:
+            clauses.append("conversation_id = ?")
+            params.append(conversation_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT guardrail, action, failure_type, COUNT(*) AS n, COUNT(DISTINCT run_id) "
+                f"AS runs FROM guardrail_events{where} GROUP BY guardrail, action, failure_type "
+                "ORDER BY guardrail, action, failure_type",
+                params,
+            ).fetchall()
+            runs = connection.execute(
+                f"SELECT COUNT(DISTINCT run_id) FROM guardrail_events{where}", params
+            ).fetchone()[0]
+        return GuardrailSummary(
+            since=since,
+            until=until,
+            conversation_id=conversation_id,
+            runs=int(runs),
+            counts=tuple(
+                GuardrailCount(
+                    guardrail=row["guardrail"],
+                    action=row["action"],
+                    failure_type=row["failure_type"],
+                    count=int(row["n"]),
+                    runs=int(row["runs"]),
+                )
+                for row in rows
+            ),
+        )
 
 
 @lru_cache(maxsize=1)

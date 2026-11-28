@@ -27,6 +27,10 @@ const config: Config = {
     "lib/friendly-error.ts",
     "lib/inventory.ts",
     "lib/knowledge.ts",
+    "lib/rfp.ts",
+    "lib/rfp-live.ts",
+    "lib/live-stream.ts",
+    "lib/operations-live.ts",
     "services/auth-service.ts",
   ],
 };

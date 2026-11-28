@@ -19,6 +19,13 @@ conversation, or continues one of the caller's own, and loads its pending
 memory proposal (if any) into the graph's input, so the message is evaluated
 against it before anything else. The LangGraph thread stays the run: a
 conversation shares only its memory proposals, kept in the memory store.
+
+Sessions (SEC-114): every run is a staff or a customer run
+(`guardrails.session.Session`). For a customer, the runner looks up the
+tracking numbers they own (by their email, in the order records) and puts only
+those in the graph's input: the email never reaches the state, the
+checkpoints or the trace. When the run ends - completed or failed - its
+guardrail events are logged and recorded with it (`guardrails.events.record`).
 """
 
 import logging
@@ -40,6 +47,9 @@ from services.agent.errors import (
     AgentRunNotResumable,
 )
 from services.agent.graph import NODE_READS, get_agent_graph, graph_fingerprint
+from services.agent.guardrails import events as guardrail_events
+from services.agent.guardrails import orders
+from services.agent.guardrails.session import Session, session_state
 from services.agent.memory import store as memory_store
 from services.agent.state import Outcome, derive_outcome
 from services.agent.tracing import TraceStore, get_trace_store, utc_now
@@ -194,6 +204,17 @@ class _TraceRecorder:
         self._pending_edges.clear()
 
 
+def _record_guardrails(store: TraceStore, run_id: str, state: Mapping[str, Any]) -> None:
+    guardrail_events.record(
+        state.get("guardrail_events") or [],
+        store=store,
+        run_id=run_id,
+        conversation_id=state.get("conversation_id"),
+        user_id=state.get("user_id"),
+        audience=(state.get("session") or {}).get("audience"),
+    )
+
+
 def _execute(
     graph: CompiledStateGraph,
     store: TraceStore,
@@ -208,6 +229,7 @@ def _execute(
             recorder.handle(mode, event)
     except Exception as error:
         recorder.flush_edges()
+        _record_guardrails(store, run_id, recorder.final_state)
         node = recorder.failed_node or recorder.running_node or "graph"
         store.finish_run(
             run_id,
@@ -225,6 +247,7 @@ def _execute(
     outcome = derive_outcome(state)
     answer = state.get("answer")
     store.finish_run(run_id, status="completed", outcome=outcome, answer=answer)
+    _record_guardrails(store, run_id, state)
     logger.info("Agent run %s completed: %s", run_id, outcome)
     return AgentResult(
         run_id=run_id,
@@ -236,11 +259,19 @@ def _execute(
     )
 
 
+def owned_orders(session: Session) -> list[str]:
+    """The tracking numbers a customer session owns; none for staff."""
+    if not session.is_customer:
+        return []
+    return [order.tracking_number for order in orders.get_order_directory().owned_by(session.email)]
+
+
 def run_agent(
     question: str,
     *,
     user_id: str | None = None,
     conversation_id: str | None = None,
+    session: Session | None = None,
     graph: CompiledStateGraph | None = None,
     store: TraceStore | None = None,
 ) -> AgentResult:
@@ -251,7 +282,9 @@ def run_agent(
     Every call leaves a trace, completed or failed; `run_id` is its key. The
     memory store is the application's (`AGENT_MEMORY_PATH`): the memory nodes
     use the same one, so a conversation and its proposals are never split.
+    Without `session`, the run is a staff run (the CLIs, the recorders).
     """
+    session = session if session is not None else Session()
     graph = graph if graph is not None else get_agent_graph()
     store = store if store is not None else get_trace_store()
     memory = memory_store.get_memory_store()
@@ -270,6 +303,7 @@ def run_agent(
         "run_id": run_id,
         "conversation_id": conversation_id,
         "user_id": user_id,
+        "session": session_state(session.audience, owned_orders(session)),
     }
     if pending is not None:
         graph_input["pending_proposal"] = pending.to_state()
